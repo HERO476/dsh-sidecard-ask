@@ -410,13 +410,26 @@ Host: ctx.subagents.start('spawn')
 ## 十三、发布流程
 
 ```powershell
-npm whoami                 # 先确认登录态（改过 2FA/密码会让旧 token 失效）
+npm whoami                     # 先确认登录态；本机用的是 granular Publish token
 node test/verify.mjs; node test/contract-test.mjs; node test/smoke-test.mjs
-npm publish --access public
+npm publish --access public    # 1.0.1 那次被 npm 暂存（staged）后才转正；再遇到可用 --otp=<验证码>
+git push origin main           # 仓库：https://github.com/HERO476/dsh-sidecard-ask
+```
+
+改名/迁移时的额外两步（1.1.0 实际做过）：
+
+```powershell
+plugin_manager(action="remove_bundle", target="<旧包名>")      # 卸旧 bundle（同时移除 profile 里的 link）
+plugin_manager(action="install_bundle", target="D:\...\<新目录>")
+npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名指路，避免别人再装到废弃名
 ```
 
 版本号同时出现在三处，必须一致：`package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`、`client.js` 的 `api.version`
 （`test/verify.mjs` 会断言前两处；第三处在契约测试中同样被断言）。
+
+**发布前必查"地址类信息"**（1.0.0 的教训）：包名不能只查 npm —— 还要查 GitHub 仓库名是否已被占用，以及
+[`awesome-dsh-plugin` 收录索引](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/tree/main/data/plugins)
+里是否已有同名插件（本插件第一次改名就是因为漏查了后者）。
 
 ---
 
