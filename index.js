@@ -42,7 +42,7 @@ export const name = 'dsh-selection-followup'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.0.0'
+export const PLUGIN_VERSION = '1.0.1'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/selection-followup/api'
@@ -471,6 +471,17 @@ function createSideEngine(ctx, configOf) {
   const runs = new Map()
   /** Subscribers fed by the single global `agent/assistant-stream` bridge. */
   const streamListeners = new Set()
+  /**
+   * Subscribers fed by the single global `session/event` bridge.
+   *
+   * This is the second streaming source, and it exists for exactly one build
+   * in the supported range: 0.1.2-rc.1 logs durable `assistant/chunk` events
+   * (`{turn, step, chunk}` — read from that version's own `chunk-rows.js`) and
+   * publishes no process-local frames. Newer builds removed the durable event,
+   * so the two sources never describe the same attempt and a run accepts only
+   * the one that speaks first.
+   */
+  const chunkListeners = new Set()
   let disposed = false
 
   ctx.effect(() => ctx.on('agent/assistant-stream', (payload) => {
@@ -482,6 +493,17 @@ function createSideEngine(ctx, configOf) {
       }
     }
   }), 'selection-followup: assistant stream bridge')
+
+  ctx.effect(() => ctx.on('session/event', (session, event) => {
+    if (event?.type !== 'assistant/chunk') return
+    for (const listener of [...chunkListeners]) {
+      try {
+        listener(session, event)
+      } catch (error) {
+        ctx.logger?.warn?.('[selection-followup] chunk listener failed:', error)
+      }
+    }
+  }), 'selection-followup: durable chunk bridge')
 
   /** The optional subagents service, or undefined. */
   function subagentsService() {
@@ -595,9 +617,29 @@ function createSideEngine(ctx, configOf) {
       : { ...fallback, candidates }
   }
 
+  /**
+   * The capabilities the chosen provider advertises, or `undefined` when this
+   * DSH version has no `getProvider` to ask.
+   *
+   * `ctx.subagents.start` runs its capability checks BEFORE delegation, so
+   * sending a field the provider does not support fails the whole run — the
+   * same failure class as an unknown `tools.restrict()` name. Every optional
+   * field below is therefore gated on this answer, and an unknown answer is
+   * treated as "support nothing optional".
+   */
+  function providerCapabilities(providerName) {
+    try {
+      const service = subagentsService()
+      const provider = typeof service?.getProvider === 'function' ? service.getProvider(providerName) : undefined
+      const caps = provider?.capabilities
+      return caps !== null && typeof caps === 'object' ? caps : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Report what the side card can do right now. */
-  function capabilities() {
-    const providers = providerNames()
+  function capabilities() {    const providers = providerNames()
     const service = subagentsService()
     const parent = resolveParent(undefined)
     return {
@@ -685,17 +727,14 @@ function createSideEngine(ctx, configOf) {
       return
     }
     if (parent.archived) {
-      // Starting anyway would produce a run the host's archived-session gate
-      // rejects before any model call, so refuse with an explanation instead.
-      sink.send('error', {
-        id,
-        code: 'parent-archived',
-        message: '可用于承载子代理的会话都已被归档（归档会话的子代理会被宿主拒绝执行），请在未归档的会话里追问，或改到主对话',
-        retryable: false,
-        fallback: 'main',
-        parentId: parent.id,
-      })
-      return
+      // An archived parent is PREFERRED AGAINST but no longer refused: the
+      // archived-session gate that rejects a child's steps exists only from
+      // 0.1.7-alpha.1 on (probed against the published packages), so on every
+      // earlier build an archived parent answers normally. The start event
+      // carries the flag and a blocked step is translated below instead.
+      ctx.logger?.warn?.(
+        `[selection-followup] 父会话 ${parent.id} 已归档：0.1.7-alpha.1+ 会拒绝该子代理的步骤，本次仍会尝试`,
+      )
     }
 
     const cut = truncateSelection(rawSelection, config.maxChars)
@@ -716,7 +755,9 @@ function createSideEngine(ctx, configOf) {
 
     let text = ''
     let reasoning = ''
-    let sawFrames = false
+    /** Which source produced deltas: process-local frames or durable chunks. */
+    let framesSeen = false
+    let chunksSeen = false
     let finished = false
 
     /** Detach this run's stream listener (frames are per attempt). */
@@ -740,15 +781,20 @@ function createSideEngine(ctx, configOf) {
         return
       }
       const toolFilter = config.sideTools === 'readonly' ? readOnlyToolFilter(ctx) : undefined
+      const caps = providerCapabilities(provider)
+      // `persona` and `toolFilter` are optional start fields: a provider that
+      // does not advertise them must not receive them, so the persona degrades
+      // into the prompt text and a missing tool filter is reported on the wire.
+      const personaSupported = caps?.persona === true
+      const toolFilterSupported = caps?.toolFilter === true
+      const promptText = personaSupported ? prompt : `${SIDE_PERSONA}\n\n${prompt}`
       const run = await service.start(provider, {
         label: `划词追问：${question.slice(0, 40)}`,
-        prompt: [{ type: 'text', text: prompt }],
+        prompt: [{ type: 'text', text: promptText }],
         parent: parent.agent,
         signal: controller.signal,
-        persona: SIDE_PERSONA,
-        // Omitted (not `undefined`) when there is nothing safe to restrict:
-        // the capability check must see an absent field, not a present one.
-        ...(toolFilter === undefined ? {} : { toolFilter }),
+        ...(personaSupported ? { persona: SIDE_PERSONA } : {}),
+        ...(toolFilter === undefined || !toolFilterSupported ? {} : { toolFilter }),
       })
       runRecord.dispose = run.dispose
 
@@ -759,6 +805,13 @@ function createSideEngine(ctx, configOf) {
         maxChars: config.maxChars,
         truncated: cut.truncated,
         droppedChars: cut.droppedChars,
+        // Reported so the card can say the run inherits the session's tools
+        // instead of silently pretending the read-only guard is in force.
+        toolFilter: config.sideTools !== 'readonly'
+          ? 'inherit'
+          : (toolFilter === undefined ? 'unsupported' : (toolFilterSupported ? 'applied' : 'unsupported')),
+        persona: personaSupported ? 'section' : 'prompt',
+        parentArchived: parent.archived === true,
       })
 
       const childId = run.id
@@ -769,12 +822,13 @@ function createSideEngine(ctx, configOf) {
         const sameAgent = agent === run.localAgent
           || (agent !== undefined && agent?.session?.id === childId)
         if (!sameAgent) return
+        if (framesSeen === false && chunksSeen === true) return
         if (frame.type === 'start') {
-          sawFrames = true
+          framesSeen = true
           return
         }
         if (frame.type === 'chunk') {
-          sawFrames = true
+          framesSeen = true
           const chunk = frame.chunk
           if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
             text += chunk.text
@@ -792,8 +846,33 @@ function createSideEngine(ctx, configOf) {
           })
         }
       }
+      /**
+       * The durable-chunk source (0.1.2-rc.1 and any build that logs
+       * `assistant/chunk` instead of publishing frames). Only active while no
+       * frame has been seen, so a build carrying both can never double-count.
+       */
+      const onChunk = (session, event) => {
+        if (framesSeen) return
+        const sessionId = session?.header?.id ?? session?.id
+        if (sessionId !== childId) return
+        const chunk = event?.data?.chunk
+        if (chunk === undefined) return
+        if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+          chunksSeen = true
+          text += chunk.text
+          sink.send('delta', { id, text: chunk.text })
+        } else if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+          chunksSeen = true
+          reasoning += chunk.text
+          sink.send('reasoning', { id, text: chunk.text })
+        }
+      }
       streamListeners.add(onFrame)
-      detach = () => { streamListeners.delete(onFrame) }
+      chunkListeners.add(onChunk)
+      detach = () => {
+        streamListeners.delete(onFrame)
+        chunkListeners.delete(onChunk)
+      }
 
       const result = await run.result
       if (text.trim() === '') {
@@ -832,7 +911,10 @@ function createSideEngine(ctx, configOf) {
         id,
         text,
         reasoning,
-        streaming: sawFrames,
+        streaming: framesSeen || chunksSeen,
+        // Which source carried the deltas — the Client uses it only for the
+        // "this build publishes no stream frames" note.
+        streamSource: framesSeen ? 'frames' : (chunksSeen ? 'chunks' : 'result'),
         stopReason,
         // A user- or timeout-cancelled run still delivers its partial answer;
         // the Client renders it as "stopped" instead of "done".
@@ -1078,49 +1160,83 @@ export function apply(ctx, patchConfig) {
     handleState(res)
   }
 
-  /** Route one request; the dispatcher owns path parsing and the fence. */
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'prefix',
-    path: ROUTE_PREFIX,
-    handler: async (req, res) => {
-      if (!isTrustedRequest(req, trustedHostsOf())) {
-        writeError(res, 403, 'forbidden', 'forbidden')
-        return
-      }
-      const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
-      const method = pathname.startsWith(`${ROUTE_PREFIX}/`)
-        ? pathname.slice(ROUTE_PREFIX.length + 1)
-        : ''
-      if (method === '' || method.includes('/')) {
-        writeError(res, 404, 'not-found', `未知接口 "${method}"`)
-        return
-      }
-      if (method === 'state') {
-        if (req.method !== 'GET' && req.method !== 'POST') {
-          writeError(res, 405, 'method-error', 'method not allowed')
-          return
-        }
-        handleState(res)
-        return
-      }
-      if (req.method !== 'POST') {
+  /**
+   * The HTTP methods the plugin serves; kept in one place because the route
+   * registration has two shapes (see below).
+   */
+  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset']
+
+  /** One request → one response; the dispatcher owns path parsing and the fence. */
+  const routeHandler = async (req, res) => {
+    if (!isTrustedRequest(req, trustedHostsOf())) {
+      writeError(res, 403, 'forbidden', 'forbidden')
+      return
+    }
+    const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
+    const method = pathname.startsWith(`${ROUTE_PREFIX}/`)
+      ? pathname.slice(ROUTE_PREFIX.length + 1)
+      : ''
+    if (method === '' || method.includes('/')) {
+      writeError(res, 404, 'not-found', `未知接口 "${method}"`)
+      return
+    }
+    if (method === 'state') {
+      if (req.method !== 'GET' && req.method !== 'POST') {
         writeError(res, 405, 'method-error', 'method not allowed')
         return
       }
+      handleState(res)
+      return
+    }
+    if (req.method !== 'POST') {
+      writeError(res, 405, 'method-error', 'method not allowed')
+      return
+    }
+    try {
+      if (method === 'ask') await handleAsk(req, res)
+      else if (method === 'cancel') await handleCancel(req, res)
+      else if (method === 'config') await handleConfig(req, res)
+      else if (method === 'reset') handleReset(req, res)
+      else writeError(res, 404, 'not-found', `未知接口 "${method}"`)
+    } catch (error) {
+      const wire = toWireError(error)
+      ctx.logger?.warn?.(`[selection-followup] ${method} 处理失败：`, wire.message)
+      if (!res.headersSent) writeError(res, 500, wire.code, wire.message)
+      else if (!res.writableEnded) res.end()
+    }
+  }
+
+  /**
+   * Register the API routes.
+   *
+   * `kind: 'prefix'` is the shape every version in the supported range
+   * understands, but a route kind is a composition contract rather than a
+   * promise, so a refusal degrades to one exact route per method instead of
+   * losing the API entirely (the handler parses the same URL either way).
+   */
+  const registerRoutes = () => {
+    const disposers = []
+    try {
+      disposers.push(ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler: routeHandler }))
+      return () => { for (const dispose of disposers) dispose() }
+    } catch (error) {
+      ctx.logger?.warn?.(`[selection-followup] 前缀路由注册失败，改用逐方法精确路由：${String(error?.message ?? error)}`)
+    }
+    for (const method of API_METHODS) {
       try {
-        if (method === 'ask') await handleAsk(req, res)
-        else if (method === 'cancel') await handleCancel(req, res)
-        else if (method === 'config') await handleConfig(req, res)
-        else if (method === 'reset') handleReset(req, res)
-        else writeError(res, 404, 'not-found', `未知接口 "${method}"`)
+        disposers.push(ctx.webServer.register({
+          kind: 'exact',
+          path: `${ROUTE_PREFIX}/${method}`,
+          handler: routeHandler,
+        }))
       } catch (error) {
-        const wire = toWireError(error)
-        ctx.logger?.warn?.(`[selection-followup] ${method} 处理失败：`, wire.message)
-        if (!res.headersSent) writeError(res, 500, wire.code, wire.message)
-        else if (!res.writableEnded) res.end()
+        ctx.logger?.warn?.(`[selection-followup] 路由 ${method} 注册失败：${String(error?.message ?? error)}`)
       }
-    },
-  }), `selection-followup: ${ROUTE_PREFIX} routes`)
+    }
+    return () => { for (const dispose of disposers) dispose() }
+  }
+
+  ctx.effect(registerRoutes, `selection-followup: ${ROUTE_PREFIX} routes`)
 
   ctx.logger?.info?.(`[selection-followup] host ready at ${ROUTE_PREFIX}（v${PLUGIN_VERSION}）`)
 }

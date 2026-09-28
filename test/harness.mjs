@@ -134,9 +134,13 @@ export function makeHostCtx(options = {}) {
     routes,
     listeners,
     log,
-    /** Feed one event to every listener (the plugin's stream bridge). */
-    emit(event, payload) {
-      for (const listener of [...(listeners.get(event) ?? [])]) listener(payload)
+    /**
+     * Feed one event to every listener. Variadic because core events differ:
+     * `agent/assistant-stream` carries one payload object, while
+     * `session/event` carries `(session, event)`.
+     */
+    emit(event, ...args) {
+      for (const listener of [...(listeners.get(event) ?? [])]) listener(...args)
     },
     /** The single registered route. */
     route() {
@@ -267,59 +271,100 @@ export async function callRoute(harness, path, options = {}) {
 /**
  * A subagents service double.
  * @param {{emit: Function, frames?: string[], delayMs?: number, chunksPerFrame?: number,
- *   startError?: Error, stopReason?: string, providerNames?: string[]}} options
+ *   startError?: Error, stopReason?: string, providerNames?: string[],
+ *   capabilities?: Record<string, boolean>|null, localAgent?: boolean}} options
+ *   `capabilities` mirrors a real provider's advertisement; `null` means this
+ *   DSH version has no capability face at all, so the plugin must send no
+ *   optional start field. `localAgent: false` models an older `SubagentRun`
+ *   with no live-child handle, whose frames therefore cannot be attributed.
  */
 export function makeSubagentEngine(options) {
   const emit = options.emit
   const frames = options.frames ?? ['这是', '一个', '流式', '答案']
   const delayMs = options.delayMs ?? 0
   const providerNames = options.providerNames ?? ['spawn']
+  const capabilities = options.capabilities === undefined
+    ? { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }
+    : options.capabilities
+  const withLocalAgent = options.localAgent !== false
   const starts = []
   const disposed = []
   const live = new Set()
   const service = {
     list: () => [...providerNames],
-    getProvider: name => (providerNames.includes(name) ? { name } : undefined),
+    getProvider: name => (providerNames.includes(name)
+      ? {
+        name,
+        inheritsParentContext: false,
+        ...(capabilities === null ? {} : { capabilities }),
+      }
+      : undefined),
     async start(name, request) {
       starts.push({ name, request })
       if (options.startError !== undefined) throw options.startError
       const id = `child-${starts.length}`
-      const child = { id, session: { id } }
+      const child = { id, session: { id, header: { id } } }
+      // Without a live-child handle the frames cannot be attributed to this
+      // run (an older provider whose run/session ids do not line up), which is
+      // exactly the case the non-streaming fallback must cover.
+      const frameAgent = withLocalAgent ? child : { id: 'foreign-child', session: { id: 'foreign-child' } }
       live.add(id)
       const signal = request.signal
+      // `frameMode` models the two streaming surfaces the host supports:
+      // process-local frames (0.1.3+) and the durable `assistant/chunk` session
+      // event that only 0.1.2-rc.1 logs.
+      const frameMode = options.frameMode ?? 'frames'
       const result = (async () => {
         try {
           for (let index = 0; index < frames.length; index += 1) {
             await new Promise(resolve => setTimeout(resolve, delayMs))
             if (signal?.aborted === true) return { output: [], stopReason: 'aborted' }
-            emit('agent/assistant-stream', {
-              agent: child,
-              frame: { type: 'start', attemptId: `attempt-${id}`, turn: 1, step: 1 },
-            })
-            emit('agent/assistant-stream', {
-              agent: child,
-              frame: {
-                type: 'chunk',
-                attemptId: `attempt-${id}`,
-                index,
-                time: Date.now(),
-                chunk: { type: 'text-delta', index: 0, text: frames[index] },
-              },
-            })
-            if (options.reasoningPrefix !== undefined) {
+            if (frameMode === 'frames') {
               emit('agent/assistant-stream', {
-                agent: child,
+                agent: frameAgent,
+                frame: { type: 'start', attemptId: `attempt-${id}`, turn: 1, step: 1 },
+              })
+              emit('agent/assistant-stream', {
+                agent: frameAgent,
                 frame: {
                   type: 'chunk',
                   attemptId: `attempt-${id}`,
-                  index: index + 1000,
+                  index,
                   time: Date.now(),
-                  chunk: { type: 'reasoning-delta', index: 1, text: `${options.reasoningPrefix}${index}` },
+                  chunk: { type: 'text-delta', index: 0, text: frames[index] },
                 },
+              })
+              if (options.reasoningPrefix !== undefined) {
+                emit('agent/assistant-stream', {
+                  agent: frameAgent,
+                  frame: {
+                    type: 'chunk',
+                    attemptId: `attempt-${id}`,
+                    index: index + 1000,
+                    time: Date.now(),
+                    chunk: { type: 'reasoning-delta', index: 1, text: `${options.reasoningPrefix}${index}` },
+                  },
+                })
+              }
+            } else if (frameMode === 'chunks') {
+              emit('session/event', child.session, {
+                type: 'assistant/chunk',
+                seq: index,
+                time: Date.now(),
+                data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: frames[index] } },
               })
             }
           }
-          emit('agent/assistant-stream', { agent: child, frame: { type: 'end', stopReason: options.stopReason ?? 'completed' } })
+          if (frameMode === 'frames') {
+            emit('agent/assistant-stream', { agent: frameAgent, frame: { type: 'end', stopReason: options.stopReason ?? 'completed' } })
+          } else if (frameMode === 'chunks' && options.reasoningPrefix !== undefined) {
+            emit('session/event', child.session, {
+              type: 'assistant/chunk',
+              seq: frames.length,
+              time: Date.now(),
+              data: { turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 1, text: options.reasoningPrefix } },
+            })
+          }
           if (options.stopReason !== undefined && options.stopReason !== 'completed') {
             return { output: [], stopReason: options.stopReason, diagnostic: 'engine said no' }
           }
@@ -333,7 +378,7 @@ export function makeSubagentEngine(options) {
       })()
       return {
         id,
-        localAgent: child,
+        ...(withLocalAgent ? { localAgent: child } : {}),
         result,
         async dispose() {
           disposed.push(id)
@@ -521,10 +566,14 @@ export function loadClientModule(options = {}) {
 
 /**
  * Build a fake client-side Cordis context that records slot registrations.
- * @param {{services?: Record<string, unknown>}} [options]
+ * @param {{services?: Record<string, unknown>, absentSlots?: Iterable<string>}} [options]
+ *   `absentSlots` lists slot keys this composition never declares: their
+ *   `inject` callback never runs, which is how an older shell without that key
+ *   behaves — and what the registration ladder must survive.
  */
 export function makeClientCtx(options = {}) {
   const services = { ...(options.services ?? {}) }
+  const absentSlots = new Set(options.absentSlots ?? [])
   const registrations = []
   const injections = []
   const effects = []
@@ -545,6 +594,7 @@ export function makeClientCtx(options = {}) {
     slots: {
       inject(key, callback) {
         injections.push(key)
+        if (absentSlots.has(key)) return () => {}
         callback()
         return () => {}
       },

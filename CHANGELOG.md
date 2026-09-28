@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.1
+
+**主题：把"版本适配"从字段笔记变成可验证的适配。**
+
+- 新增 `tools/compat-probe.mjs`：从 npm 拉取 **13 个 DSH 版本**（0.1.2-rc.1 → 0.1.7-rc.2）
+  × **12 个相关包**的已发布产物，解包后按标记字符串判定能力，输出矩阵（结果写进 README §7）。
+  据此确认的缺口与适配：
+  - **原生右侧栏**（0.1.2 / 0.1.3 缺）→ 承载面探测链已有降级；
+  - **主对话提交**（≤0.1.6-alpha.1 既无 `using` 也无 `retain`）→ 新增四级提交阶梯
+    `using → retain+release → 槽位标准 prop inputActions(setDraft+submit) → 仅写草稿`，逐级探测并回报实际生效的一级；
+  - **归档会话门**（仅 0.1.7-alpha.1+ 存在）→ 修正上一版引入的误伤：不再对归档父会话一刀切拒绝，
+    改为优先挑未归档代理、只剩归档候选时照常尝试并在 `start` 事件标注 `parentArchived`；
+  - **流式帧**（0.1.2-rc.1 无 `agent/assistant-stream`）→ 新增第二条流式源，桥接该版本持久化的
+    `assistant/chunk` 会话事件，与帧源互斥（先到者生效，绝不重复累计文本），并在 `done` 里给出 `streamSource`。
+- **新增槽位阶梯**：浮层 / 设置页 / 会话采集各自在多个等价 `list` 槽位间回退（先到者胜，更好的槽位后到会顶掉兜底），
+  诊断里记录真实落点；`single` 槽位一律不碰（避免替换宿主 UI）。
+- **区域锚点缺失时不再静默失效**：检测不到 `data-slot` 时停用区域过滤并在自检里说明（原先 `captureZones:chat` 会永远不触发）。
+- **provider 能力门控**：只发送 provider 声明支持的启动字段（`capabilities.persona/toolFilter`），
+  `persona` 不支持时内联进提示词，`toolFilter` 不支持时在卡片上明说"本次继承了会话工具"。
+- **路由注册降级**：`prefix` 路由被拒时退化为逐方法精确路由。
+- 自测从 236 项扩到 **276 项**（verify 53 / contract 105 / smoke 118），新增用例覆盖上面每一条降级路径。
+
 ## 1.0.0
 
 首个版本（发布名 `dsh-selection-followup`：npm 上的 `dsh-selection-ask` 已被他人占用）。

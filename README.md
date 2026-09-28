@@ -170,28 +170,60 @@ ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
 
 ---
 
-## 七、DSH 版本适配（近 10 个版本）
+## 七、DSH 版本适配（近 10 余个版本，**证据来自已发布产物**）
 
-本机实测版本：**0.1.7-rc.2**（`@deepseek-ai/dsh`）。下表把"实测"与"按上游字段笔记/能力探测推断"分开标注，不做无依据的兼容承诺。
+不是靠字段笔记，而是把每个版本要用的包从 npm 拉下来、解包、按标记字符串判定：
 
-| DSH 版本 | 对本插件的影响 | 本插件的写法 | 依据 |
-|---|---|---|---|
-| 0.1.7-rc.2（本机） | 全部路径可用 | 默认组合 | ✅ 实测：`/state`、流式作答、槽位注册、`shell.overlay` 均按设计工作 |
-| 0.1.7-rc.1 / 0.1.7-alpha.2 / 0.1.7-alpha.1 | 右侧栏提供"当前挂载会话"观测 `ISidebarRight.mounted` | 会话 id 采集只用它作**第三顺位**，主路径是 `conversation.input.right` 槽位注入的 `sessionId` | ⚠️ 上游字段笔记（dsh-better-sidebar 源码注释），未逐版本实测 |
-| 0.1.6-alpha.2 / 0.1.6-alpha.1 | 右侧栏 guide 条目 `id` 变为**必填且唯一** | 注册时始终带 `guide[].id`，旧版本多一个字段也不会出错 | ⚠️ 上游字段笔记 |
-| 0.1.5-rc.3 / 0.1.5-rc.2 / 0.1.5-rc.1 | 0.1.5 起右侧栏成为**原生**列；浮窗方案退场 | 承载面顺序固定为 原生 → better-sidebar → 内置浮层，不假设右侧栏一定存在 | ⚠️ 上游字段笔记 + 能力探测 |
-| 0.1.5-alpha.2 / 0.1.5-alpha.1 | 0.1.5 起取消持久化的 `assistant/chunk`，改为**进程内** `agent/assistant-stream`（start/chunk/end） | 同时实现两条：订阅流式帧（有则逐字），并在 `run.result` 结算时用完整文本兜底；`done.streaming=false` 时卡片会明说"该版本未提供流式帧" | ⚠️ 上游字段笔记；本机实测帧路径 |
-| 0.1.3-alpha.2 | 无流式帧 | 同上兜底：答案一次性返回，功能不缺失 | ⚠️ 探测式兼容（未实测该版本） |
-| 0.1.2-rc.1 / 0.1.2-alpha.5 / 0.1.2-alpha.4 | `ctx.connection.api` 在 0.1.2-alpha.1 起被 Remote 网关取代 | 完全不使用 `ctx.connection`；只用自己的 HTTP 路由 | ⚠️ 上游字段笔记 |
-| 0.1.2-alpha.3 / 0.1.2-alpha.2 | 同上 | 同上 | ⚠️ 上游字段笔记 |
+```powershell
+node tools/compat-probe.mjs                        # 13 个版本 × 12 个包
+node tools/compat-probe.mjs --json tools/.cache/matrix.json
+```
 
-**跨版本安全的三条硬规则**（实现上已成定式）：
+脚本会 `npm pack` 相应包到 `tools/.cache/tarballs/`（已在 .gitignore），用内置 tar 读取器在内存里搜索，
+然后打印下面的能力矩阵。**矩阵里的 ❌ 就是插件必须降级的点**，而插件对每一个 ❌ 都有对应分支。
 
-1. **只用声明式注入等依赖**：宿主半 `inject: ['webServer']`，客户端半 `inject: ['slots']`；
-   其余服务一律 `ctx.get(name)` 现取现判，取不到就降级——老版本少一个服务不会让插件 fiber 失败。
-2. **不新增会话事件类型**：插件不往会话日志写任何自有事件，只读进程内的流式帧与最终结果，避免旧读者拒绝重开会话。
-3. **不读别人的 DOM 结构做布局**：区域判定只依赖 harness 自己渲染的 `data-slot` 出口标记（`dsh-client-ui-renderer` 给每个槽位出口打的），
-   槽位名是公开 API，版本漂移只会让区域归类变粗，不会让功能失效。
+### 7.1 能力矩阵（0.1.2-rc.1 → 0.1.7-rc.2）
+
+| 能力（依赖的 API） | 0.1.2-rc.1 | 0.1.3-alpha.2 | 0.1.5-alpha.1 … 0.1.5-rc.3 | 0.1.6-alpha.1 | 0.1.6-alpha.2 | 0.1.7-alpha.1 … 0.1.7-rc.2 |
+|---|---|---|---|---|---|---|
+| 客户端产物协议 `window.__ModuleLoader__.load` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `shell.overlay`（浮层/触发按钮挂载点） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `conversation.input.right`（会话 id 采集） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `settings.section`（设置页） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `data-slot` 出口锚点（区域归类） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 原生右侧栏 `sidebarRightTabs` + `sidebar.right.pane.tab` | **❌** | **❌** | ✅ | ✅ | ✅ | ✅ |
+| 主对话提交 `sessions.using(target, options, operation)` | **❌** | **❌** | **❌** | **❌** | ✅ | ✅ |
+| 主对话提交 `sessions.retain(target, options)` | **❌** | **❌** | **❌** | **❌** | ✅ | ✅ |
+| 归档会话门（拒绝归档血统的每一步） | **❌** | **❌** | **❌** | **❌** | **❌** | ✅ |
+| 进程内流式帧 `agent/assistant-stream` | **❌** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 持久化分块 `assistant/chunk`（会话事件） | **✅** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 子代理 `subagents.start` + `SubagentRun.localAgent` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| provider 能力面（`toolFilter` / `persona`） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `tools.schemas()` + `tools.restrict()` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 宿主路由 `webServer.register({kind:'prefix'})` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### 7.2 每个 ❌ 对应的适配（都在代码里）
+
+| 缺口 | 适配实现 | 在真机/测试里的表现 |
+|---|---|---|
+| 0.1.2 / 0.1.3 没有原生右侧栏 | 承载面探测链：原生右侧栏 → `dsh-better-sidebar` → **内置浮层卡片**；不可用的一律不计入 `pickSurface` | `contract-test` 断言 `pickSurface('auto')` 在无插件组合下落到 `flow`；`auto` 在可用时优先原生 |
+| ≤0.1.6-alpha.1 没有 `using`/`retain` | 主对话提交**四级阶梯**（调用时逐级探测，不查版本表）：`sessions.using` → `sessions.retain`+`release` → 槽位标准 prop `inputActions`（`setDraft` + `submit`）→ 仅写入输入框并明确提示"请按 Enter" | `contract-test` 逐级断言 `via`：`sessions.using` / `sessions.retain`（并断言 `release()` 被调用）/ `inputActions.submit` / `composer.draft` / 全无时抛 `no-main-carrier` |
+| ≤0.1.6-alpha.2 没有归档门 | 不再因"父会话已归档"直接拒绝：仍优先挑未归档代理，但只有归档候选时**照常尝试**，并在 `start` 事件里带 `parentArchived:true`；真被门拒绝时把空 turn 的 `refusal` 翻译成 `blocked-step` 并说明原因 | `smoke-test`：全归档组合仍能拿到答案；`refusal` 用例断言 `code=blocked-step` 且文案提到归档 |
+| 0.1.2-rc.1 没有进程内帧 | 增加**第二条流式源**：订阅 `session/event` 的持久化 `assistant/chunk`（`{turn,step,chunk}`，形状取自该版本自己的 `chunk-rows.js`），与帧源**互斥**（先说话的那个生效，绝不重复计一次文本） | `smoke-test`：`frameMode:'chunks'` 用例断言 delta 拼出完整答案、`streaming:true`、`streamSource:'chunks'`；同时断言两源并存时文本不重复 |
+| provider 能力面差异 | 只发 provider **声明支持**的启动字段（`capabilities.persona/toolFilter`）；`persona` 不支持时**内联进提示词**；`toolFilter` 不支持时在 `start` 事件里报 `toolFilter:'unsupported'`，卡片明说"本 provider 不支持工具白名单" | `smoke-test`：`capabilities:null` 与 `{toolFilter:false,persona:true}` 两种 provider 的字段断言 |
+| 槽位键在老版本可能不同 | 每个注册走**槽位阶梯**（都是 `list` 槽，绝不碰 `single` 槽以免替换宿主 UI）：浮层 `shell.overlay → conversation.input.dock → conversation.composer.dock`；设置页 `settings.section → settings.plugins.tab`；会话采集 `conversation.input.right → conversation.input.left → composer.dock → input.dock`。**先到者胜**，更好的槽位后到会顶掉兜底 | `contract-test`：`absentSlots` 模拟未声明的槽位，断言注册落到下一级且诊断里记录了落点 |
+| 没有 `data-slot` 锚点 | 检测到选区但槽位路径为空 → 判定"区域锚点不可用"，**停用区域过滤**（否则 `captureZones:chat` 会静默失效）并在设置页自检里标明 | `contract-test`：`shouldOffer(..., {anchors:false})` 断言放宽且返回 `zoneFiltering:'unavailable'` |
+| 路由 kind 不被接受 | `prefix` 注册失败 → 退化为**逐方法精确路由**（`state/ask/cancel/config/reset`），处理器不变 | 前缀路由由 smoke 全流程覆盖；退化分支为纯 fallback（未在真机触发过） |
+
+### 7.3 还没做真机验证的部分（如实标注）
+
+- 上表所有 ✅/❌ 都是**包内容层面的证据**（字符串/签名存在于该版本的发布产物），不等于"插件在该版本上跑起来过"。
+  唯一跑过真机的是 **0.1.7-rc.2**（见 §10.1 的实测记录）。
+- 在 0.1.2-rc.1 … 0.1.6-alpha.2 这几个版本上，我只验证了"所需 API 是否存在 + 插件有为缺失准备的分支"，
+  **没有**在那些版本上安装并启动过插件。
+- `inputActions` 作为会话槽位标准 prop：13 个版本的 `dsh-client-ui-conversation` 产物里都有该名字，
+  0.1.7-rc.2 的槽位目录也把它列为 `conversation.input.right` 的 standardProps；**更早版本是否真的把它下发给该槽位条目未验证**，
+  插件对此是探测式使用（取不到就走草稿降级）。
 
 ---
 
@@ -206,7 +238,7 @@ ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
 | **接口失败** | 逐层降级：子代理不可用 → 卡片错误 + 「改到主对话」；主对话发送不可用 → 草稿写入；再不可用 → 明确报错不静默 | `toWireError` / `askInMainConversation` |
 | **重复触发** | 同一选区 + 近似位置在 400ms 内只触发一次；同一卡片 id 的重复请求返回 `duplicate`；并发超限返回 `busy`（可重试） | `selectionSignature`、`runs.has(id)`、`maxConcurrentAsks` |
 | **流式中断** | 浏览器断开 / 点「停止作答」/ 超时 → `AbortController` 取消子代理：有部分文本时以 `done{aborted:true}` 收尾并保留已流出的内容（卡片显示「已停止」），一个字都没流出时才用 `error.code='aborted'` | `handleAsk` 的 `res.on('close')` 判定、`sideTimeoutMs` |
-| **父会话已归档** | 宿主的归档门会拒绝**整条子代理血统**里的每一步（表现为「没有发起任何模型请求的空 turn」）。插件在选择父代理时跳过归档会话；若全部候选都已归档，直接返回 `parent-archived` 而不是起一个注定失败的 run | `resolveParent` / `archivedSessionIds`（host） |
+| **父会话已归档** | 归档门会拒绝**整条子代理血统**里的每一步（表现为「没有发起任何模型请求的空 turn」），但它只存在于 0.1.7-alpha.1+。插件优先挑未归档代理；只剩归档候选时**照常尝试**并在 `start` 事件里带 `parentArchived:true`（旧版本本来就能正常作答，一刀切拒绝会误伤 0.1.2–0.1.6） | `resolveParent` / `archivedSessionIds`（host） |
 | **步骤被宿主拒绝** | 子代理接缝把这种空 turn 记为 `refusal`；插件翻译成 `blocked-step`，文案点明常见原因（会话已归档）并给出「改到主对话」 | `ask()` 的终局映射（host） |
 | **卸载** | 插件卸载时取消全部进行中的作答、注销槽位、移除 DOM 监听、断开流式桥 | `ctx.effect` + `disposers` |
 | **跨站请求** | 插件路由带信任围栏：Host 必须是回环或配置的可信域，`sec-fetch-site: cross-site` 或跨域 `Origin` 一律 403 | `isTrustedRequest`（host） |
@@ -220,8 +252,7 @@ ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
 | `duplicate` | 同一卡片 id 已有在跑的任务 | 否 | 等它结束 |
 | `no-side-engine` | 没有可用的子代理 provider | 否 | 「改到主对话」 |
 | `no-parent` | 没有活动会话代理 | 否 | 「改到主对话」 |
-| `parent-archived` | 候选父会话都已归档（子代理会被宿主拒绝） | 否 | 在未归档会话里提问，或「改到主对话」 |
-| `blocked-step` | 这一步被宿主的 `agent/pre-step` 拒绝（未发起请求） | 是 | 换会话或「改到主对话」 |
+| `blocked-step` | 这一步被宿主的 `agent/pre-step` 拒绝（未发起请求）；0.1.7+ 上最常见的原因是会话已归档 | 是 | 换会话或「改到主对话」 |
 | `aborted` | 被取消或超时，且没有已流出的内容 | 是 | 重试 |
 | `engine-error` / 其它 | 子代理启动、模型调用或传输失败 | 是 | 重试或改到主对话 |
 
@@ -277,7 +308,17 @@ node test/smoke-test.mjs      # 端到端：流式/截断/取消/持久化/失�
 ```
 
 三个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模：verify 53 项 + contract 83 项 + smoke 100 项 = **236 项全部通过**。
+当前规模：verify 53 项 + contract 105 项 + smoke 118 项 = **276 项全部通过**。
+
+### 10.2 版本能力探测（§7 矩阵的来源）
+
+```powershell
+node tools/compat-probe.mjs                       # 13 个版本 × 12 个包，逐个 npm pack 后按标记判定
+node tools/compat-probe.mjs --json tools/.cache/matrix.json
+node tools/compat-probe.mjs 0.1.7-rc.2            # 也可只探某个版本
+```
+
+首次运行会下载约 250 个包到 `tools/.cache/tarballs/`（已 gitignore，之后走缓存）；输出的矩阵就是 README §7 的表。
 
 ### 10.1 对已安装实例做真实联调（本机实测通过）
 
@@ -369,6 +410,8 @@ npm publish --access public
 4. **主对话承载的"发送"依赖客户端会话服务**：`ctx.sessions.using(...).prompt(...)` 在会话未被保留/不可用时降级为草稿写入，
    降级时会在卡片上明确显示，需要手动按 Enter。
 5. **宿主半代码更新必须重启 DSH**：本机实测 `set_plugin` 关开与 `remove_bundle` + `install_bundle` 都不会让已加载的模块重新读盘。
-   本仓库当前文件比运行中的宿主模块新（新增了「跳过归档父会话 / blocked-step 翻译 / capabilities.parent」），
-   **重启后**这些改动才生效；`/state` 的 `capabilities.parent` 字段可以直接确认是否已加载新版。
+   本仓库当前文件比运行中的宿主模块新（1.0.1 的「归档父会话不再一刀切 / 持久化 chunk 流式源 / 能力门控 / 路由降级」），
+   **重启后**这些改动才生效；`/state` 的 `version` 与 `capabilities.parent` 字段可以直接确认是否已加载新版。
+6. **除 0.1.7-rc.2 外，其余版本只做了产物层验证**：见 §7.3——插件在 0.1.2-rc.1 … 0.1.6-alpha.2 上安装启动过**没有**得到验证，
+   验证到的是"这些版本缺哪些 API + 插件对每个缺失都有分支"，分支本身由 276 项自测覆盖。
 

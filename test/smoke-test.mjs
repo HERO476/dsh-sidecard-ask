@@ -26,7 +26,7 @@ const report = createReporter('smoke')
 async function boot({ patch = {}, engineOptions = {}, services = {} } = {}) {
   const host = await import(hostModuleUrl())
   const harness = makeHostCtx({ services })
-  const engine = makeSubagentEngine({ emit: (event, payload) => harness.emit(event, payload), ...engineOptions })
+  const engine = makeSubagentEngine({ emit: (event, ...args) => harness.emit(event, ...args), ...engineOptions })
   // An explicit service always wins (including an explicit `undefined`), so a
   // test can hand the plugin a slimmer composition on purpose.
   if (!Object.hasOwn(services, 'subagents')) harness.services.subagents = engine.service
@@ -122,6 +122,43 @@ report.ok(
   !a.engine.starts[0].request.toolFilter.allow.includes('write'),
   'mutating tools are excluded from the read-only filter',
 )
+report.ok(
+  typeof a.engine.starts[0].request.persona === 'string' && a.engine.starts[0].request.persona.includes('selection-answer'),
+  'the persona travels as a provider field when supported',
+)
+report.equal(events[0].data.toolFilter, 'applied', 'the start event reports the read-only guard as applied')
+report.equal(events[0].data.persona, 'section', 'the start event reports the persona carrier')
+
+// A provider that advertises NO capabilities must receive no optional field at
+// all — an unsupported field fails `subagents.start` outright — so the persona
+// is inlined into the prompt and the missing tool guard is reported.
+const bareProvider = await boot({ engineOptions: { capabilities: null } })
+const bareAsk = await callRoute(bareProvider.harness, '/ask', {
+  body: { id: 'ask-bare', question: 'q', selection: 'text' },
+})
+const bareStart = bareAsk.events()[0]
+report.equal(Object.hasOwn(bareProvider.engine.starts[0].request, 'toolFilter'), false, 'a capability-less provider gets no toolFilter')
+report.equal(Object.hasOwn(bareProvider.engine.starts[0].request, 'persona'), false, 'a capability-less provider gets no persona field')
+report.ok(bareProvider.engine.promptOf(0).startsWith('You are DSH'), 'the persona is inlined into the prompt instead')
+report.equal(bareStart.data.toolFilter, 'unsupported', 'the start event admits the read-only guard is unavailable')
+report.equal(bareStart.data.persona, 'prompt', 'the start event reports the inlined persona')
+
+// A provider that supports the fields explicitly false must be treated the same.
+const partial = await boot({ engineOptions: { capabilities: { toolFilter: false, persona: true } } })
+await callRoute(partial.harness, '/ask', { body: { id: 'ask-partial', question: 'q', selection: 'text' } })
+report.equal(Object.hasOwn(partial.engine.starts[0].request, 'toolFilter'), false, 'toolFilter is withheld when unsupported')
+report.ok(typeof partial.engine.starts[0].request.persona === 'string', 'a supported persona is still sent')
+
+// An older run with no live child still completes: the answer arrives once
+// from `run.result` and the stream honestly reports `streaming: false`.
+const noChild = await boot({ engineOptions: { localAgent: false } })
+const noChildAsk = await callRoute(noChild.harness, '/ask', {
+  body: { id: 'ask-nochild', question: 'q', selection: 'text' },
+})
+const noChildDone = noChildAsk.events().at(-1)
+report.equal(noChildDone.event, 'done', 'a run without a live child still settles')
+report.equal(noChildDone.data.streaming, false, 'it honestly reports that nothing streamed')
+report.equal(noChildDone.data.text, '这是一个流式答案', 'the full text comes from the settled result')
 
 // A composition without a tool registry must omit the filter entirely: an
 // allow-list containing an unknown name makes `tools.restrict()` refuse the
@@ -289,8 +326,10 @@ const archivedAsk = await callRoute(archiving.harness, '/ask', {
 report.equal(archivedAsk.events().at(-1).event, 'done', 'an archived root does not become the parent')
 report.equal(archiving.engine.starts[0].request.parent.id, 'live-root', 'the non-archived agent was chosen')
 
-// Every candidate archived → refuse with an explanation instead of starting a
-// run the host would block.
+// Every candidate archived → the run is still ATTEMPTED with a flag, because
+// the archived-session gate that rejects such a child's steps exists only from
+// 0.1.7-alpha.1 on (probed against the published packages); refusing outright
+// would break 0.1.2 – 0.1.6-alpha.2, where an archived parent answers normally.
 const allArchived = await boot({
   services: {
     workspaceRegistry: { archivedSessionIds: ['archived-root'] },
@@ -300,9 +339,31 @@ const allArchived = await boot({
 const allArchivedAsk = await callRoute(allArchived.harness, '/ask', {
   body: { id: 'ask-all-archived', question: 'q', selection: 'text' },
 })
-report.equal(allArchivedAsk.events().at(-1).data.code, 'parent-archived', 'an all-archived composition is refused')
-report.equal(allArchivedAsk.events().at(-1).data.parentId, 'archived-root', 'the refusal names the parent it refused')
-report.equal(allArchived.engine.starts.length, 0, 'no child is started when every parent is archived')
+report.equal(allArchivedAsk.events()[0].data.parentArchived, true, 'the start event flags an archived parent')
+report.equal(allArchivedAsk.events().at(-1).event, 'done', 'an archived-only composition still gets an answer')
+report.equal(allArchived.engine.starts.length, 1, 'the run was attempted rather than refused')
+
+// 0.1.2-rc.1 logs durable `assistant/chunk` events and publishes no frames.
+const chunked = await boot({ engineOptions: { frameMode: 'chunks' } })
+const chunkedAsk = await callRoute(chunked.harness, '/ask', {
+  body: { id: 'ask-chunks', question: 'q', selection: 'text' },
+})
+const chunkedEvents = chunkedAsk.events()
+report.equal(
+  chunkedEvents.filter(event => event.event === 'delta').map(event => event.data.text).join(''),
+  '这是一个流式答案',
+  'the durable-chunk source streams the answer',
+)
+report.equal(chunkedEvents.at(-1).data.streaming, true, 'durable chunks count as streaming')
+report.equal(chunkedEvents.at(-1).data.streamSource, 'chunks', 'the done event names the chunk source')
+
+// A build that publishes frames must never double-count the same text.
+const bothSources = await boot({ engineOptions: { frameMode: 'chunks', localAgent: true } })
+report.equal(bothSources.engine.starts.length, 0, 'no run is started before the ask')
+const bothAsk = await callRoute(bothSources.harness, '/ask', {
+  body: { id: 'ask-both', question: 'q', selection: 'text' },
+})
+report.equal(bothAsk.events().at(-1).data.text, '这是一个流式答案', 'the answer text is never duplicated')
 
 // A step the host blocks surfaces as `refusal` from the subagent seam; the
 // message must explain it instead of leaking the bare stop reason.

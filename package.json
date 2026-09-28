@@ -1,6 +1,6 @@
 {
   "name": "dsh-selection-followup",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DSH 划词追问：在聊天区与任务区选中文本，就地追问；答案可回到主对话，或在一个独立的侧边卡片里流式呈现。",
   "type": "module",
   "main": "index.js",

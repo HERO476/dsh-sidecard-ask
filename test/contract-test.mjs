@@ -34,7 +34,7 @@ const hostSource = readFileSync(HOST_ENTRY, 'utf8')
 
 const harness = makeHostCtx({})
 const engine = makeSubagentEngine({
-  emit: (event, payload) => harness.emit(event, payload),
+  emit: (event, ...args) => harness.emit(event, ...args),
   frames: ['**Pro** ', 'contract ', 'answer'],
 })
 harness.services.subagents = engine.service
@@ -307,5 +307,148 @@ report.equal(bareClient.module.api.pure.pickSurface('native-rightbar').adapter.k
 // With both services present, `auto` prefers the shipped right rail.
 report.equal(pure.pickSurface('auto').adapter.kind, 'native-rightbar', 'auto prefers the native right rail when present')
 report.equal(pure.pickSurface('better-sidebar').adapter.kind, 'better-sidebar', 'an explicit surface is honoured when available')
+
+console.log('\nzone anchors and slot ladders')
+// Without the harness's `data-slot` anchors a region filter can never match;
+// the decision must relax instead of silently swallowing every selection.
+const chatOnly = { trigger: 'selection', minChars: 1, captureZones: 'chat', showInUnclassified: false }
+const sample = { text: 'some selected text', zone: 'other' }
+report.equal(pure.shouldOffer(sample, chatOnly, { anchors: true }).ok, false, 'a region filter still applies when anchors exist')
+report.equal(pure.shouldOffer(sample, chatOnly, { anchors: false }).ok, true, 'the region filter is dropped when anchors are missing')
+report.equal(pure.shouldOffer(sample, chatOnly, { anchors: false }).zoneFiltering, 'unavailable', 'the relaxed decision says why')
+report.equal(pure.shouldOffer({ text: '  ', zone: 'chat' }, chatOnly, { anchors: false }).ok, false, 'an empty selection is still refused')
+
+// A shell that never declares `shell.overlay` must fall through the ladder to
+// the next declared rung instead of losing the whole UI.
+const ladder = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+const ladderCtx = makeClientCtx({ absentSlots: ['shell.overlay', 'settings.section', 'conversation.input.right'] })
+ladder.module.apply(ladderCtx.ctx)
+report.ok(ladderCtx.find('shell.overlay', pure.IDS.overlay) === undefined, 'no registration lands in an undeclared slot')
+report.ok(ladderCtx.find('settings.section', pure.IDS.settings) === undefined, 'the settings ladder skips the undeclared rung')
+await new Promise(resolve => setTimeout(resolve, 1800))
+const landedOverlay = ladderCtx.find('conversation.input.dock', pure.IDS.overlay)
+const landedSettings = ladderCtx.find('settings.plugins.tab', pure.IDS.settings)
+const landedProbe = ladderCtx.find('conversation.input.left', pure.IDS.sessionProbe)
+report.ok(landedOverlay !== undefined, 'the overlay ladder falls through to the next declared rung')
+report.ok(landedSettings !== undefined, 'the settings ladder falls through as well')
+report.ok(landedProbe !== undefined, 'the session probe ladder falls through as well')
+report.equal(ladder.module.api.snapshot().slots.overlay, 'conversation.input.dock', 'the diagnostics record where the overlay landed')
+report.equal(ladder.module.api.snapshot().slots.settings, 'settings.plugins.tab', 'the diagnostics record the settings landing')
+
+console.log('\nmain-conversation submit ladder')
+// The submit API moved inside the supported range (`retain` before
+// 0.1.6-alpha.2, `using` from then on), so every rung is probed at call time
+// and each one must report which API actually carried the message.
+const ask = (ctx, extra = {}) => pure.askInMainConversation({
+  ctx,
+  sessionId: 'session-alpha',
+  selection: '选中的原文',
+  question: '为什么？',
+  zone: 'chat',
+  maxChars: 4000,
+  ...extra,
+})
+
+const usingCalls = []
+const usingCtx = {
+  get: name => (name === 'sessions' ? {
+    using: async (id, options, operation) => {
+      usingCalls.push({ id, source: options.source })
+      return operation({
+        binding: {
+          session: {
+            prompt: async (parts, mode) => {
+              usingCalls.push({ parts, mode })
+              return { ok: true }
+            },
+          },
+        },
+      })
+    },
+  } : undefined),
+}
+report.equal((await ask(usingCtx)).via, 'sessions.using', 'rung 1 uses the documented using() helper')
+report.equal(usingCalls[1].mode, 'queue', 'the message is queued like a user submission')
+
+const retainCalls = []
+const retainCtx = {
+  get: name => (name === 'sessions' ? {
+    retain: (id, options) => {
+      retainCalls.push({ id, source: options.source })
+      return {
+        ready: Promise.resolve(),
+        binding: {
+          session: {
+            prompt: async (parts) => {
+              retainCalls.push({ text: parts[0].text })
+              return { ok: true }
+            },
+          },
+        },
+        release: () => { retainCalls.push({ released: true }) },
+      }
+    },
+  } : undefined),
+}
+const retainResult = await ask(retainCtx)
+report.equal(retainResult.via, 'sessions.retain', 'rung 2 falls back to retain() when using() is absent')
+report.ok(retainCalls.some(call => call.released === true), 'the retained reference is always released')
+report.ok(retainCalls.find(call => call.text)?.text.includes('为什么？'), 'the composed prompt carries the question')
+
+const draftCalls = []
+const draftCtx = {
+  get: (name) => {
+    if (name === 'sessions') return { scope: () => ({ sessionId: 'session-alpha' }) }
+    if (name === 'conversation') {
+      return {
+        input: {
+          for: () => ({
+            state: { getSnapshot: () => ({ draft: '' }) },
+            setDraft: (text) => { draftCalls.push(text) },
+          }),
+        },
+      }
+    }
+    return undefined
+  },
+}
+const draftResult = await ask(draftCtx)
+report.equal(draftResult.via, 'composer.draft', 'the last rung writes the composer draft')
+report.ok(draftCalls[0].includes('> 选中的原文'), 'the draft carries the quoted selection')
+
+// Rung 3 uses the composer action face the harness hands to a session-scoped
+// slot entry as a standard prop.
+const actionCalls = []
+const actionProbe = clientCtx.find('conversation.input.right', pure.IDS.sessionProbe)
+expandTree(loadedClient.shim.React.createElement(actionProbe.component, {
+  sessionId: 'session-alpha',
+  inputActions: {
+    setDraft: text => { actionCalls.push({ setDraft: text }) },
+    submit: () => { actionCalls.push({ submit: true }) },
+  },
+}))
+loadedClient.shim.flushEffects()
+const actionResult = await ask({ get: () => undefined })
+report.equal(actionResult.via, 'inputActions.submit', 'rung 3 submits through the composer action face')
+report.ok(actionCalls.some(call => call.setDraft !== undefined), 'the draft is written before submitting')
+report.ok(actionCalls.some(call => call.submit === true), 'the composer submit action is invoked')
+
+// A module instance that has never captured a composer face is the real
+// "nothing can carry it" case; the one above legitimately keeps using the
+// action face it holds.
+let carrierError
+try {
+  await ladder.module.api.pure.askInMainConversation({
+    ctx: { get: () => undefined },
+    sessionId: 'session-alpha',
+    selection: 'x',
+    question: 'y',
+    zone: 'chat',
+    maxChars: 1000,
+  })
+} catch (error) {
+  carrierError = error
+}
+report.equal(carrierError?.code, 'no-main-carrier', 'with no carrier at all the failure is explicit, not silent')
 
 report.summary()

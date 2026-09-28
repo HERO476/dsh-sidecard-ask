@@ -3,6 +3,9 @@ node_modules/
 *.log
 *.tmp
 
+# Compat probe: downloaded tarballs and raw results (regenerate with tools/compat-probe.mjs)
+tools/.cache/
+
 # Local scratch
 .tmp/
 tmp-*.mjs

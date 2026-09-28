@@ -164,6 +164,11 @@ window.__ModuleLoader__.load({
         diagAgents: '活动会话代理',
         diagSurface: '当前侧边承载面',
         diagSession: '已识别会话',
+        diagZones: '区域锚点（data-slot）',
+        diagZonesMissing: '缺失，区域过滤已停用',
+        diagSlots: '槽位落点',
+        toolGuardUnavailable: '该 provider 不支持工具白名单，本次作答继承了当前会话的工具',
+        toolGuardInherited: '按配置继承当前会话的工具',
         diagUnreachable: '宿主接口不可达：{msg}',
         yes: '可用',
         no: '不可用',
@@ -258,6 +263,11 @@ window.__ModuleLoader__.load({
         diagAgents: 'Live session agents',
         diagSurface: 'Current side surface',
         diagSession: 'Session detected',
+        diagZones: 'Zone anchors (data-slot)',
+        diagZonesMissing: 'missing — region filtering disabled',
+        diagSlots: 'Slot landing',
+        toolGuardUnavailable: 'This provider supports no tool allow-list, so the answer inherited the session tools',
+        toolGuardInherited: 'Inherits the session tools, as configured',
         diagUnreachable: 'Host API unreachable: {msg}',
         yes: 'yes',
         no: 'no',
@@ -429,6 +439,10 @@ window.__ModuleLoader__.load({
         popover: null,
         cards: [],
         toast: null,
+        /** Whether the harness renders the `data-slot` zone anchors (null = unknown yet). */
+        zoneAnchors: null,
+        /** Which ladder rung each registration actually landed on. */
+        slots: {},
         revision: 0,
       },
       listeners: new Set(),
@@ -596,12 +610,17 @@ window.__ModuleLoader__.load({
      * Whether a candidate may raise the in-place trigger button.
      * @param {object|null} candidate - a `readSelection()` result.
      * @param {object} config - the effective config.
-     * @returns {{ok: boolean, reason?: string}} the decision.
+     * @param {{anchors?: boolean}} [options] - `anchors: false` means this DSH
+     *   build renders no `data-slot` marker, so the selection cannot be placed
+     *   in a region at all; the zone filter is then skipped instead of
+     *   silently suppressing every trigger (the settings page reports why).
+     * @returns {{ok: boolean, reason?: string, zoneFiltering?: string}} the decision.
      */
-    function shouldOffer(candidate, config) {
+    function shouldOffer(candidate, config, options) {
       if (candidate === null) return { ok: false, reason: 'empty' }
       if (config.trigger === 'shortcut') return { ok: false, reason: 'shortcut-only' }
       if (candidate.text.trim().length < config.minChars) return { ok: false, reason: 'too-short' }
+      if (options?.anchors === false) return { ok: true, zoneFiltering: 'unavailable' }
       const zones = config.captureZones
       const zone = candidate.zone
       if (zones === 'chat' && zone !== 'chat') return { ok: false, reason: 'zone' }
@@ -688,46 +707,95 @@ window.__ModuleLoader__.load({
 
     /**
      * Send one question into the main conversation.
-     * Three attempts, strongest first; the caller renders which one won.
-     * @returns {Promise<{mode: 'session'|'draft'}>}
+     *
+     * Four rungs, strongest first, each probed at call time — the submit API
+     * moved twice inside the supported range (`sessions.retain` before
+     * 0.1.6-alpha.2, `sessions.using` from then on), so a version table would
+     * rot. Every rung reports which one won, and the caller renders that.
+     *
+     * @returns {Promise<{mode: 'session'|'draft', via: string}>}
      */
     async function askInMainConversation(input) {
       const text = composeMainPrompt(input.selection, input.question, input.zone, input.maxChars)
       const sessions = input.ctx.get('sessions')
       const sessionId = input.sessionId ?? currentSessionId(input.ctx)
-      if (sessions !== undefined && typeof sessions.using === 'function' && sessionId !== null) {
-        const result = await sessions.using(
-          sessionId,
-          { source: 'gateway' },
-          async (reference) => {
-            const face = reference?.binding?.session
-            if (face === undefined || typeof face.prompt !== 'function') {
-              throw Object.assign(new Error('session face has no prompt()'), { code: 'no-session-face' })
-            }
-            return face.prompt([{ type: 'text', text }], 'queue')
-          },
-        )
-        if (result !== undefined && result.ok === false) {
+      const parts = [{ type: 'text', text }]
+      const accepted = (result) => {
+        if (result !== undefined && result !== null && result.ok === false) {
           throw Object.assign(new Error(result.error?.message ?? 'prompt rejected'), { code: 'prompt-rejected' })
         }
-        return { mode: 'session' }
       }
-      // Degradation 1: put it in the composer draft (the user presses Enter).
+
+      // Rung 1 — `using()`: the documented helper, present from 0.1.6-alpha.2.
+      if (sessionId !== null && typeof sessions?.using === 'function') {
+        const result = await sessions.using(sessionId, { source: 'gateway' }, async (reference) => {
+          const face = reference?.binding?.session
+          if (face === undefined || typeof face.prompt !== 'function') {
+            throw Object.assign(new Error('session face has no prompt()'), { code: 'no-session-face' })
+          }
+          return face.prompt(parts, 'queue')
+        })
+        accepted(result)
+        return { mode: 'session', via: 'sessions.using' }
+      }
+
+      // Rung 2 — `retain()` + explicit release: the same operation spelled out,
+      // and the only session-face submit path on 0.1.2-rc.1 … 0.1.6-alpha.1.
+      let scope
+      if (sessionId !== null && typeof sessions?.retain === 'function') {
+        const reference = sessions.retain(sessionId, { source: 'gateway' })
+        try {
+          if (reference?.ready !== undefined) await reference.ready
+          const face = reference?.binding?.session
+          if (face !== undefined && typeof face.prompt === 'function') {
+            accepted(await face.prompt(parts, 'queue'))
+            return { mode: 'session', via: 'sessions.retain' }
+          }
+        } catch (error) {
+          if (error?.code === 'prompt-rejected') throw error
+          console.warn(`[${PLUGIN_ID}] sessions.retain 提交失败，尝试下一级：`, error)
+        } finally {
+          try {
+            reference?.release?.()
+          } catch { /* already released */ }
+        }
+      }
+
+      // Rung 3 — the composer's own action face. A session-scoped slot
+      // component receives `inputActions` as a standard prop (the composer tool
+      // row is where this plugin collects the session id), so the harness
+      // itself hands us the sanctioned draft+submit pair.
+      const captured = composerFace()
+      if (captured !== null) {
+        const { actions } = captured
+        try {
+          if (typeof actions.setDraft === 'function') actions.setDraft(text)
+          const submit = [actions.submit, actions.send, actions.submitPrompt]
+            .find(candidate => typeof candidate === 'function')
+          if (submit !== undefined) {
+            await submit.call(actions)
+            return { mode: 'session', via: 'inputActions.submit' }
+          }
+        } catch (error) {
+          console.warn(`[${PLUGIN_ID}] inputActions 提交失败，回退到写入输入框：`, error)
+        }
+      }
+
+      // Rung 4 — write the draft and let the user press Enter.
       //
       // PLACEHOLDER: composer-draft — `ctx.get('conversation').input.for(scope)`
-      // is the harness's own composer draft face; it is NOT in the published
-      // client service catalog, so it is used only as the second-ranked
-      // fallback and is probed defensively. To replace it with a supported API,
-      // swap the body of this branch (see README §6).
+      // is the harness's own composer draft face; it is not in the published
+      // client service catalog, so it is last and probed defensively (the
+      // supported replacement is `inputActions` above; see README §6).
       const conversation = input.ctx.get('conversation')
-      const scope = sessions !== undefined && typeof sessions.scope === 'function' && sessionId !== null
-        ? sessions.scope(sessionId)
-        : undefined
+      if (scope === undefined && sessions !== undefined && typeof sessions.scope === 'function' && sessionId !== null) {
+        scope = sessions.scope(sessionId)
+      }
       if (conversation?.input?.for !== undefined && scope !== undefined) {
         const reactor = conversation.input.for(scope)
-        const draft = reactor.state.getSnapshot().draft
+        const draft = reactor.state?.getSnapshot?.().draft ?? ''
         reactor.setDraft(draft.trim() === '' ? text : `${draft}\n\n${text}`)
-        return { mode: 'draft' }
+        return { mode: 'draft', via: 'composer.draft' }
       }
       // PLACEHOLDER: clipboard-fallback — nothing could carry the question.
       // The caller renders this message on the card; replace this throw when a
@@ -817,6 +885,12 @@ window.__ModuleLoader__.load({
         close() { return true },
       },
     }
+
+    /**
+     * The composer action face captured from a session-scoped slot entry
+     * (`inputActions`), or null before any such entry has rendered.
+     */
+    let capturedComposerActions = null
 
     /**
      * The card id an external host is CURRENTLY rendering. `CardHost` sets it
@@ -1231,6 +1305,9 @@ window.__ModuleLoader__.load({
           card.truncated ? h('span', { className: 'dsa-badge dsa-badge-warn' }, t('truncatedBadge', { n: card.droppedChars })) : null),
         h('pre', { className: 'dsa-quote' }, card.question),
         h(AnswerBody, { card, containerRef: answerRef }),
+        card.toolFilter === 'unsupported'
+          ? h('div', { className: 'dsa-muted' }, t('toolGuardUnavailable'))
+          : (card.toolFilter === 'inherit' ? h('div', { className: 'dsa-muted' }, t('toolGuardInherited')) : null),
         card.carrier === 'main' && card.status === 'done'
           ? h('div', { className: 'dsa-muted' }, t('mainSentHint'))
           : null,
@@ -1444,6 +1521,8 @@ window.__ModuleLoader__.load({
                 h('div', { key: 'agents' }, `${t('diagAgents')}: ${diag.capabilities?.liveAgents ?? 0}`),
                 h('div', { key: 'surface' }, `${t('diagSurface')}: ${state.surface}`),
                 h('div', { key: 'session' }, `${t('diagSession')}: ${state.sessionId ?? t('none')}`),
+                h('div', { key: 'zones' }, `${t('diagZones')}: ${state.zoneAnchors === false ? t('diagZonesMissing') : t('yes')}`),
+                h('div', { key: 'slots' }, `${t('diagSlots')}: ${Object.entries(state.slots).map(([k, v]) => `${k}=${v}`).join(' · ')}`),
                 h('div', { key: 'path' }, `${t('settingsTitle')} → ${diag.provenance?.persistedPath ?? ''}`),
               ])
           : null)
@@ -1452,12 +1531,22 @@ window.__ModuleLoader__.load({
     /** Session probe: an invisible entry in the composer tool row. */
     function SessionProbe(props) {
       const sessionId = props?.sessionId
+      // `inputActions` is a STANDARD prop of every session-scoped slot entry
+      // (the slot catalog lists it beside `sessionId`), so the composer's own
+      // action face is captured here rather than guessed at from a service.
+      const actions = props?.inputActions
       React.useEffect(() => {
         if (typeof sessionId === 'string' && sessionId !== '' && store.state.sessionId !== sessionId) {
           store.set({ sessionId })
         }
-      }, [sessionId])
+        if (actions !== undefined && actions !== null) capturedComposerActions = actions
+      }, [sessionId, actions])
       return null
+    }
+
+    /** The composer action face captured from a session-scoped slot entry. */
+    function composerFace() {
+      return capturedComposerActions === null ? null : { actions: capturedComposerActions }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1714,6 +1803,9 @@ window.__ModuleLoader__.load({
               patchCard(cardId, {
                 truncated: data?.truncated === true || card.truncated,
                 droppedChars: data?.droppedChars ?? card.droppedChars,
+                // Reported by the host so the card can be honest about the
+                // read-only guard when the provider cannot take a tool filter.
+                toolFilter: typeof data?.toolFilter === 'string' ? data.toolFilter : null,
               })
             },
             onDelta: data => appendCardText(cardId, String(data?.text ?? '')),
@@ -1739,7 +1831,21 @@ window.__ModuleLoader__.load({
           pendingTimer = null
           const config = store.state.config
           const candidate = readSelection()
-          const decision = shouldOffer(candidate, config)
+          // Zone anchors: the harness stamps every slot outlet with
+          // `data-slot="<key>"`. A build that renders no such marker (or a
+          // selection made outside the frame's own tree) leaves the slot path
+          // empty, and then region filtering is impossible — reported once and
+          // relaxed rather than silently swallowing every trigger.
+          if (candidate !== null) {
+            const anchored = candidate.slotPath.length > 0
+            if (store.state.zoneAnchors !== anchored) {
+              store.set({ zoneAnchors: anchored })
+              if (!anchored) {
+                console.info(`[${PLUGIN_ID}] 该版本没有 data-slot 锚点，区域过滤不可用，已按"全部区域"工作`)
+              }
+            }
+          }
+          const decision = shouldOffer(candidate, config, { anchors: store.state.zoneAnchors !== false })
           if (!decision.ok) {
             lastSignature = null
             if (store.state.trigger !== null || store.state.popover !== null) {
@@ -1833,25 +1939,144 @@ window.__ModuleLoader__.load({
         }
 
         // ── slot registrations ───────────────────────────────────────────
-        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-          name: 'shell.overlay',
-          id: IDS.overlay,
-          order: 45,
-          label: () => t('triggerLabel'),
-        }, () => h(OverlayRoot, { actions })))
+        //
+        // A slot key is a version-scoped contract: `shell.overlay` has been the
+        // frame-wide floating layer for the whole supported range, but nothing
+        // guarantees it in a build we have not seen. Each registration below
+        // therefore walks a LADDER of equivalent slots and keeps the best one
+        // that is actually declared: a later rung is dropped the moment an
+        // earlier one goes live, so the UI never doubles up.
+        //
+        // Every rung is a LIST slot on purpose — registering into a `single`
+        // slot would REPLACE shipped UI (the catalog marks those
+        // `shadows-shipped-ui`).
+        const SLOT_PROBE_MS = 1500
 
-        ctx.slots.inject('settings.section', () => ctx.slots.register({
-          name: 'settings.section',
-          id: IDS.settings,
-          order: 60,
-          label: () => t('settingsTitle'),
-        }, () => h(SettingsSection, { actions })))
+        /**
+         * Register one entry into the first ladder rung that accepts it.
+         * @param {string[]} candidates - slot keys, best first.
+         * @param {(slotKey: string) => {options: object, component: Function}} build
+         * @param {(from: string, to: string) => void} [onFallback] - reported when
+         *   a rung is skipped (the settings page shows the outcome).
+         * @returns {() => void} disposer for every rung and timer.
+         */
+        const firstLiveSlot = (candidates, build, onFallback) => {
+          const injected = []
+          const timers = new Set()
+          const registrations = new Map()
+          let activeIndex = Number.POSITIVE_INFINITY
+          let disposed = false
 
-        ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
-          name: 'conversation.input.right',
-          id: IDS.sessionProbe,
-          order: 90,
-        }, SessionProbe))
+          const takeOver = (index, disposeRegistration) => {
+            if (disposed || index >= activeIndex) {
+              // A better rung is already live: this one is surplus.
+              if (index >= activeIndex) {
+                try {
+                  disposeRegistration()
+                } catch { /* already gone */ }
+              }
+              return
+            }
+            // This rung is better than whatever a previous fallback installed.
+            for (const [otherIndex, entry] of registrations) {
+              if (otherIndex <= index) continue
+              try {
+                entry.dispose()
+              } catch { /* already gone */ }
+              registrations.delete(otherIndex)
+            }
+            activeIndex = index
+            registrations.set(index, { dispose: disposeRegistration })
+          }
+
+          const attempt = (index) => {
+            if (disposed || index >= candidates.length) return
+            const key = candidates[index]
+            try {
+              injected.push(ctx.slots.inject(key, () => {
+                const built = build(key)
+                const disposeRegistration = ctx.slots.register(built.options, built.component)
+                takeOver(index, disposeRegistration)
+                return disposeRegistration
+              }))
+            } catch (error) {
+              console.error(`[${PLUGIN_ID}] slot inject failed for "${key}":`, error)
+            }
+            const timer = setTimeout(() => {
+              timers.delete(timer)
+              if (disposed) return
+              const next = candidates[index + 1]
+              if (next === undefined) return
+              if (activeIndex <= index) return
+              onFallback?.(key, next)
+              attempt(index + 1)
+            }, SLOT_PROBE_MS)
+            timers.add(timer)
+          }
+
+          attempt(0)
+          return () => {
+            disposed = true
+            for (const timer of timers) clearTimeout(timer)
+            timers.clear()
+            for (const entry of registrations.values()) {
+              try {
+                entry.dispose()
+              } catch { /* already gone */ }
+            }
+            registrations.clear()
+            for (const dispose of injected) {
+              try {
+                dispose()
+              } catch { /* already gone */ }
+            }
+          }
+        }
+
+        /** Record which rung a registration actually landed on. */
+        const noteSlot = (name, key) => {
+          const slots = { ...(store.state.slots ?? {}), [name]: key }
+          store.set({ slots })
+        }
+
+        disposers.push(firstLiveSlot(
+          ['shell.overlay', 'conversation.input.dock', 'conversation.composer.dock'],
+          slotKey => ({
+            options: { name: slotKey, id: IDS.overlay, order: 45, label: () => t('triggerLabel') },
+            component: () => h(OverlayRoot, { actions }),
+          }),
+          (from, to) => {
+            console.info(`[${PLUGIN_ID}] ${from} 不可用，浮层改挂 ${to}`)
+            noteSlot('overlay', to)
+          },
+        ))
+        noteSlot('overlay', 'shell.overlay')
+
+        disposers.push(firstLiveSlot(
+          ['settings.section', 'settings.plugins.tab'],
+          slotKey => ({
+            options: { name: slotKey, id: IDS.settings, order: 60, label: () => t('settingsTitle') },
+            component: () => h(SettingsSection, { actions }),
+          }),
+          (from, to) => {
+            console.info(`[${PLUGIN_ID}] ${from} 不可用，设置页改挂 ${to}`)
+            noteSlot('settings', to)
+          },
+        ))
+        noteSlot('settings', 'settings.section')
+
+        disposers.push(firstLiveSlot(
+          ['conversation.input.right', 'conversation.input.left', 'conversation.composer.dock', 'conversation.input.dock'],
+          slotKey => ({
+            options: { name: slotKey, id: IDS.sessionProbe, order: 90 },
+            component: SessionProbe,
+          }),
+          (from, to) => {
+            console.info(`[${PLUGIN_ID}] ${from} 不可用，会话 id 采集改挂 ${to}`)
+            noteSlot('sessionProbe', to)
+          },
+        ))
+        noteSlot('sessionProbe', 'conversation.input.right')
 
         // ── side-card surfaces ───────────────────────────────────────────
         // The native right rail: its registry accepts tab types and its
@@ -2016,7 +2241,7 @@ window.__ModuleLoader__.load({
        * `window` and exercises these without a browser.
        */
       api: Object.freeze({
-        version: '1.0.0',
+        version: '1.0.1',
         /** Read-only state accessor for diagnostics and the test harness. */
         snapshot: () => store.state,
         pure: Object.freeze({
@@ -2032,6 +2257,7 @@ window.__ModuleLoader__.load({
           shouldOffer,
           selectionSignature,
           composeMainPrompt,
+          askInMainConversation,
           renderRichText,
           pickSurface,
           dict: DICT,
