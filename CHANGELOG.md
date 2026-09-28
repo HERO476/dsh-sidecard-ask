@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.2.0
+
+**主题：核对并加固与 dsh-better-sidebar 0.22.1 的适配。**
+
+核对方式（可复现）：把 0.22.0 与 0.22.1 的发布产物都拉下来解包，逐文件 SHA256 比对。结论：
+
+- 消费端契约 `lib/types/client/service.d.ts` **除 `SIDEBAR_SERVICE_VERSION` 常量外逐字节相同**；
+  `SIDEBAR_FEATURES`、`dsh.client.inject`、peer 依赖均未变；
+- 0.22.1 唯一的大体量改动是它**自己** `src/client/native/index.ts` 的健壮性修复（`disposeSafely` +
+  槽位注册失败时回滚已注册的 tab 类型），不涉及本插件调用的任何字段；
+- 本插件用到的 `registerTab / openTab(seed, scope) / closeTab / features / version` 全部仍在。
+
+即 **0.22.1 下无需改动即兼容**。据此做了三处加固：
+
+1. **按能力而非版本判断**：适配器仅在 `features` 含 `tabMeta` 时可用（该能力自 better-sidebar 0.12 起提供，
+   更早的版本会打开一个读不到 `meta.cardId` 的空 tab）；不满足时 `auto` 跳到原生右侧栏/内置浮层，
+   并在自检里给出 `no-tab-meta`。
+2. **原生承载面注册回滚**：先注册 tab 类型再注册槽位，槽位注册抛错时释放已占用的类型 id
+   （正是 0.22.1 在自己原生胶水里修的同类问题，否则该 kind 会永久占用、渲染宿主"无实现"的空面）。
+3. **运行时可见**：设置页「运行自检」新增一行，显示侧边卡片插件**自己报告的 `version` 与能力项数**，
+   以及本插件对它的判定（可用 / 版本过旧 / 未检测到）。
+
+自测 276 → **289 项**（verify 53 / contract 118 / smoke 118），新增用例覆盖：0.22.1 形状的服务被接受、
+`openTab(seed, scope)` 的字段与作用域、缺 `tabMeta` 时被拒绝并落到浮层、缺 `registerTab` 时被拒绝、
+槽位注册失败时类型被释放且适配器转为不可用。
+
 ## 1.1.0
 
 **改名：`dsh-selection-followup` → `dsh-sidecard-ask`**（显示名「划词追问」→「侧边卡片追问」）。

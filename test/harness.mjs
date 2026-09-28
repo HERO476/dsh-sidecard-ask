@@ -566,14 +566,18 @@ export function loadClientModule(options = {}) {
 
 /**
  * Build a fake client-side Cordis context that records slot registrations.
- * @param {{services?: Record<string, unknown>, absentSlots?: Iterable<string>}} [options]
+ * @param {{services?: Record<string, unknown>, absentSlots?: Iterable<string>,
+ *   throwOnSlots?: Iterable<string>}} [options]
  *   `absentSlots` lists slot keys this composition never declares: their
  *   `inject` callback never runs, which is how an older shell without that key
  *   behaves — and what the registration ladder must survive.
+ *   `throwOnSlots` lists keys whose `inject` itself throws — the
+ *   reload/teardown failure a registration must roll back from.
  */
 export function makeClientCtx(options = {}) {
   const services = { ...(options.services ?? {}) }
   const absentSlots = new Set(options.absentSlots ?? [])
+  const throwOnSlots = new Set(options.throwOnSlots ?? [])
   const registrations = []
   const injections = []
   const effects = []
@@ -594,6 +598,7 @@ export function makeClientCtx(options = {}) {
     slots: {
       inject(key, callback) {
         injections.push(key)
+        if (throwOnSlots.has(key)) throw new Error(`slot context "${key}" is already inactive`)
         if (absentSlots.has(key)) return () => {}
         callback()
         return () => {}

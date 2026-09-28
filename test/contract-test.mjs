@@ -451,4 +451,96 @@ try {
 }
 report.equal(carrierError?.code, 'no-main-carrier', 'with no carrier at all the failure is explicit, not silent')
 
+console.log('\ndsh-better-sidebar contract')
+// Verified against the published packages: 0.22.0 → 0.22.1 changes only the
+// version constant in `lib/types/client/service.d.ts` (byte-identical
+// otherwise) and robustness in ITS own native glue, so this adapter keys on the
+// capability list — which the contract promises never shrinks — instead of on a
+// version number.
+const fullFeatures = ['badge', 'tabLifecycle', 'updateTab', 'openFile', 'targetedOpen', 'stateSubscription', 'tabMeta', 'pluginSettings', 'urlTarget', 'settingSelect', 'fileIcons']
+const openCalls = []
+const betterCtx = makeClientCtx({
+  services: {
+    betterSidebar: {
+      version: '0.22.1',
+      features: fullFeatures,
+      registerTab: () => () => {},
+      openTab: (seed, scope) => { openCalls.push({ seed, scope }) },
+      closeTab: () => {},
+      getSnapshot: () => ({ sessionId: 'session-zeta' }),
+    },
+  },
+})
+const betterClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+betterClient.module.apply(betterCtx.ctx)
+const betterSurface = betterClient.module.api.pure.pickSurface('better-sidebar')
+report.equal(betterSurface.fellBack, false, 'a 0.22.1-shaped service is accepted')
+report.equal(betterSurface.adapter.kind, 'better-sidebar', 'the adapter is selectable')
+// The session scope comes from the composer slot's `sessionId` prop, so the
+// probe must have rendered before an open can be scoped.
+const betterProbe = betterCtx.find('conversation.input.right', pure.IDS.sessionProbe)
+expandTree(betterClient.shim.React.createElement(betterProbe.component, { sessionId: 'session-zeta' }))
+betterClient.shim.flushEffects()
+report.equal(betterClient.module.api.snapshot().sessionId, 'session-zeta', 'the probe captured the session id')
+betterSurface.adapter.open({ id: 'card-7', question: '这是什么？' })
+report.equal(openCalls.length, 1, 'open() drives the documented openTab(seed, scope)')
+report.equal(openCalls[0].seed.type, pure.CARD_KIND, 'the seed carries our tab type')
+report.equal(openCalls[0].seed.meta.cardId, 'card-7', 'the card id travels in seed.meta (feature tabMeta)')
+report.equal(openCalls[0].scope.sessionId, 'session-zeta', 'the open is scoped to the asking session')
+
+// A pre-0.12 service (no tabMeta) must be SKIPPED, not used with an empty card.
+const oldCtx = makeClientCtx({
+  services: {
+    betterSidebar: {
+      version: '0.11.0',
+      features: ['badge', 'updateTab'],
+      registerTab: () => () => {},
+      openTab: () => { throw new Error('must not be called') },
+      closeTab: () => {},
+      getSnapshot: () => ({ sessionId: 'session-zeta' }),
+    },
+  },
+})
+const oldClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+oldClient.module.apply(oldCtx.ctx)
+report.equal(oldClient.module.api.pure.pickSurface('better-sidebar').fellBack, true, 'a service without tabMeta is refused')
+report.equal(oldClient.module.api.pure.pickSurface('auto').adapter.kind, 'flow', 'auto then falls through to the flow card')
+
+// A service that cannot register a tab type at all is refused the same way.
+const noRegister = makeClientCtx({
+  services: { betterSidebar: { version: '0.22.1', features: fullFeatures, openTab: () => {}, closeTab: () => {} } },
+})
+const noRegisterClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+noRegisterClient.module.apply(noRegister.ctx)
+report.equal(noRegisterClient.module.api.pure.pickSurface('better-sidebar').fellBack, true, 'a service without registerTab is refused')
+
+console.log('\nnative right-rail rollback')
+// A slot registration can throw after the tab TYPE was taken; the type must be
+// released again or that id stays unusable for the rest of the page's life —
+// the same class of failure dsh-better-sidebar 0.22.1 hardened in its own
+// native glue (`disposeSafely` + partial-set release).
+const typeReleases = []
+const rollbackCtx = makeClientCtx({
+  throwOnSlots: ['sidebar.right.pane.tab'],
+  services: {
+    sidebarRightTabs: {
+      register: () => () => { typeReleases.push('released') },
+    },
+    sidebarRight: { openTab: () => {}, mounted: { getSnapshot: () => 'session-alpha', subscribe: () => () => {} } },
+  },
+})
+const rollbackClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+rollbackClient.module.apply(rollbackCtx.ctx)
+report.equal(typeReleases.length, 1, 'the tab type is released when a slot registration fails')
+report.equal(
+  rollbackClient.module.api.pure.pickSurface('native-rightbar').fellBack,
+  true,
+  'the failed native adapter reports itself unavailable',
+)
+report.equal(
+  rollbackClient.module.api.pure.pickSurface('auto').adapter.kind,
+  'flow',
+  'auto then falls through to the flow card',
+)
+
 report.summary()

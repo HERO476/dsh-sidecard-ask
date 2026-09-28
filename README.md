@@ -152,13 +152,36 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 
 | 顺序 | 承载面 | 依赖 | 失败时 |
 |---|---|---|---|
-| 1 | DSH 原生右侧栏 | `ctx.sidebarRightTabs`（注册 tab 类型）+ `ctx.sidebarRight`（`openTab`），并占用槽位 `sidebar.right.pane.tab` / `…tab.title` | 记 `surfaces.native.error`，落到下一层 |
-| 2 | **dsh-better-sidebar**（侧边卡片插件） | 客户端服务 `ctx.betterSidebar`：`registerTab` + `openTab(seed, scope)`；卡片 id 走 `tab.meta.cardId`（依赖其 `features` 含 `tabMeta`） | 同上 |
+| 1 | DSH 原生右侧栏 | `ctx.sidebarRightTabs`（注册 tab 类型）+ `ctx.sidebarRight`（`openTab`），并占用槽位 `sidebar.right.pane.tab` / `…tab.title` | 记 `surfaces.native.error`，落到下一层；**类型注册会回滚**（见下） |
+| 2 | **dsh-better-sidebar**（侧边卡片插件） | 客户端服务 `ctx.betterSidebar`：`registerTab` + `openTab(seed, scope)`；卡片 id 走 `tab.meta.cardId`，因此**要求其 `features` 含 `tabMeta`** | 同上（缺 `tabMeta` 时记 `no-tab-meta` 并跳过，而不是开一个空 tab） |
 | 3 | **内置浮层卡片**（默认兜底） | 只需要 `shell.overlay` 槽位 | ——（这是保底面，永远可用） |
 
 - 装了 `dsh-better-sidebar`：卡片以它的 tab 形式出现在它的面板里，关闭卡片会同时 `closeTab`，不残留空 tab。
 - 没装：自动使用内置浮层卡片（右下角卡片栈），功能完全一致——**这条路径是本插件的默认与保底路径**。
 - 强制指定了一个不可用的承载面：回退到内置浮层，并在卡片上标注「已回退」。
+
+### 5.1 与 dsh-better-sidebar 0.22.1 的适配核对（2026-09-28）
+
+做法：把 0.22.0 与 0.22.1 的发布产物都拉下来、解包、逐文件比对（`npm pack` + SHA256）。
+
+| 检查项 | 结果 |
+|---|---|
+| 消费端契约 `lib/types/client/service.d.ts` | **除 `SIDEBAR_SERVICE_VERSION` 常量外逐字节相同** → `BetterSidebarService` 的方法/参数/返回类型没变 |
+| `SIDEBAR_FEATURES`（能力清单） | **未变**（`tabMeta` 等仍在；契约承诺"Features are never removed"） |
+| `dsh.client.inject` / peer 依赖 | 未变（仍是 locale / ui-slots / ui-conversation / ui-sidebar-right / client-modules） |
+| `src/client/native/index.ts`（0.22.1 唯一大体量改动） | 是它**自己原生胶水的健壮性修复**：`disposeSafely` + 槽位注册失败时回滚已注册的 tab 类型；不涉及我们调用的任何字段 |
+| 本插件实际用到的面 | `registerTab({id,title,description,order,dedupeKey,component})`、`openTab({type,id,title,meta},{sessionId})`、`closeTab(id)`、`features`、`version` —— 全部仍在 |
+
+**因此 0.22.1 下适配为「无需改动即兼容」**；本轮据此做了三处加固：
+
+1. **能力门控而非版本判断**：适配器只在 `features` 含 `tabMeta` 时可用（0.12 起才有，旧版会开出空 tab）；
+   不满足时 `auto` 直接跳到原生右侧栏/内置浮层，设置页自检里写明原因（`no-tab-meta`）。
+2. **原生承载面类型注册回滚**：先注册 tab 类型、再注册槽位；槽位注册抛错（reload/teardown 期的失活 context）时
+   **释放已占用的类型 id**——这正是 0.22.1 在自己原生胶水里修的同一类问题（否则该 kind 会永久占用并显示宿主"没有实现"的空面）。
+3. **运行时可见**：设置页「运行自检」新增一行，直接显示**侧边卡片插件自己的 `version` 与能力项数**，
+   以及本插件对它的判定（可用 / 版本过旧 / 未检测到），不再依赖 package.json 的声明。
+
+> 注意：`version` 是加载到浏览器里的那份模块报告的版本。页面刷新后即可用它确认"跑的是不是 0.22.1"。
 
 ---
 

@@ -167,6 +167,9 @@ window.__ModuleLoader__.load({
         diagZones: '区域锚点（data-slot）',
         diagZonesMissing: '缺失，区域过滤已停用',
         diagSlots: '槽位落点',
+        diagSidecard: '侧边卡片插件（dsh-better-sidebar）',
+        diagFeatures: '项能力',
+        diagNoTabMeta: '版本过旧：没有 tabMeta 能力，已跳过它改用其它承载面',
         toolGuardUnavailable: '该 provider 不支持工具白名单，本次作答继承了当前会话的工具',
         toolGuardInherited: '按配置继承当前会话的工具',
         diagUnreachable: '宿主接口不可达：{msg}',
@@ -266,6 +269,9 @@ window.__ModuleLoader__.load({
         diagZones: 'Zone anchors (data-slot)',
         diagZonesMissing: 'missing — region filtering disabled',
         diagSlots: 'Slot landing',
+        diagSidecard: 'Side-card plugin (dsh-better-sidebar)',
+        diagFeatures: 'capabilities',
+        diagNoTabMeta: 'too old: no tabMeta capability, skipped in favour of another surface',
         toolGuardUnavailable: 'This provider supports no tool allow-list, so the answer inherited the session tools',
         toolGuardInherited: 'Inherits the session tools, as configured',
         diagUnreachable: 'Host API unreachable: {msg}',
@@ -859,12 +865,35 @@ window.__ModuleLoader__.load({
         error: null,
         dispose: null,
         features: [],
+        /**
+         * Why this adapter is (not) usable, in the settings page's own words.
+         * `null` means "usable"; a string explains the refusal.
+         */
+        reason: 'not-detected',
+        /**
+         * Reported by the plugin itself (`BetterSidebarService.version`), so the
+         * settings page can say which side-card plugin version is really in use.
+         */
+        version: null,
+        /**
+         * Usable only when the service advertises the `tabMeta` capability: the
+         * card id travels in `tab.meta`, and `SIDEBAR_FEATURES` has listed
+         * `tabMeta` since v0.12.0 with newer versions only ever ADDING features
+         * ("Features are never removed"). A pre-0.12 instance would open an
+         * empty tab, so it is skipped and the ladder continues to the native
+         * right rail or the built-in flow card instead.
+         */
         available() {
-          return this.service !== null && this.error === null
+          if (this.service === null || this.error !== null) return false
+          return Array.isArray(this.features) && this.features.includes('tabMeta')
         },
         open(card) {
           if (!this.available() || typeof this.service.openTab !== 'function') return false
           const tabId = `${CARD_KIND}:${card.id}`
+          // `meta` is the transport for the card id (feature `tabMeta`), and
+          // `dedupeKey` on our descriptor is what collapses repeat opens onto
+          // the same tab; both are part of the stable consumer contract
+          // (`lib/types/client/service.d.ts`, unchanged across 0.22.0 → 0.22.1).
           this.service.openTab(
             { type: CARD_KIND, id: tabId, title: card.question.slice(0, 32), meta: { cardId: card.id } },
             store.state.sessionId === null ? undefined : { sessionId: store.state.sessionId },
@@ -1523,6 +1552,9 @@ window.__ModuleLoader__.load({
                 h('div', { key: 'session' }, `${t('diagSession')}: ${state.sessionId ?? t('none')}`),
                 h('div', { key: 'zones' }, `${t('diagZones')}: ${state.zoneAnchors === false ? t('diagZonesMissing') : t('yes')}`),
                 h('div', { key: 'slots' }, `${t('diagSlots')}: ${Object.entries(state.slots).map(([k, v]) => `${k}=${v}`).join(' · ')}`),
+                // The side-card plugin's own report: which version is loaded and
+                // whether it advertises the capability this adapter needs.
+                h('div', { key: 'sidecard' }, `${t('diagSidecard')}: ${describeSidecardAdapter()}`),
                 h('div', { key: 'path' }, `${t('settingsTitle')} → ${diag.provenance?.persistedPath ?? ''}`),
               ])
           : null)
@@ -1547,6 +1579,27 @@ window.__ModuleLoader__.load({
     /** The composer action face captured from a session-scoped slot entry. */
     function composerFace() {
       return capturedComposerActions === null ? null : { actions: capturedComposerActions }
+    }
+
+    /**
+     * One line describing how the optional side-card plugin resolved, for the
+     * settings page's capability check. Reported from the plugin's OWN
+     * `version`/`features` fields, so the answer is what is running, not what
+     * package.json claims.
+     * @returns {string} human-readable state.
+     */
+    function describeSidecardAdapter() {
+      const better = surfaces.better
+      if (better.error !== null) return `${t('no')}（${better.error}）`
+      if (better.version === null && better.service === null) return t('none')
+      const version = better.version ?? '?'
+      if (better.available()) {
+        return `v${version} · ${better.features.length} ${t('diagFeatures')} · ${t('yes')}`
+      }
+      if (better.reason === 'no-tab-meta') {
+        return `v${version} · ${t('diagNoTabMeta')}`
+      }
+      return `v${version} · ${better.reason ?? t('no')}`
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2099,6 +2152,18 @@ window.__ModuleLoader__.load({
               if (registry === null || registry === undefined) return
               surfaces.native.registry = registry
               surfaces.native.controller = controller ?? null
+              // Register the tab TYPE first, then its body/title slots — and
+              // roll the type back if a slot refuses to register.
+              //
+              // The host takes the id the moment `register` returns and refuses
+              // a second registration of the same id; a slot registration that
+              // throws (an already-inactive context during a reload/disposal)
+              // would then leave the kind taken for the rest of the page's life,
+              // rendering the host's "nothing can view this" face forever. This
+              // mirrors what dsh-better-sidebar 0.22.1 fixed in its own native
+              // glue (`disposeSafely` + partial-set release in
+              // `src/client/native/index.ts`).
+              let releaseType = null
               if (typeof registry.register === 'function') {
                 const off = registry.register({
                   id: CARD_KIND,
@@ -2111,20 +2176,40 @@ window.__ModuleLoader__.load({
                     description: () => t('settingsDesc'),
                   }],
                 })
-                surfaces.native.dispose = typeof off === 'function' ? off : null
+                releaseType = typeof off === 'function' ? off : null
+                surfaces.native.dispose = releaseType
               }
-              const offBody = ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-                name: 'sidebar.right.pane.tab',
-                key: CARD_KIND,
-                inject: sessionId => ({ sessionId }),
-              }, (props) => h(CardHost, { props, actions })))
-              const offTitle = ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
-                name: 'sidebar.right.pane.tab.title',
-                key: CARD_KIND,
-              }, () => h('span', null, t('answerTitle'))))
+              const slotDisposers = []
+              try {
+                slotDisposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+                  name: 'sidebar.right.pane.tab',
+                  key: CARD_KIND,
+                  inject: sessionId => ({ sessionId }),
+                }, (props) => h(CardHost, { props, actions }))))
+                slotDisposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
+                  name: 'sidebar.right.pane.tab.title',
+                  key: CARD_KIND,
+                }, () => h('span', null, t('answerTitle')))))
+              } catch (error) {
+                for (const dispose of slotDisposers) {
+                  try {
+                    dispose()
+                  } catch { /* releasing must not mask the failure */ }
+                }
+                if (releaseType !== null) {
+                  try {
+                    releaseType()
+                  } catch { /* releasing must not mask the failure */ }
+                  surfaces.native.dispose = null
+                }
+                surfaces.native.registry = null
+                surfaces.native.controller = null
+                throw error
+              }
               disposers.push(() => {
-                try { offBody() } catch { /* already disposed */ }
-                try { offTitle() } catch { /* already disposed */ }
+                for (const dispose of slotDisposers) {
+                  try { dispose() } catch { /* already disposed */ }
+                }
                 try { surfaces.native.dispose?.() } catch { /* already disposed */ }
               })
             } catch (error) {
@@ -2137,9 +2222,15 @@ window.__ModuleLoader__.load({
         }
 
         // The dsh-better-sidebar plugin, when installed: its client service
-        // registers a tab type and opens one per card. `features.tabMeta`
-        // gates the meta-carried card id, so an older version of that plugin
-        // degrades to the built-in flow card instead of showing an empty tab.
+        // registers a tab type and opens one per card.
+        //
+        // Verified against the published consumer contract: between 0.22.0 and
+        // 0.22.1 `lib/types/client/service.d.ts` is byte-identical apart from the
+        // version constant, and 0.22.1's `src/client/native/index.ts` changes are
+        // robustness fixes in ITS own native glue — no field we use changed. The
+        // `features` array is the forward-compatible half of that contract
+        // ("Features are never removed"), so the adapter gates on `tabMeta`
+        // instead of on a version number.
         try {
           ctx.inject(['betterSidebar'], (injected) => {
             try {
@@ -2147,7 +2238,12 @@ window.__ModuleLoader__.load({
               if (service === null || service === undefined) return
               const features = Array.isArray(service.features) ? service.features : []
               surfaces.better.features = features
-              if (typeof service.registerTab !== 'function') return
+              surfaces.better.version = typeof service.version === 'string' ? service.version : null
+              surfaces.better.reason = features.includes('tabMeta') ? null : 'no-tab-meta'
+              if (typeof service.registerTab !== 'function') {
+                surfaces.better.reason = 'no-register-tab'
+                return
+              }
               const off = service.registerTab({
                 id: CARD_KIND,
                 title: () => t('answerTitle'),
@@ -2241,7 +2337,7 @@ window.__ModuleLoader__.load({
        * `window` and exercises these without a browser.
        */
       api: Object.freeze({
-        version: '1.1.0',
+        version: '1.2.0',
         /** Read-only state accessor for diagnostics and the test harness. */
         snapshot: () => store.state,
         pure: Object.freeze({
