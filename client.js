@@ -1,5 +1,5 @@
 /**
- * dsh-selection-followup — Client half (`dsh.client.platform = web`).
+ * dsh-sidecard-ask — Client half (`dsh.client.platform = web`).
  *
  * Browser artifact: registers one lazy factory whose id equals the package
  * name. React comes from the browser module table (`require('react')`); this
@@ -25,7 +25,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-selection-followup',
+  id: 'dsh-sidecard-ask',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -34,16 +34,16 @@ window.__ModuleLoader__.load({
     // §1 constants and defaults
     // ─────────────────────────────────────────────────────────────────────
 
-    const PLUGIN_ID = 'dsh-selection-followup'
-    const API = '/selection-followup/api'
+    const PLUGIN_ID = 'dsh-sidecard-ask'
+    const API = '/sidecard-ask/api'
     /** Slot ids contributed by this plugin (also the overlay entry ids). */
     const IDS = {
-      overlay: 'selection-followup',
-      settings: 'selection-followup-settings',
-      sessionProbe: 'selection-followup-session-probe',
+      overlay: 'sidecard-ask',
+      settings: 'sidecard-ask-settings',
+      sessionProbe: 'sidecard-ask-session-probe',
     }
     /** Side-card tab type registered in a side-card host. */
-    const CARD_KIND = 'selection-followup:card'
+    const CARD_KIND = 'sidecard-ask:card'
 
     /**
      * Client-side mirror of the Host `DEFAULT_CONFIG`. The client needs values
@@ -2232,7 +2232,7 @@ window.__ModuleLoader__.load({
               console.error(`[${PLUGIN_ID}] cleanup failed:`, error)
             }
           }
-        }, 'selection-followup: client activation')
+        }, 'sidecard-ask: client activation')
       },
 
       /**
@@ -2241,7 +2241,7 @@ window.__ModuleLoader__.load({
        * `window` and exercises these without a browser.
        */
       api: Object.freeze({
-        version: '1.0.1',
+        version: '1.1.0',
         /** Read-only state accessor for diagnostics and the test harness. */
         snapshot: () => store.state,
         pure: Object.freeze({

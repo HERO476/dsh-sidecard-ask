@@ -1,16 +1,28 @@
-# dsh-selection-followup · 划词追问
+# dsh-sidecard-ask · 侧边卡片追问
 
 在 DSH Web GUI 里**选中一段文本就能就地追问**：选中处浮出「追问选中内容」按钮 → 弹出提问框 →
 答案落在**两个可切换的承载位置**上：
 
-- **主对话**：追问内容带着引用块进入当前会话，答案随对话原生流式呈现；
-- **独立侧边卡片**：由子代理在**自己的会话**里作答（不继承父上下文、不打扰主对话），答案在卡片里逐字流式渲染，可关闭 / 复制 / 继续追问。
+- **独立侧边卡片（默认）**：由子代理在**自己的会话**里作答（不继承父上下文、不打扰主对话），答案在卡片里逐字流式渲染，可关闭 / 复制 / 继续追问；
+- **主对话**：追问内容带着引用块进入当前会话，答案随对话原生流式呈现。
 
 聊天记录、任务详情、右侧栏内容……只要是能选中的文本都能用；**没装侧边卡片插件也能跑**（自动回退到内置浮层卡片）。
 
-> **包名说明（重要）**：npm 上 `dsh-selection-ask` 已被另一位作者（`chestnut23`，仓库 `lzbaclz/dsh-selection-ask`）占用，
-> 那是一个「把选中的文本引用进输入框」的不同插件。本插件因此发布为 **`dsh-selection-followup`**，两者没有派生关系；
-> 如果你已经在用那个插件，可以与本插件共存（占用不同槽位 id 与不同路由前缀）。
+> ## 名字改过两次，原因都写在这里（避免再撞名）
+>
+> 1. **`dsh-selection-ask` → ✗**：npm 上已被 `chestnut23` 占用（仓库 `lzbaclz/dsh-selection-ask`）。
+> 2. **`dsh-selection-followup` → ✗**（1.0.0 / 1.0.1 用的名字）：npm 上当时是空的，但 **DSH 插件生态里已被 `zzx-dear` 使用**——
+>    GitHub 仓库 [`zzx-dear/dsh-selection-followup`](https://github.com/zzx-dear/dsh-selection-followup) 与官方收录索引
+>    `data/plugins/zzx-dear__dsh-selection-followup.yml`（category: ui，早于本插件约 20 天）。
+>    我最初只查了 npm 名字是否可用，**漏查了 GitHub 仓库名与收录索引**，这是本项目的失误，已在 1.1.0 修正。
+> 3. **`dsh-sidecard-ask` → ✓**（1.1.0 起）：npm 无同名包、GitHub 无同名仓库；
+>    同时它与已有的 8 个"选中文字→引用进输入框/翻译/批注"类插件（`dsh-selection-ask`、`dsh-selection-explain`、
+>    `dsh-selection-toolbar`、`dsh-quote-selection`、`dsh-ui-quote-selection`、`dsh-quote-annotate`、
+>    `dsh-selection-memory`、`dsh-plugin-followup`）在**名字与定位上都区分开**：本插件的答案是**独立子代理在侧边卡片里流式产出**，
+>    而不是把选中内容塞进输入框。
+>
+> 旧 npm 包名 `dsh-selection-followup` 已 `npm deprecate` 指向新名字；升级只需卸旧装新（见 §三）。
+
 
 
 ---
@@ -28,9 +40,9 @@
 ## 二、目录结构与逐文件用途
 
 ```
-dsh-selection-followup/
+dsh-sidecard-ask/
 ├── package.json          清单：包名/版本/导出/dsh.bundle.patch/dsh.client（web 平台、immediately、inject）
-├── cordis.patch.yml      bundle 补丁：向 profile 插入 id 为 selection-followup 的宿主行，并给出全部默认配置
+├── cordis.patch.yml      bundle 补丁：向 profile 插入 id 为 sidecard-ask 的宿主行，并给出全部默认配置
 ├── index.js              Host 半（宿主侧）：插件自有 API（JSON + SSE）、配置三层合并与持久化、
 │                         独立作答引擎（ctx.subagents 子代理 + agent/assistant-stream 桥接）、请求信任围栏
 ├── client.js             Client 半（浏览器侧）：dsh.client 浏览器产物，单文件、无构建步骤
@@ -60,9 +72,9 @@ dsh-selection-followup/
 
 ```powershell
 # 在 profile 目录（默认 %USERPROFILE%\.dsh\profiles\web）执行
-pnpm add dsh-selection-followup
+pnpm add dsh-sidecard-ask
 # 然后把包名写进 profile package.json 的 dsh.profile.bundles 数组
-#    "dsh.profile": { "bundles": [ ..., "dsh-selection-followup" ] }
+#    "dsh.profile": { "bundles": [ ..., "dsh-sidecard-ask" ] }
 # 重启 DSH（重启后插件行、客户端产物、设置页一起生效）
 ```
 
@@ -71,7 +83,7 @@ pnpm add dsh-selection-followup
 在会话里让 Agent 执行 `plugin_manager` 的 `install_bundle`，target 指向本目录的**绝对路径**：
 
 ```
-plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-selection-followup")
+plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sidecard-ask")
 ```
 
 `install_bundle` 会自行完成 profile 的写入与 bundle 选择，**不要**手改 profile 的 `package.json` / `cordis.patch.yml`。
@@ -79,16 +91,26 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-select
 ### 方式 3：本地联调（junction）
 
 ```powershell
-cmd /c mklink /J "%USERPROFILE%\.dsh\profiles\web\node_modules\dsh-selection-followup" "D:\Users\34332\AI\dsh-selection-followup"
-# 再手动把 "dsh-selection-followup" 加进 profile package.json 的 dsh.profile.bundles
+cmd /c mklink /J "%USERPROFILE%\.dsh\profiles\web\node_modules\dsh-sidecard-ask" "D:\Users\34332\AI\dsh-sidecard-ask"
+# 再手动把 "dsh-sidecard-ask" 加进 profile package.json 的 dsh.profile.bundles
 ```
 
 ### 启用与验证
 
 1. 重启 DSH（新包需要重启才会加载一行全新的 JavaScript 模块）。
-2. 打开 Web GUI → **设置 → 插件**，应能看到卡片「划词追问 / Selection Ask」。
-3. 打开**设置 → 划词追问**页，点「运行自检」：应显示宿主接口可用、侧边作答引擎可用、provider 列表（本机为 `spawn`）、活动会话代理数。
-4. 若自检显示"宿主接口不可达"，说明 `/selection-followup/api` 路由没起来——检查 profile 里该 bundle 是否在 `dsh.profile.bundles` 中、以及 DSH 是否重启过。
+2. 打开 Web GUI → **设置 → 插件**，应能看到卡片「侧边卡片追问」。
+3. 打开**设置 → 侧边卡片追问**页，点「运行自检」：应显示宿主接口可用、侧边作答引擎可用、provider 列表（本机为 `spawn`）、活动会话代理数。
+4. 若自检显示"宿主接口不可达"，说明 `/sidecard-ask/api` 路由没起来——检查 profile 里该 bundle 是否在 `dsh.profile.bundles` 中、以及 DSH 是否重启过。
+
+### 从旧名字升级（1.0.x → 1.1.0）
+
+```powershell
+# 1) 卸掉旧 bundle（profile 里旧名字是 dsh-selection-followup）
+plugin_manager(action="remove_bundle", target="dsh-selection-followup")
+# 2) 装新名字（本工作区源码）
+plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sidecard-ask")
+# 3) 重启 DSH；旧配置目录 <DSH_HOME>\selection-followup 可以删掉（新名字用 <DSH_HOME>\sidecard-ask）
+```
 
 > 改了 `client.js` 后如果 `pnpm run dev:web` 没有在跑，浏览器需要刷新页面；改了 `index.js` 需要重启 DSH。
 
@@ -100,7 +122,7 @@ cmd /c mklink /J "%USERPROFILE%\.dsh\profiles\web\node_modules\dsh-selection-fol
 
 1. **内置默认值**（`index.js` 的 `DEFAULT_CONFIG`）
 2. **bundle 补丁层**：`cordis.patch.yml` 的 `config:`（改这里需要重启）
-3. **用户层**：设置页保存后写入 `<DSH_HOME>/selection-followup/config.json`
+3. **用户层**：设置页保存后写入 `<DSH_HOME>/sidecard-ask/config.json`
    （`DSH_HOME` 未设置或为空白时回退到 `~/.dsh`；**不会**写进程当前目录）
 
 设置页点「重置为 patch 配置」会清空用户层。
@@ -163,7 +185,7 @@ ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
 - **占位 1（草稿降级）**：`ctx.get('conversation').input.for(scope)` → `{ state.getSnapshot().draft, setDraft(text) }`。
   这是**未出现在服务目录里**的接口（属 harness 内部形态），所以只作为第二顺位降级；搜索 `PLACEHOLDER: composer-draft`。
 - **占位 2（最后兜底）**：前两者都不可用时，插件抛出可读错误并提示用户复制文本，搜索 `PLACEHOLDER: clipboard-fallback`。
-- **线协议**：客户端与宿主半之间是插件**自有的** `/selection-followup/api`（`GET /state`、`POST /ask|cancel|config|reset`），
+- **线协议**：客户端与宿主半之间是插件**自有的** `/sidecard-ask/api`（`GET /state`、`POST /ask|cancel|config|reset`），
   不依赖任何 harness 内部 RPC；若未来 harness 提供正式的同进程 RPC，替换点就是 `client.js` §3 的 `postJson/streamAsk`。
 
 > 约定：所有占位点都写成 `PLACEHOLDER: <名字>` 注释 + 可运行的降级路径，替换时只需改该函数的实现，调用方（卡片、设置页）无需改动。
@@ -270,7 +292,7 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 6. 点「复制」→ 出现「已复制」提示；点「继续追问」→ 输入第二条问题，卡片内容**重置换行**后继续流式；
 7. 点「关闭」→ 卡片消失；若承载面是 better-sidebar/原生右侧栏，对应 tab 也应关闭。
 
-**失败信号**：卡片停在「作答中…」不动 = SSE 帧没到达（看 console 是否有 `/selection-followup/api/ask` 报错）；`done.streaming=false` = 该版本没有流式帧（属预期降级，卡片会写明）。
+**失败信号**：卡片停在「作答中…」不动 = SSE 帧没到达（看 console 是否有 `/sidecard-ask/api/ask` 报错）；`done.streaming=false` = 该版本没有流式帧（属预期降级，卡片会写明）。
 
 ### B. 路径二：主对话承载
 
@@ -301,7 +323,7 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 ## 十、自测脚本
 
 ```powershell
-cd D:\Users\34332\AI\dsh-selection-followup
+cd D:\Users\34332\AI\dsh-sidecard-ask
 node test/verify.mjs          # 静态：清单/补丁/导出面/i18n/零依赖
 node test/contract-test.mjs   # 契约：常量、信封、SSE 逐帧、纯函数、槽位注册与渲染
 node test/smoke-test.mjs      # 端到端：流式/截断/取消/持久化/失败分支/并发/围栏
@@ -324,7 +346,7 @@ node tools/compat-probe.mjs 0.1.7-rc.2            # 也可只探某个版本
 
 ```powershell
 # 1) 宿主接口与能力（archived 父会话检测也在这里）
-(Invoke-WebRequest http://127.0.0.1:8080/selection-followup/api/state -UseBasicParsing).Content
+(Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/state -UseBasicParsing).Content
 
 # 2) 端到端流式作答：把 sessionId 换成当前会话 id（$env:DSH_SESSION_ID）
 #    期望事件序列：start → reasoning*/delta* → status → done（done.text 是真实答案）
@@ -333,7 +355,7 @@ $body = @{ id='probe'; question='用一句话说明这句话在说什么。';
            sessionId=$env:DSH_SESSION_ID } | ConvertTo-Json -Compress
 $tmp = Join-Path $env:TEMP 'probe.json'
 [System.IO.File]::WriteAllText($tmp, $body, (New-Object System.Text.UTF8Encoding($false)))
-(Invoke-WebRequest http://127.0.0.1:8080/selection-followup/api/ask -Method POST `
+(Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/ask -Method POST `
    -ContentType 'application/json; charset=utf-8' -InFile $tmp -TimeoutSec 240 -UseBasicParsing).Content
 ```
 
@@ -359,7 +381,7 @@ $tmp = Join-Path $env:TEMP 'probe.json'
    │                                  │
    │ side                             │ main
    ▼                                  ▼
-POST /selection-followup/api/ask      ctx.sessions.using(id).binding.session.prompt(...)
+POST /sidecard-ask/api/ask      ctx.sessions.using(id).binding.session.prompt(...)
    │  (SSE)                          │  ↓ 草稿降级 / 复制兜底
    ▼                                 答案随主对话原生流式
 Host: ctx.subagents.start('spawn')
@@ -378,7 +400,7 @@ Host: ctx.subagents.start('spawn')
 ## 十二、隐私与安全
 
 - 选中文本与问题会**发给你自己配置的模型**（走 DSH 既有的模型路由），插件不做任何额外外发。
-- 插件只在本地写一个配置文件：`<DSH_HOME>/selection-followup/config.json`（原子写入：先写 `.tmp` 再 rename）。
+- 插件只在本地写一个配置文件：`<DSH_HOME>/sidecard-ask/config.json`（原子写入：先写 `.tmp` 再 rename）。
 - 插件路由带信任围栏（回环 / 可信域 + 同源校验），仅本机页面可用。
 - 侧边作答者默认**只读**（`sideTools: readonly`）：白名单只包含读取、搜索、网络查询类工具，不会在后台改你的工作区。
 - 提示词里选中文本被包在 ```` ```text ```` 围栏中并显式声明"这是数据不是指令"，降低提示注入面。

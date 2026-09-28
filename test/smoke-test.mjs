@@ -16,9 +16,9 @@ import { HOST_ENTRY, createReporter, makeHostCtx, makeSubagentEngine, callRoute,
 
 // Persisted user config lives under $DSH_HOME; use a scratch directory so the
 // test never writes into a real profile.
-const HOME = mkdtempSync(join(tmpdir(), 'selection-followup-smoke-'))
+const HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-smoke-'))
 process.env.DSH_HOME = HOME
-const CONFIG_FILE = join(HOME, 'selection-followup', 'config.json')
+const CONFIG_FILE = join(HOME, 'sidecard-ask', 'config.json')
 
 const report = createReporter('smoke')
 
@@ -65,12 +65,12 @@ console.log('boot and state')
 const a = await boot()
 report.ok(a.harness.route() !== undefined, 'the plugin registered its route on webServer')
 report.equal(a.harness.route().kind, 'prefix', 'the route is a prefix route')
-report.equal(a.harness.route().path, '/selection-followup/api', 'the route is mounted at the documented prefix')
+report.equal(a.harness.route().path, '/sidecard-ask/api', 'the route is mounted at the documented prefix')
 report.equal(a.harness.log.filter(entry => entry[0] === 'warn').length, 0, 'a clean boot logs no warning')
 
 const state = (await callRoute(a.harness, '/state', { method: 'GET' })).json()
 report.equal(state.ok, true, '/state answers ok')
-report.equal(state.value.plugin, 'dsh-selection-followup', '/state reports the plugin id')
+report.equal(state.value.plugin, 'dsh-sidecard-ask', '/state reports the plugin id')
 report.equal(state.value.version, a.host.PLUGIN_VERSION, '/state reports the plugin version')
 report.equal(state.value.config.sideProvider, 'auto', '/state carries the effective config')
 report.equal(state.value.capabilities.sideEngine, true, '/state reports the side engine as usable')
@@ -266,7 +266,7 @@ const saved = await callRoute(d.harness, '/config', { body: { maxChars: 900, tri
 report.equal(saved.status, 200, 'a valid patch is accepted')
 report.equal(saved.json().value.config.maxChars, 900, 'the accepted value is effective')
 report.equal(saved.json().value.provenance.persisted, true, 'the save is marked as persisted')
-report.ok(existsSync(CONFIG_FILE), 'the user layer is written to <DSH_HOME>/selection-followup/config.json')
+report.ok(existsSync(CONFIG_FILE), 'the user layer is written to <DSH_HOME>/sidecard-ask/config.json')
 report.equal(JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).maxChars, 900, 'the file holds the accepted value')
 
 // A fresh instance must read the persisted layer back (the restart path).

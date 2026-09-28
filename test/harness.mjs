@@ -1,5 +1,5 @@
 /**
- * Test harness for dsh-selection-followup.
+ * Test harness for dsh-sidecard-ask.
  *
  * There is no DSH runtime in this workspace, so the three test files build a
  * *minimal but honest* stand-in for the parts the plugin touches:

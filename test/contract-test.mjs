@@ -21,7 +21,7 @@ import {
 
 // The host persists user config under $DSH_HOME; point it at a scratch
 // directory so running the tests never touches the developer's real profile.
-process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'selection-followup-contract-'))
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-contract-'))
 
 const report = createReporter('contract')
 const host = await import(hostModuleUrl('contract'))
@@ -50,7 +50,7 @@ host.apply(harness.ctx, { trigger: 'both', maxChars: 1200 })
 
 /** Serve the host's own responses to the client half as a fetch. */
 function hostFetch(url, init = {}) {
-  const path = String(url).replace('/selection-followup/api/', '')
+  const path = String(url).replace('/sidecard-ask/api/', '')
   const body = init.body === undefined ? null : JSON.parse(init.body)
   const method = init.method ?? 'POST'
   if (path.startsWith('ask')) {
@@ -290,7 +290,7 @@ report.equal(client.api.snapshot().sessionId, 'session-beta', 'the probe taught 
 report.equal(client.api.snapshot().cards.length, 0, 'no card is created before a question is asked')
 report.equal(
   (await callRoute(harness, '/state', { method: 'GET' })).json().value.plugin,
-  'dsh-selection-followup',
+  'dsh-sidecard-ask',
   'host still healthy after the client render pass',
 )
 

@@ -1,16 +1,16 @@
-# dsh-selection-followup — bundle patch.
+# dsh-sidecard-ask — bundle patch.
 #
 # Inserts the plugin's single Host row. The row `id` is what the Plugins page
 # and `plugins.row.config` key on, so keep it stable.
 #
 # Everything under `config` is the *defaults layer*: the client settings page
 # persists the user's own overrides to
-# `<DSH_HOME>/selection-followup/config.json`, and that persisted layer wins over
+# `<DSH_HOME>/sidecard-ask/config.json`, and that persisted layer wins over
 # this one. Removing the file (or pressing「重置为默认」in the settings page)
 # restores exactly what is written here.
 - insert:
-    - id: selection-followup
-      name: dsh-selection-followup
+    - id: sidecard-ask
+      name: dsh-sidecard-ask
       config:
         # selection = 选中即浮出按钮；shortcut = 只用快捷键唤起；both = 两者都要
         trigger: selection

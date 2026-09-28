@@ -1,11 +1,11 @@
 /**
- * dsh-selection-followup — Host half.
+ * dsh-sidecard-ask — Host half.
  *
  * Responsibilities (the Client half owns every pixel):
- *   1. Serve the plugin's own JSON + SSE API under `/selection-followup/api`.
+ *   1. Serve the plugin's own JSON + SSE API under `/sidecard-ask/api`.
  *   2. Own the plugin's configuration: built-in defaults, the bundle patch
  *      layer, and the user layer persisted to
- *      `<DSH_HOME>/selection-followup/config.json`.
+ *      `<DSH_HOME>/sidecard-ask/config.json`.
  *   3. Run one independent "side answer" per request: a child Agent started
  *      through `ctx.subagents` whose live deltas are bridged from the
  *      process-local `agent/assistant-stream` event onto the SSE response.
@@ -23,12 +23,12 @@
  *   - No `Config` export: declaring one needs the harness's schema package,
  *     which this plugin must not depend on. `normalizeConfig` validates and
  *     defaults the row config instead, and reports problems through
- *     `/selection-followup/api/state` rather than failing activation.
+ *     `/sidecard-ask/api/state` rather than failing activation.
  *   - Every optional service (`subagents`, `agents`) is probed at call time,
  *     so an older or slimmer composition degrades to a wire error the Client
  *     renders, never to a failed plugin fiber.
  *
- * @module dsh-selection-followup/host
+ * @module dsh-sidecard-ask/host
  */
 
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -36,16 +36,16 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /** Plugin id: the bundle row id, the Client module id, and the log tag. */
-export const name = 'dsh-selection-followup'
+export const name = 'dsh-sidecard-ask'
 
 /** Only the web server is a hard dependency; everything else is probed. */
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.0.1'
+export const PLUGIN_VERSION = '1.1.0'
 
 /** Route prefix of the plugin's own API. */
-export const ROUTE_PREFIX = '/selection-followup/api'
+export const ROUTE_PREFIX = '/sidecard-ask/api'
 
 /** Reject request bodies beyond this size (a runaway selection, not a payload). */
 const MAX_BODY_BYTES = 1 << 20
@@ -271,7 +271,7 @@ export function toWireError(error, fallbackCode = 'internal') {
 export function configDir() {
   const home = typeof process.env.DSH_HOME === 'string' ? process.env.DSH_HOME.trim() : ''
   const base = home !== '' ? home : join(homedir(), '.dsh')
-  return join(base, 'selection-followup')
+  return join(base, 'sidecard-ask')
 }
 
 /**
@@ -489,10 +489,10 @@ function createSideEngine(ctx, configOf) {
       try {
         listener(payload)
       } catch (error) {
-        ctx.logger?.warn?.('[selection-followup] stream listener failed:', error)
+        ctx.logger?.warn?.('[sidecard-ask] stream listener failed:', error)
       }
     }
-  }), 'selection-followup: assistant stream bridge')
+  }), 'sidecard-ask: assistant stream bridge')
 
   ctx.effect(() => ctx.on('session/event', (session, event) => {
     if (event?.type !== 'assistant/chunk') return
@@ -500,10 +500,10 @@ function createSideEngine(ctx, configOf) {
       try {
         listener(session, event)
       } catch (error) {
-        ctx.logger?.warn?.('[selection-followup] chunk listener failed:', error)
+        ctx.logger?.warn?.('[sidecard-ask] chunk listener failed:', error)
       }
     }
-  }), 'selection-followup: durable chunk bridge')
+  }), 'sidecard-ask: durable chunk bridge')
 
   /** The optional subagents service, or undefined. */
   function subagentsService() {
@@ -733,7 +733,7 @@ function createSideEngine(ctx, configOf) {
       // earlier build an archived parent answers normally. The start event
       // carries the flag and a blocked step is translated below instead.
       ctx.logger?.warn?.(
-        `[selection-followup] 父会话 ${parent.id} 已归档：0.1.7-alpha.1+ 会拒绝该子代理的步骤，本次仍会尝试`,
+        `[sidecard-ask] 父会话 ${parent.id} 已归档：0.1.7-alpha.1+ 会拒绝该子代理的步骤，本次仍会尝试`,
       )
     }
 
@@ -938,7 +938,7 @@ function createSideEngine(ctx, configOf) {
       try {
         await runRecord.dispose?.()
       } catch (error) {
-        ctx.logger?.warn?.('[selection-followup] run dispose failed:', error)
+        ctx.logger?.warn?.('[sidecard-ask] run dispose failed:', error)
       }
       // No trailing event: `done`/`error` are terminal and MUST stay last, so a
       // reader that looks at the final frame never sees an informational one.
@@ -989,7 +989,7 @@ function readPersistedConfig(logger) {
     return { data: parsed !== null && typeof parsed === 'object' ? parsed : {}, path, present: true }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
-      logger?.warn?.(`[selection-followup] 读取 ${path} 失败，按未配置处理：`, error?.message ?? error)
+      logger?.warn?.(`[sidecard-ask] 读取 ${path} 失败，按未配置处理：`, error?.message ?? error)
       return { data: {}, path, present: false, error: String(error?.message ?? error) }
     }
     return { data: {}, path, present: false }
@@ -1015,7 +1015,7 @@ function writePersistedConfig(data, logger) {
     } catch {
       /* best effort */
     }
-    logger?.warn?.('[selection-followup] 保存配置失败：', error?.message ?? error)
+    logger?.warn?.('[sidecard-ask] 保存配置失败：', error?.message ?? error)
     return { ok: false, error: String(error?.message ?? error) }
   }
 }
@@ -1041,11 +1041,11 @@ export function apply(ctx, patchConfig) {
     state.problems = [...problems, ...state.problems]
   }
   if (state.problems.length > 0) {
-    for (const problem of state.problems) ctx.logger?.warn?.(`[selection-followup] 配置项被忽略：${problem}`)
+    for (const problem of state.problems) ctx.logger?.warn?.(`[sidecard-ask] 配置项被忽略：${problem}`)
   }
 
   const engine = createSideEngine(ctx, configOf)
-  ctx.effect(() => () => { engine.dispose() }, 'selection-followup: side engine')
+  ctx.effect(() => () => { engine.dispose() }, 'sidecard-ask: side engine')
 
   /** Whether the request may reach the plugin routes. */
   const trustedHostsOf = () => {
@@ -1200,7 +1200,7 @@ export function apply(ctx, patchConfig) {
       else writeError(res, 404, 'not-found', `未知接口 "${method}"`)
     } catch (error) {
       const wire = toWireError(error)
-      ctx.logger?.warn?.(`[selection-followup] ${method} 处理失败：`, wire.message)
+      ctx.logger?.warn?.(`[sidecard-ask] ${method} 处理失败：`, wire.message)
       if (!res.headersSent) writeError(res, 500, wire.code, wire.message)
       else if (!res.writableEnded) res.end()
     }
@@ -1220,7 +1220,7 @@ export function apply(ctx, patchConfig) {
       disposers.push(ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler: routeHandler }))
       return () => { for (const dispose of disposers) dispose() }
     } catch (error) {
-      ctx.logger?.warn?.(`[selection-followup] 前缀路由注册失败，改用逐方法精确路由：${String(error?.message ?? error)}`)
+      ctx.logger?.warn?.(`[sidecard-ask] 前缀路由注册失败，改用逐方法精确路由：${String(error?.message ?? error)}`)
     }
     for (const method of API_METHODS) {
       try {
@@ -1230,13 +1230,13 @@ export function apply(ctx, patchConfig) {
           handler: routeHandler,
         }))
       } catch (error) {
-        ctx.logger?.warn?.(`[selection-followup] 路由 ${method} 注册失败：${String(error?.message ?? error)}`)
+        ctx.logger?.warn?.(`[sidecard-ask] 路由 ${method} 注册失败：${String(error?.message ?? error)}`)
       }
     }
     return () => { for (const dispose of disposers) dispose() }
   }
 
-  ctx.effect(registerRoutes, `selection-followup: ${ROUTE_PREFIX} routes`)
+  ctx.effect(registerRoutes, `sidecard-ask: ${ROUTE_PREFIX} routes`)
 
-  ctx.logger?.info?.(`[selection-followup] host ready at ${ROUTE_PREFIX}（v${PLUGIN_VERSION}）`)
+  ctx.logger?.info?.(`[sidecard-ask] host ready at ${ROUTE_PREFIX}（v${PLUGIN_VERSION}）`)
 }

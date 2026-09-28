@@ -1,7 +1,7 @@
 {
-  "name": "dsh-selection-followup",
-  "version": "1.0.1",
-  "description": "DSH 划词追问：在聊天区与任务区选中文本，就地追问；答案可回到主对话，或在一个独立的侧边卡片里流式呈现。",
+  "name": "dsh-sidecard-ask",
+  "version": "1.1.0",
+  "description": "DSH 划词追问（侧边卡片作答）：在聊天区与任务区选中文本就地追问，答案由独立子代理在侧边卡片里流式呈现，也可选择落回主对话。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -29,21 +29,24 @@
     "dsh-plugin",
     "deepseek-harness",
     "selection",
+    "划词",
+    "选中追问",
     "ask",
-    "side-card"
+    "side-card",
+    "侧边卡片"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/HERO476/dsh-selection-followup.git"
+    "url": "git+https://github.com/HERO476/dsh-sidecard-ask.git"
   },
-  "homepage": "https://github.com/HERO476/dsh-selection-followup#readme",
+  "homepage": "https://github.com/HERO476/dsh-sidecard-ask#readme",
   "bugs": {
-    "url": "https://github.com/HERO476/dsh-selection-followup/issues"
+    "url": "https://github.com/HERO476/dsh-sidecard-ask/issues"
   },
   "icon": "./icon.svg",
   "meta": {
-    "title": "划词追问",
-    "description": "选中聊天或任务里的文本，就地追问；答案可回到主对话，或落在独立侧边卡片里流式呈现。"
+    "title": "侧边卡片追问",
+    "description": "选中聊天或任务里的文本就地追问；答案由独立子代理在侧边卡片里流式呈现（也可落回主对话）。"
   },
   "dsh": {
     "manifestVersion": 1,

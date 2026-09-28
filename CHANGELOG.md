@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.0
+
+**改名：`dsh-selection-followup` → `dsh-sidecard-ask`**（显示名「划词追问」→「侧边卡片追问」）。
+
+原因（可复核）：
+
+- `dsh-selection-followup` 在 **DSH 插件生态里已被他人使用**——GitHub 仓库
+  `zzx-dear/dsh-selection-followup` 与官方收录索引 `data/plugins/zzx-dear__dsh-selection-followup.yml`
+  （category: ui），早于本插件约 20 天。1.0.0 发布时只核对了 npm 名字是否可用（当时为空），
+  **没有核对 GitHub 仓库名与收录索引**，这是本项目的疏漏。
+- 新名 `dsh-sidecard-ask` 的 npm 包名与 GitHub 仓库名都已核对为空，并且与既有的
+  `dsh-selection-ask` / `dsh-selection-explain` / `dsh-selection-toolbar` / `dsh-quote-selection` /
+  `dsh-ui-quote-selection` / `dsh-quote-annotate` / `dsh-selection-memory` / `dsh-plugin-followup`
+  在名字与定位上都区分开：本插件由**独立子代理在侧边卡片里流式作答**，不是把选中内容塞进输入框。
+
+随之变更的标识（旧 → 新）：
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| npm 包名 / bundle 名 | `dsh-selection-followup` | `dsh-sidecard-ask` |
+| 宿主行 id | `selection-followup` | `sidecard-ask` |
+| 插件自有路由 | `/selection-followup/api` | `/sidecard-ask/api` |
+| 客户端模块 id / 槽位条目 id | `dsh-selection-followup` / `selection-followup` | `dsh-sidecard-ask` / `sidecard-ask` |
+| 侧边卡片类型 | `selection-followup:card` | `sidecard-ask:card` |
+| 用户配置目录 | `<DSH_HOME>/selection-followup/` | `<DSH_HOME>/sidecard-ask/` |
+| 显示名（Plugins 页 / 设置页） | 划词追问 | 侧边卡片追问 |
+
+其它：`package.json` 增加中英文关键词（划词 / 选中追问 / 侧边卡片）；自测同步改名，仍是 **276 项全通过**；
+旧 npm 包名已 `deprecate` 指向新名字。功能与 API 与 1.0.1 完全一致，**升级只需卸旧装新**（见 README §三）。
+
 ## 1.0.1
 
 **主题：把"版本适配"从字段笔记变成可验证的适配。**
@@ -24,7 +54,7 @@
 
 ## 1.0.0
 
-首个版本（发布名 `dsh-selection-followup`：npm 上的 `dsh-selection-ask` 已被他人占用）。
+首个版本（发布名 `dsh-sidecard-ask`：npm 上的 `dsh-selection-ask` 已被他人占用）。
 
 - **划词追问**：在聊天区 / 任务区选中文本，选区末端就地浮出「追问选中内容」按钮，点击弹出提问框。
 - **两种作答承载**：主对话（引用块进入当前会话，答案原生流式）与独立侧边卡片（子代理在自己的会话里作答，零父上下文），可在提问框临时切换并配置默认值。
@@ -32,7 +62,7 @@
   适配器"接受打开但没渲染"时由**渲染证明**在 600ms 后把卡片移到内置浮层，不会留下空 tab。
 - **流式渲染**：宿主半把 `agent/assistant-stream` 帧桥接到 SSE；卡片支持关闭、复制、继续追问、停止作答、重试。
 - **边界处理**：空选/过短、编辑框内选择、跨区选择、超长截断（两端算法一致）、接口失败逐层降级、重复触发抑制、并发上限、请求超时、卸载清理。
-- **配置三层**：内置默认 ← bundle 补丁 ← 用户层（`<DSH_HOME>/selection-followup/config.json`，原子写入），设置页可视化编辑 + 运行自检。
+- **配置三层**：内置默认 ← bundle 补丁 ← 用户层（`<DSH_HOME>/sidecard-ask/config.json`，原子写入），设置页可视化编辑 + 运行自检。
 - **零运行时依赖**：宿主半只用 `node:` 内建；客户端半只 `require('react')`。
 - 附带三套可运行自测（236 项）：`test/verify.mjs`、`test/contract-test.mjs`、`test/smoke-test.mjs`。
 
