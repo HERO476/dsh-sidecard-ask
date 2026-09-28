@@ -1,0 +1,15 @@
+{
+  "triggerLabel": "追问选中内容",
+  "triggerHint": "点击用 AI 追问这段文字",
+  "askTitle": "追问选中内容",
+  "carrier": "作答位置",
+  "carrierMain": "主对话",
+  "carrierSide": "侧边卡片",
+  "answerTitle": "追问",
+  "copy": "复制",
+  "close": "关闭",
+  "followUp": "继续追问",
+  "retry": "重试",
+  "settingsTitle": "划词追问",
+  "settingsDesc": "选中聊天或任务里的文本，就地追问。"
+}

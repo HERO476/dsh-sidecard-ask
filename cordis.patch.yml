@@ -1,0 +1,38 @@
+# dsh-selection-followup — bundle patch.
+#
+# Inserts the plugin's single Host row. The row `id` is what the Plugins page
+# and `plugins.row.config` key on, so keep it stable.
+#
+# Everything under `config` is the *defaults layer*: the client settings page
+# persists the user's own overrides to
+# `<DSH_HOME>/selection-followup/config.json`, and that persisted layer wins over
+# this one. Removing the file (or pressing「重置为默认」in the settings page)
+# restores exactly what is written here.
+- insert:
+    - id: selection-followup
+      name: dsh-selection-followup
+      config:
+        # selection = 选中即浮出按钮；shortcut = 只用快捷键唤起；both = 两者都要
+        trigger: selection
+        # main = 在主对话里提问；side = 在独立侧边卡片里提问
+        defaultCarrier: side
+        # auto | native-rightbar | better-sidebar | flow
+        sideSurface: auto
+        # 单次追问最多带走的选中字符数，超出部分截断并标注
+        maxChars: 4000
+        # 唤起追问框的快捷键（当 trigger 允许快捷键时生效）
+        shortcut: Alt+Q
+        # auto | chat | task | chat+task
+        captureZones: auto
+        # 选区落在无法归类的区域时，是否仍然浮出按钮
+        showInUnclassified: true
+        # 少于该字符数的选区不触发
+        minChars: 2
+        # 侧边卡片作答的并发上限
+        maxConcurrentAsks: 3
+        # readonly = 侧边作答者只带只读工具；inherit = 继承父代理的工具
+        sideTools: readonly
+        # 侧边作答的超时（毫秒）
+        sideTimeoutMs: 180000
+        # 子代理 provider 名称；auto = 自动挑选已注册的 provider
+        sideProvider: auto

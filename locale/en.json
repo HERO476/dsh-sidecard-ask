@@ -1,0 +1,15 @@
+{
+  "triggerLabel": "Ask about selection",
+  "triggerHint": "Ask AI about this text",
+  "askTitle": "Ask about the selection",
+  "carrier": "Answer in",
+  "carrierMain": "Main chat",
+  "carrierSide": "Side card",
+  "answerTitle": "Follow-up",
+  "copy": "Copy",
+  "close": "Close",
+  "followUp": "Follow up",
+  "retry": "Retry",
+  "settingsTitle": "Selection Ask",
+  "settingsDesc": "Select text in chat or tasks and ask about it in place."
+}

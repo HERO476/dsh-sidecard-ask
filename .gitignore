@@ -1,0 +1,8 @@
+# Dependencies and build residue (this package ships plain JavaScript on purpose)
+node_modules/
+*.log
+*.tmp
+
+# Local scratch
+.tmp/
+tmp-*.mjs

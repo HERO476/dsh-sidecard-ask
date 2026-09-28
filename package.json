@@ -1,0 +1,63 @@
+{
+  "name": "dsh-selection-followup",
+  "version": "1.0.0",
+  "description": "DSH 划词追问：在聊天区与任务区选中文本，就地追问；答案可回到主对话，或在一个独立的侧边卡片里流式呈现。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "selection",
+    "ask",
+    "side-card"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HERO476/dsh-selection-followup.git"
+  },
+  "homepage": "https://github.com/HERO476/dsh-selection-followup#readme",
+  "bugs": {
+    "url": "https://github.com/HERO476/dsh-selection-followup/issues"
+  },
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "划词追问",
+    "description": "选中聊天或任务里的文本，就地追问；答案可回到主对话，或落在独立侧边卡片里流式呈现。"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
