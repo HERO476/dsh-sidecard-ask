@@ -9,3 +9,6 @@ tools/.cache/
 # Local scratch
 .tmp/
 tmp-*.mjs
+
+# Local agent work journal (not part of the plugin; the repo owner keeps it out of git)
+.workbuddy/

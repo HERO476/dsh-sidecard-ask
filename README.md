@@ -382,7 +382,7 @@ node test/smoke-test.mjs      # 端到端：流式/截断/取消/持久化/失�
 ```
 
 三个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模：verify 53 项 + contract 118 项 + smoke 118 项 = **289 项全部通过**。
+当前规模：verify 53 项 + contract 124 项 + smoke 118 项 = **295 项全部通过**。
 
 ### 10.2 版本能力探测（§7 矩阵的来源）
 
