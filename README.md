@@ -183,6 +183,35 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 
 > 注意：`version` 是加载到浏览器里的那份模块报告的版本。页面刷新后即可用它确认"跑的是不是 0.22.1"。
 
+### 5.2 与 DSH 0.2.0-rc.1 的适配核对（2026-09-29）
+
+本机实际运行的就是 **0.2.0-rc.1**（`@deepseek-ai/dsh` 的 `next` 通道；`latest` 仍是 0.1.7-rc.2）。核对分两层：
+
+**① 包内容层面**（`node tools/compat-probe.mjs 0.1.7-rc.2 0.2.0-rc.1`）：
+16 项能力**逐项与 0.1.7-rc.2 完全一致**——`shell.overlay`、`conversation.input.right`、`settings.section`、
+`data-slot` 锚点、原生右侧栏、`sessions.using/retain`、归档门、`agent/assistant-stream`、子代理、`tools.schemas`、
+`webServer` 路由……全部 ✅。
+
+**② 在运行中的实例上实测**：
+
+| 检查 | 结果 |
+|---|---|
+| 宿主半是否加载 | ✅ `/sidecard-ask/api/state` 返回 `dsh-sidecard-ask v1.2.0`，`sideEngine=true`（provider `spawn,fork`）、`capabilities.parent` 正常 |
+| 客户端半是否注册 | ✅ `shell.overlay` 有 `sidecard-ask`（order 45、active）、`conversation.input.right` 有 `sidecard-ask-session-probe`、`settings.section` 有设置页 |
+| 依赖的槽位与标准 prop | ✅ `conversation.input.right` 仍是 list/session，`standardProps` 仍含 **`sessionId`** 与 **`inputActions`** |
+| 依赖的客户端服务 | ✅ `sessions`（`retain`/`using`/`scope`）、`slots`、`locale`、`layout`、`theme` 全在；`sessions.fork`/`uiWorkspace.forkSession` 只是**新增**了可选 `onCreated`，不影响既有调用 |
+| 端到端作答 | ✅ 真机 `start→delta×31→status→done`（1.36 s，`streamSource=frames`），只读工具白名单照常生效 |
+
+**③ 由此发现并修掉的真实缺陷（1.2.1）**：运行中的 `sidebar.right.pane.tab` 清单里只有
+`dsh-better-sidebar:sidecard-ask:card`，**没有我的原生 `sidecard-ask:card`**。原因是两个适配器用了**同一个 tab kind**：
+better-sidebar 会把收到的每个 tab 描述符**镜像注册进同一个原生注册表**（`sidebarRightTabs.register`，band `extension`），
+而该注册表对*同 band 同 kind 的二次注册直接抛错*（源码注释：*"Everything else colliding on a kind throws"*）——
+后注册的那一方就此失败，而且**在界面上不可见**。修法：
+
+1. better-sidebar 承载面改用独立类型 **`sidecard-ask:card:workbench`**，两端 kind 不再重叠；
+2. `contract-test` **模拟该注册表的"重复 kind 抛错"规则**，此类冲突今后会直接让测试失败；
+3. 设置页自检行改为**同时报告两个适配器**的状态（此前原生适配器的错误压根看不到）。
+
 ---
 
 ## 六、未知 DSH API：占位接口与替换方式

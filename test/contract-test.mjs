@@ -263,7 +263,7 @@ report.ok(clientCtx.injections.includes('sidebar.right.pane.tab'), 'native right
 const injectedNames = clientCtx.injections.flatMap(entry => (Array.isArray(entry) ? entry : [entry]))
 report.ok(injectedNames.includes('betterSidebar'), 'better-sidebar adapter is probed')
 report.equal(betterTabs.length, 1, 'better-sidebar received one tab descriptor')
-report.equal(betterTabs[0]?.id, pure.CARD_KIND, 'the registered tab type is the plugin card kind')
+report.equal(betterTabs[0]?.id, pure.CARD_KIND_BETTER, 'the registered tab type is the better-sidebar kind')
 report.ok(typeof betterTabs[0]?.component === 'function', 'the tab descriptor carries a renderable component')
 
 console.log('\nclient rendering')
@@ -484,7 +484,7 @@ betterClient.shim.flushEffects()
 report.equal(betterClient.module.api.snapshot().sessionId, 'session-zeta', 'the probe captured the session id')
 betterSurface.adapter.open({ id: 'card-7', question: '这是什么？' })
 report.equal(openCalls.length, 1, 'open() drives the documented openTab(seed, scope)')
-report.equal(openCalls[0].seed.type, pure.CARD_KIND, 'the seed carries our tab type')
+report.equal(openCalls[0].seed.type, pure.CARD_KIND_BETTER, 'the seed carries the better-sidebar kind')
 report.equal(openCalls[0].seed.meta.cardId, 'card-7', 'the card id travels in seed.meta (feature tabMeta)')
 report.equal(openCalls[0].scope.sessionId, 'session-zeta', 'the open is scoped to the asking session')
 
@@ -541,6 +541,85 @@ report.equal(
   rollbackClient.module.api.pure.pickSurface('auto').adapter.kind,
   'flow',
   'auto then falls through to the flow card',
+)
+
+console.log('\nsurface kinds must not collide')
+// Live evidence from DSH 0.2.0-rc.1: `sidebar.right.pane.tab` listed
+// `dsh-better-sidebar:sidecard-ask:card` but no native `sidecard-ask:card`,
+// because both adapters registered a type for the SAME kind — and
+// `sidebarRightTabs` throws on a same-band duplicate kind ("Everything else
+// colliding on a kind throws"). better-sidebar mirrors every tab descriptor it
+// receives into that same registry, so the two adapters must use different ids.
+const nativeIds = new Set()
+const nativeKinds = new Map()
+const nativeDefs = []
+const nativeRegistry = {
+  register(definition) {
+    if (nativeIds.has(definition.id)) {
+      throw new Error(`sidebarRight: duplicate registration of id "${definition.id}"`)
+    }
+    const band = definition.priority ?? 'extension'
+    const slot = `${definition.kind}|${band}`
+    const taken = nativeKinds.get(slot)
+    if (taken !== undefined && taken !== definition.id) {
+      throw new Error(`sidebarRight: kind "${definition.kind}" already has a ${band} registration`)
+    }
+    nativeIds.add(definition.id)
+    nativeKinds.set(slot, definition.id)
+    nativeDefs.push(definition)
+    return () => {
+      nativeIds.delete(definition.id)
+      nativeKinds.delete(slot)
+    }
+  },
+}
+const mirroredDescriptors = []
+const kindCtx = makeClientCtx({
+  services: {
+    sidebarRightTabs: nativeRegistry,
+    sidebarRight: { openTab: () => {}, mounted: { getSnapshot: () => 'session-alpha', subscribe: () => () => {} } },
+    betterSidebar: {
+      version: '0.22.1',
+      features: fullFeatures,
+      // better-sidebar's real behavior: each descriptor becomes an
+      // `extension`-band type in the native registry under its own prefix.
+      registerTab: (descriptor) => {
+        mirroredDescriptors.push(descriptor)
+        return nativeRegistry.register({
+          id: `dsh-better-sidebar:${descriptor.id}`,
+          kind: descriptor.id,
+          priority: 'extension',
+        })
+      },
+      openTab: () => {},
+      closeTab: () => {},
+      getSnapshot: () => ({ sessionId: 'session-alpha' }),
+    },
+  },
+})
+const kindClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+kindClient.module.apply(kindCtx.ctx)
+report.ok(pure.CARD_KIND !== pure.CARD_KIND_BETTER, 'the two adapters use different tab kinds')
+report.equal(
+  nativeKinds.get(`${pure.CARD_KIND}|extension`),
+  pure.CARD_KIND,
+  'the native adapter registered its own kind on the shared registry',
+)
+report.equal(
+  nativeKinds.get(`${pure.CARD_KIND_BETTER}|extension`),
+  `dsh-better-sidebar:${pure.CARD_KIND_BETTER}`,
+  'the better-sidebar mirror registered a DIFFERENT kind, so neither threw',
+)
+report.equal(mirroredDescriptors.length, 1, 'better-sidebar received exactly one descriptor')
+report.equal(
+  kindClient.module.api.pure.pickSurface('auto').adapter.kind,
+  'native-rightbar',
+  'with both adapters healthy, auto prefers the native right rail',
+)
+report.equal(
+  kindClient.module.api.pure.pickSurface('better-sidebar').fellBack,
+  false,
+  'and the better-sidebar carrier stays available',
 )
 
 report.summary()

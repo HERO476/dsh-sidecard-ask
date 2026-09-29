@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.1
+
+**主题：核对 DSH 0.2.0-rc.1 的适配性，并修掉由此暴露的一个真实缺陷。**
+
+核对（本机运行中的就是 0.2.0-rc.1，`@deepseek-ai/dsh` 的 `next` 通道）：
+
+- 包内容层面：`node tools/compat-probe.mjs 0.1.7-rc.2 0.2.0-rc.1` → 16 项能力**逐项一致**，没有任何依赖被移除或改名；
+- 运行实例上：宿主半 `v1.2.0` 正常（`sideEngine`、provider `spawn,fork`、`capabilities.parent` 均可用）；
+  客户端半在 `shell.overlay` / `conversation.input.right` 都已注册；`standardProps` 仍含 `sessionId` 与 `inputActions`；
+  真机端到端作答 `start→delta×31→status→done`（1.36 s）通过。新增的 `sessions.fork`/`uiWorkspace.forkSession`
+  可选参数 `onCreated` 是纯增量，不影响既有调用。
+
+**修掉的缺陷**：`sidebar.right.pane.tab` 的运行清单里只有 `dsh-better-sidebar:sidecard-ask:card`，
+没有本插件原生右侧栏的 `sidecard-ask:card`——两个适配器用了同一个 tab kind，而 better-sidebar 会把每个 tab 描述符
+镜像注册进**同一个**原生注册表（band `extension`），该注册表对同 band 同 kind 的二次注册抛错，后注册的一方静默失败。
+
+- better-sidebar 承载面改用独立类型 `sidecard-ask:card:workbench`（`CARD_KIND_BETTER`），两端不再重叠；
+- `contract-test` 新增"surface kinds must not collide"一节：**在测试里模拟该注册表的重复 kind 抛错规则**
+  与 better-sidebar 的镜像注册行为，若两者再共用 kind，测试立即失败；
+- 设置页自检行改为同时报告**两个适配器**（原先原生适配器的错误在界面上不可见，只能靠翻槽位清单发现）。
+
+自测 289 → **295 项**（verify 53 / contract 124 / smoke 118）。
+
 ## 1.2.0
 
 **主题：核对并加固与 dsh-better-sidebar 0.22.1 的适配。**

@@ -42,8 +42,26 @@ window.__ModuleLoader__.load({
       settings: 'sidecard-ask-settings',
       sessionProbe: 'sidecard-ask-session-probe',
     }
-    /** Side-card tab type registered in a side-card host. */
+    /**
+     * Tab kind served by the DSH native right rail (also its implementation id).
+     */
     const CARD_KIND = 'sidecard-ask:card'
+
+    /**
+     * Tab type served by the dsh-better-sidebar plugin.
+     *
+     * It MUST differ from {@link CARD_KIND}: better-sidebar mirrors every tab
+     * descriptor it is given into the SAME native registry
+     * (`sidebarRightTabs.register`, id `dsh-better-sidebar:<id>`, band
+     * `extension`), and that registry THROWS when a kind already has a
+     * registration in the same band ("Everything else colliding on a kind
+     * throws"). Sharing one kind made the two adapters collide: whichever
+     * registered second failed — observed live on 0.2.0-rc.1, where the pane
+     * listed `dsh-better-sidebar:sidecard-ask:card` and no native
+     * `sidecard-ask:card` at all. `test/contract-test.mjs` now emulates that
+     * registry rule so the collision cannot come back.
+     */
+    const CARD_KIND_BETTER = 'sidecard-ask:card:workbench'
 
     /**
      * Client-side mirror of the Host `DEFAULT_CONFIG`. The client needs values
@@ -170,6 +188,7 @@ window.__ModuleLoader__.load({
         diagSidecard: '侧边卡片插件（dsh-better-sidebar）',
         diagFeatures: '项能力',
         diagNoTabMeta: '版本过旧：没有 tabMeta 能力，已跳过它改用其它承载面',
+        diagNativeKind: 'kind',
         toolGuardUnavailable: '该 provider 不支持工具白名单，本次作答继承了当前会话的工具',
         toolGuardInherited: '按配置继承当前会话的工具',
         diagUnreachable: '宿主接口不可达：{msg}',
@@ -272,6 +291,7 @@ window.__ModuleLoader__.load({
         diagSidecard: 'Side-card plugin (dsh-better-sidebar)',
         diagFeatures: 'capabilities',
         diagNoTabMeta: 'too old: no tabMeta capability, skipped in favour of another surface',
+        diagNativeKind: 'kind',
         toolGuardUnavailable: 'This provider supports no tool allow-list, so the answer inherited the session tools',
         toolGuardInherited: 'Inherits the session tools, as configured',
         diagUnreachable: 'Host API unreachable: {msg}',
@@ -889,20 +909,20 @@ window.__ModuleLoader__.load({
         },
         open(card) {
           if (!this.available() || typeof this.service.openTab !== 'function') return false
-          const tabId = `${CARD_KIND}:${card.id}`
+          const tabId = `${CARD_KIND_BETTER}:${card.id}`
           // `meta` is the transport for the card id (feature `tabMeta`), and
           // `dedupeKey` on our descriptor is what collapses repeat opens onto
           // the same tab; both are part of the stable consumer contract
           // (`lib/types/client/service.d.ts`, unchanged across 0.22.0 → 0.22.1).
           this.service.openTab(
-            { type: CARD_KIND, id: tabId, title: card.question.slice(0, 32), meta: { cardId: card.id } },
+            { type: CARD_KIND_BETTER, id: tabId, title: card.question.slice(0, 32), meta: { cardId: card.id } },
             store.state.sessionId === null ? undefined : { sessionId: store.state.sessionId },
           )
           return true
         },
         close(card) {
           if (!this.available() || typeof this.service.closeTab !== 'function') return false
-          this.service.closeTab(`${CARD_KIND}:${card.id}`)
+          this.service.closeTab(`${CARD_KIND_BETTER}:${card.id}`)
           return true
         },
       },
@@ -1554,7 +1574,7 @@ window.__ModuleLoader__.load({
                 h('div', { key: 'slots' }, `${t('diagSlots')}: ${Object.entries(state.slots).map(([k, v]) => `${k}=${v}`).join(' · ')}`),
                 // The side-card plugin's own report: which version is loaded and
                 // whether it advertises the capability this adapter needs.
-                h('div', { key: 'sidecard' }, `${t('diagSidecard')}: ${describeSidecardAdapter()}`),
+                h('div', { key: 'sidecard' }, `${t('diagSidecard')}: ${describeSurfaces()}`),
                 h('div', { key: 'path' }, `${t('settingsTitle')} → ${diag.provenance?.persistedPath ?? ''}`),
               ])
           : null)
@@ -1582,10 +1602,22 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One line describing how the optional side-card plugin resolved, for the
-     * settings page's capability check. Reported from the plugin's OWN
-     * `version`/`features` fields, so the answer is what is running, not what
-     * package.json claims.
+     * One line describing how each optional side-card surface resolved, for the
+     * settings page's capability check. Both adapters are reported, because a
+     * failing NATIVE registration was previously invisible here (it only showed
+     * up as a missing entry in the pane's own slot inventory).
+     * @returns {string} human-readable state.
+     */
+    function describeSurfaces() {
+      const native = surfaces.native.available()
+        ? `${t('yes')} · ${t('diagNativeKind')}=${CARD_KIND}`
+        : `${t('no')}${surfaces.native.error === null ? '' : `（${surfaces.native.error}）`}`
+      return `${t('surfaceNative')}: ${native} ／ ${t('surfaceBetter')}: ${describeSidecardAdapter()}`
+    }
+
+    /**
+     * The optional side-card plugin's own report: which version is loaded and
+     * whether it advertises the capability this adapter needs.
      * @returns {string} human-readable state.
      */
     function describeSidecardAdapter() {
@@ -2245,7 +2277,11 @@ window.__ModuleLoader__.load({
                 return
               }
               const off = service.registerTab({
-                id: CARD_KIND,
+                // A DIFFERENT type from the native rail's: better-sidebar mirrors
+                // this descriptor into `sidebarRightTabs` as an `extension`-band
+                // registration, and a second registration of the same kind in
+                // that band throws (see CARD_KIND_BETTER).
+                id: CARD_KIND_BETTER,
                 title: () => t('answerTitle'),
                 description: () => t('settingsDesc'),
                 order: 120,
@@ -2337,13 +2373,14 @@ window.__ModuleLoader__.load({
        * `window` and exercises these without a browser.
        */
       api: Object.freeze({
-        version: '1.2.0',
+        version: '1.2.1',
         /** Read-only state accessor for diagnostics and the test harness. */
         snapshot: () => store.state,
         pure: Object.freeze({
           CLIENT_DEFAULTS,
           IDS,
           CARD_KIND,
+          CARD_KIND_BETTER,
           parseSseBlock,
           truncateSelection,
           parseShortcut,
