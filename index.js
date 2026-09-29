@@ -42,7 +42,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.2.1'
+export const PLUGIN_VERSION = '1.3.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -1047,6 +1047,58 @@ export function apply(ctx, patchConfig) {
   const engine = createSideEngine(ctx, configOf)
   ctx.effect(() => () => { engine.dispose() }, 'sidecard-ask: side engine')
 
+  /**
+   * The Client half's own status report, or null before the first one.
+   *
+   * This exists because the Client runs in a browser this plugin cannot
+   * inspect: without it, a broken CLIENT-side registration (for example two
+   * adapters colliding on one tab kind, or a slot that never went live) is
+   * invisible from the Host — it only shows up as a missing entry deep in a
+   * slot inventory. The Client posts a bounded, allow-listed summary after its
+   * registration ladders settle; `/state` hands it back.
+   */
+  let clientReport = null
+
+  /** Allow-listed, size-bounded view of one Client report. */
+  function sanitizeClientReport(raw) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+    const short = (value, limit = 200) => (typeof value === 'string' ? value.slice(0, limit) : undefined)
+    const flag = value => (typeof value === 'boolean' ? value : undefined)
+    const out = {
+      at: Date.now(),
+      version: short(raw.version, 40),
+      surface: short(raw.surface, 40),
+      zoneAnchors: flag(raw.zoneAnchors),
+      sessionKnown: flag(raw.sessionKnown),
+      slots: {},
+      native: {},
+      better: {},
+    }
+    if (raw.slots !== null && typeof raw.slots === 'object' && !Array.isArray(raw.slots)) {
+      for (const [slot, key] of Object.entries(raw.slots).slice(0, 8)) {
+        const name = short(slot, 40)
+        const value = short(key, 80)
+        if (name !== undefined && value !== undefined) out.slots[name] = value
+      }
+    }
+    for (const [target, source] of [['native', raw.native], ['better', raw.better]]) {
+      if (source === null || typeof source !== 'object' || Array.isArray(source)) continue
+      const available = flag(source.available)
+      if (available !== undefined) out[target].available = available
+      const version = short(source.version, 40)
+      if (version !== undefined) out[target].version = version
+      const reason = short(source.reason ?? source.error, 200)
+      if (reason !== undefined && reason !== '') out[target].reason = reason
+      if (Array.isArray(source.features)) {
+        out[target].features = source.features
+          .filter(feature => typeof feature === 'string')
+          .slice(0, 40)
+          .map(feature => feature.slice(0, 40))
+      }
+    }
+    return out
+  }
+
   /** Whether the request may reach the plugin routes. */
   const trustedHostsOf = () => {
     const runtime = ctx.get('webRuntime')
@@ -1074,7 +1126,33 @@ export function apply(ctx, patchConfig) {
         // Informational: which process-local stream the host bridges.
         streamSource: 'agent/assistant-stream',
       },
+      // The Client half's last self-report (null until it posts one).
+      client: clientReport,
     })
+  }
+
+  /**
+   * `/diagnose` — the Client half reports its own registration state.
+   *
+   * A browser-side plugin cannot be inspected from the Host, so this is the
+   * only channel that turns "the card silently fell back" or "the native tab
+   * never registered" into something readable from outside the page.
+   */
+  const handleDiagnose = async (req, res) => {
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (error) {
+      writeError(res, 400, toWireError(error, 'bad-request').code, toWireError(error).message)
+      return
+    }
+    const report = sanitizeClientReport(body)
+    if (report === null) {
+      writeError(res, 400, 'bad-request', '诊断上报必须是对象')
+      return
+    }
+    clientReport = report
+    writeOk(res, { accepted: true, at: report.at })
   }
 
   /** `/ask` — one SSE stream per side answer. */
@@ -1164,7 +1242,7 @@ export function apply(ctx, patchConfig) {
    * The HTTP methods the plugin serves; kept in one place because the route
    * registration has two shapes (see below).
    */
-  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset']
+  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose']
 
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
@@ -1197,6 +1275,7 @@ export function apply(ctx, patchConfig) {
       else if (method === 'cancel') await handleCancel(req, res)
       else if (method === 'config') await handleConfig(req, res)
       else if (method === 'reset') handleReset(req, res)
+      else if (method === 'diagnose') await handleDiagnose(req, res)
       else writeError(res, 404, 'not-found', `未知接口 "${method}"`)
     } catch (error) {
       const wire = toWireError(error)

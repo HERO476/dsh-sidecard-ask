@@ -449,4 +449,50 @@ const allowed = await callRoute(trustedHost.harness, '/state', {
 })
 report.equal(allowed.status, 200, 'a configured trusted authority is allowed through the fence')
 
+// ────────────────────────────────────────────────────────────────────────────
+// 9. client self-report (the only channel that exposes browser-side state)
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nclient self-report')
+const fresh = await boot()
+const beforeReport = (await callRoute(fresh.harness, '/state', { method: 'GET' })).json()
+report.equal(beforeReport.value.client, null, 'no client report before the browser posts one')
+
+const reported = await callRoute(fresh.harness, '/diagnose', {
+  body: {
+    version: '1.2.1',
+    surface: 'native-rightbar',
+    zoneAnchors: true,
+    sessionKnown: true,
+    slots: { overlay: 'shell.overlay', settings: 'settings.section', sessionProbe: 'conversation.input.right' },
+    native: { available: true },
+    better: { available: true, version: '0.22.1', features: ['badge', 'tabMeta'], reason: null },
+    // Unknown keys must not reach the state surface.
+    evil: { nested: 'ignored' },
+  },
+})
+report.equal(reported.status, 200, 'the diagnose route accepts a report')
+const afterReport = (await callRoute(fresh.harness, '/state', { method: 'GET' })).json()
+report.equal(afterReport.value.client.version, '1.2.1', 'the report reaches /state')
+report.equal(afterReport.value.client.surface, 'native-rightbar', 'the reported surface is kept')
+report.equal(afterReport.value.client.slots.sessionProbe, 'conversation.input.right', 'slot landings are kept')
+report.equal(afterReport.value.client.better.version, '0.22.1', 'the side-card plugin version is kept')
+report.equal(afterReport.value.client.better.available, true, 'adapter availability is kept')
+report.equal(afterReport.value.client.native.available, true, 'native adapter availability is kept')
+report.ok(afterReport.value.client.evil === undefined, 'unknown keys are dropped')
+report.ok(typeof afterReport.value.client.at === 'number', 'the report is timestamped by the host')
+
+const truncated = await callRoute(fresh.harness, '/diagnose', {
+  body: { version: 'x'.repeat(500), better: { reason: 'y'.repeat(5000), features: ['ok', 42, 'z'.repeat(100)] } },
+})
+report.equal(truncated.status, 200, 'an oversized report is still accepted')
+const afterTruncate = (await callRoute(fresh.harness, '/state', { method: 'GET' })).json()
+report.ok(afterTruncate.value.client.version.length <= 40, 'long strings are truncated')
+report.ok(afterTruncate.value.client.better.reason.length <= 200, 'long reasons are truncated')
+report.equal(afterTruncate.value.client.better.features.length, 2, 'non-string features are dropped')
+
+const badReport = await callRoute(fresh.harness, '/diagnose', { body: '"not an object"' })
+report.equal(badReport.status, 400, 'a non-object report is refused')
+report.equal(badReport.json().error.code, 'bad-request', 'the refusal carries a code')
+
 report.summary()

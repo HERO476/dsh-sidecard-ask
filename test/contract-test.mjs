@@ -622,4 +622,27 @@ report.equal(
   'and the better-sidebar carrier stays available',
 )
 
+console.log('\nclient self-report')
+// The Host cannot inspect a browser-side plugin, so the Client posts a bounded
+// summary and `/state` hands it back. The body is built by a pure helper, which
+// is what this section exercises (smoke-test covers the host endpoint).
+const reportBody = pure.buildClientReport({
+  surface: 'better-sidebar',
+  zoneAnchors: false,
+  sessionId: 'session-alpha',
+  slots: { overlay: 'shell.overlay' },
+})
+report.equal(reportBody.version, client.api.version, 'the report carries the client version')
+report.equal(reportBody.surface, 'better-sidebar', 'the report carries the chosen surface')
+report.equal(reportBody.zoneAnchors, false, 'the report carries the zone-anchor verdict')
+report.equal(reportBody.sessionKnown, true, 'the report says whether a session was resolved')
+report.equal(reportBody.slots.overlay, 'shell.overlay', 'the report carries the slot landings')
+report.ok(typeof reportBody.native.available === 'boolean', 'the report carries the native adapter state')
+report.ok(typeof reportBody.better.available === 'boolean', 'the report carries the side-card plugin state')
+report.ok(Array.isArray(reportBody.better.features), 'the plugin capability list is reported')
+
+const emptyReport = pure.buildClientReport({ surface: 'flow', zoneAnchors: null, sessionId: null, slots: {} })
+report.equal(emptyReport.sessionKnown, false, 'no session is reported honestly')
+report.equal(emptyReport.zoneAnchors, null, 'an unknown zone verdict stays null')
+
 report.summary()

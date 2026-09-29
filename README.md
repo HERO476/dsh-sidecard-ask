@@ -212,6 +212,15 @@ better-sidebar 会把收到的每个 tab 描述符**镜像注册进同一个原�
 2. `contract-test` **模拟该注册表的"重复 kind 抛错"规则**，此类冲突今后会直接让测试失败；
 3. 设置页自检行改为**同时报告两个适配器**的状态（此前原生适配器的错误压根看不到）。
 
+**④ 修复后的运行实例复核（2026-09-29，1.3.0）**：`sidebar.right.pane.tab` 的占用者现在**同时**包含
+
+| key | 来源 |
+|---|---|
+| `sidecard-ask:card` | 本插件的**原生右侧栏**承载面（1.2.1 之前完全缺失） |
+| `dsh-better-sidebar:sidecard-ask:card:workbench` | 经 dsh-better-sidebar 镜像注册的承载面（独立 kind） |
+
+两者共存、均 `active: true` —— 即"同 kind 冲突"已被消除，`auto` 默认走原生右侧栏，强制 `sideSurface: better-sidebar` 仍可用。
+
 ---
 
 ## 六、未知 DSH API：占位接口与替换方式
@@ -237,8 +246,13 @@ ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
 - **占位 1（草稿降级）**：`ctx.get('conversation').input.for(scope)` → `{ state.getSnapshot().draft, setDraft(text) }`。
   这是**未出现在服务目录里**的接口（属 harness 内部形态），所以只作为第二顺位降级；搜索 `PLACEHOLDER: composer-draft`。
 - **占位 2（最后兜底）**：前两者都不可用时，插件抛出可读错误并提示用户复制文本，搜索 `PLACEHOLDER: clipboard-fallback`。
-- **线协议**：客户端与宿主半之间是插件**自有的** `/sidecard-ask/api`（`GET /state`、`POST /ask|cancel|config|reset`），
+- **线协议**：客户端与宿主半之间是插件**自有的** `/sidecard-ask/api`（`GET /state`、`POST /ask|cancel|config|reset|diagnose`），
   不依赖任何 harness 内部 RPC；若未来 harness 提供正式的同进程 RPC，替换点就是 `client.js` §3 的 `postJson/streamAsk`。
+- **`POST /diagnose`（客户端自检上报）**：宿主**看不到浏览器里的客户端半**，所以客户端在启动、槽位落点变化、
+  承载面回退时把自己的一份受限摘要（版本、承载面、区域锚点、槽位落点、两个适配器的可用性与原因、侧边卡片插件版本与能力）
+  POST 给宿主；随后 `GET /state` 的 `value.client` 就能读到它。宿主侧对上报做**白名单 + 长度截断**（未知键丢弃、
+  字符串截断到 200 字符、能力列表最多 40 项），所以页面即使被注入垃圾也不会污染状态面。
+  这条通道是在两次"客户端静默失效只能靠人工翻槽位清单才发现"之后补上的。
 
 > 约定：所有占位点都写成 `PLACEHOLDER: <名字>` 注释 + 可运行的降级路径，替换时只需改该函数的实现，调用方（卡片、设置页）无需改动。
 
@@ -382,7 +396,7 @@ node test/smoke-test.mjs      # 端到端：流式/截断/取消/持久化/失�
 ```
 
 三个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模：verify 53 项 + contract 124 项 + smoke 118 项 = **295 项全部通过**。
+当前规模：verify 53 项 + contract 135 项 + smoke 134 项 = **322 项全部通过**。
 
 ### 10.2 版本能力探测（§7 矩阵的来源）
 
@@ -409,7 +423,29 @@ $tmp = Join-Path $env:TEMP 'probe.json'
 [System.IO.File]::WriteAllText($tmp, $body, (New-Object System.Text.UTF8Encoding($false)))
 (Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/ask -Method POST `
    -ContentType 'application/json; charset=utf-8' -InFile $tmp -TimeoutSec 240 -UseBasicParsing).Content
+
+# 3) 客户端半的真实状态（浏览器跑的那份代码/槽位落点/两个适配器）
+#    页面加载后 GET /state，看 value.client —— 这是唯一能从页面外读到客户端状态的通道
+((Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/state -UseBasicParsing).Content | ConvertFrom-Json).value.client
 ```
+
+**客户端状态样例**（1.3.0 起）：
+
+```json
+{
+  "at": 1790555771338,
+  "version": "1.3.0",
+  "surface": "native-rightbar",
+  "zoneAnchors": true,
+  "sessionKnown": true,
+  "slots": { "overlay": "shell.overlay", "settings": "settings.section", "sessionProbe": "conversation.input.right" },
+  "native": { "available": true },
+  "better": { "available": true, "version": "0.22.1", "features": ["badge", "…", "tabMeta"] }
+}
+```
+
+`native.reason` / `better.reason` 会写明**为什么**某个承载面不可用（例如 `no-tab-meta` 或注册表的报错原文）——
+1.2.1 修掉的那个 tab kind 冲突正是靠这类信息才定位到的。
 
 **2026-09-28 在 DSH 0.1.7-rc.2 上的实测结果**（`provider=spawn`、`sideTools=readonly`）：
 `start x1 → reasoning x181 → delta x90 → status x1 → done x1`，耗时 2.6 s，`done.text` 为真实模型答案。

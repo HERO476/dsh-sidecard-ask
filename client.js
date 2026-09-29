@@ -43,6 +43,13 @@ window.__ModuleLoader__.load({
       sessionProbe: 'sidecard-ask-session-probe',
     }
     /**
+     * Version of this Client half. Single source of truth: the self-report to
+     * the Host and the module's `api.version` both read it, so a report can
+     * never claim a generation the browser is not actually running.
+     */
+    const CLIENT_VERSION = '1.3.0'
+
+    /**
      * Tab kind served by the DSH native right rail (also its implementation id).
      */
     const CARD_KIND = 'sidecard-ask:card'
@@ -942,6 +949,41 @@ window.__ModuleLoader__.load({
     let capturedComposerActions = null
 
     /**
+     * What this Client half wants the Host to know about its own state.
+     *
+     * The Host cannot inspect a browser-side plugin, so this report is what
+     * makes a silent CLIENT-side failure visible from outside the page
+     * (`GET /sidecard-ask/api/state` → `value.client`). It was added after two
+     * such failures were only diagnosable by hand-inspecting the live slot
+     * inventory: a native tab type that never registered, and a client build
+     * that was still the previous generation.
+     *
+     * @param {object} state - `store.state`.
+     * @returns {object} the report body (allow-listed again on the Host).
+     */
+    function buildClientReport(state) {
+      return {
+        // Read from the module's own version constant so the report can never
+        // claim a generation the browser is not actually running.
+        version: CLIENT_VERSION,
+        surface: state.surface,
+        zoneAnchors: state.zoneAnchors,
+        sessionKnown: typeof state.sessionId === 'string' && state.sessionId !== '',
+        slots: { ...state.slots },
+        native: {
+          available: surfaces.native.available(),
+          ...(surfaces.native.error === null ? {} : { reason: String(surfaces.native.error) }),
+        },
+        better: {
+          available: surfaces.better.available(),
+          ...(surfaces.better.version === null ? {} : { version: surfaces.better.version }),
+          ...(surfaces.better.reason === null ? {} : { reason: String(surfaces.better.reason) }),
+          features: surfaces.better.features,
+        },
+      }
+    }
+
+    /**
      * The card id an external host is CURRENTLY rendering. `CardHost` sets it
      * on mount and clears it on unmount, which is what turns "the adapter
      * accepted the open" into "the user can actually see the card": a host
@@ -1743,6 +1785,7 @@ window.__ModuleLoader__.load({
               if (!opened) {
                 store.set({ surface: 'flow' })
                 patchCard(card.id, { surface: 'flow' })
+                scheduleReport(0)
               } else {
                 // Render proof: an adapter that accepts the open but never
                 // mounts our body would leave an empty tab. Unless the card is
@@ -1757,6 +1800,7 @@ window.__ModuleLoader__.load({
                   store.set({ surface: 'flow', surfaceNote: t('surfaceUnproven') })
                   patchCard(card.id, { surface: 'flow' })
                   toast(t('surfaceUnproven'))
+                  scheduleReport(0)
                 }, 600)
                 pendingProofs.add(proof)
               }
@@ -2118,10 +2162,26 @@ window.__ModuleLoader__.load({
           }
         }
 
+        /**
+         * Debounced self-report to the Host. Diagnostics are best-effort: a
+         * failure is logged and never surfaces as a user-visible error.
+         */
+        let reportTimer = null
+        const scheduleReport = (delay = 600) => {
+          if (reportTimer !== null) clearTimeout(reportTimer)
+          reportTimer = setTimeout(() => {
+            reportTimer = null
+            void postJson('diagnose', buildClientReport(store.state)).catch((error) => {
+              console.warn(`[${PLUGIN_ID}] 自检上报失败（不影响功能）：`, error?.message ?? error)
+            })
+          }, delay)
+        }
+
         /** Record which rung a registration actually landed on. */
         const noteSlot = (name, key) => {
           const slots = { ...(store.state.slots ?? {}), [name]: key }
           store.set({ slots })
+          scheduleReport()
         }
 
         disposers.push(firstLiveSlot(
@@ -2340,12 +2400,16 @@ window.__ModuleLoader__.load({
 
         // ── boot ─────────────────────────────────────────────────────────
         void refreshState().catch(() => { /* the settings page shows the failure */ })
+        // One report after the slot ladders have had time to settle, so the
+        // Host ends up holding the CLIENT's real registration state.
+        scheduleReport(2500)
         disposers.push(() => {
           for (const controller of controllers.values()) controller.abort()
           controllers.clear()
           for (const proof of pendingProofs) clearTimeout(proof)
           pendingProofs.clear()
           if (toastTimer !== null) clearTimeout(toastTimer)
+          if (reportTimer !== null) clearTimeout(reportTimer)
           store.set({
             trigger: null,
             popover: null,
@@ -2373,7 +2437,7 @@ window.__ModuleLoader__.load({
        * `window` and exercises these without a browser.
        */
       api: Object.freeze({
-        version: '1.2.1',
+        version: CLIENT_VERSION,
         /** Read-only state accessor for diagnostics and the test harness. */
         snapshot: () => store.state,
         pure: Object.freeze({
@@ -2391,6 +2455,7 @@ window.__ModuleLoader__.load({
           selectionSignature,
           composeMainPrompt,
           askInMainConversation,
+          buildClientReport,
           renderRichText,
           pickSurface,
           dict: DICT,
