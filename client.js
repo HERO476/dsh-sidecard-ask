@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.3.0'
+    const CLIENT_VERSION = '1.3.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -947,6 +947,23 @@ window.__ModuleLoader__.load({
      * (`inputActions`), or null before any such entry has rendered.
      */
     let capturedComposerActions = null
+
+    /**
+     * Whether `POST /diagnose` is worth calling on this host generation.
+     *
+     * The two halves update independently — the Host half only on a DSH
+     * restart, the Client half on a page load — so a page can easily run a
+     * NEWER Client against an older Host that has no `/diagnose` route. The
+     * first refusal turns the channel off for this page instead of retrying
+     * (and warning) on every report.
+     *
+     * @param {unknown} error - the thrown wire error.
+     * @returns {boolean} true when the failure means "this host lacks the route".
+     */
+    function isDiagnosticsUnsupported(error) {
+      const code = error?.code
+      return code === 'not-found' || code === 'bad-response' || code === 'unreachable'
+    }
 
     /**
      * What this Client half wants the Host to know about its own state.
@@ -2164,14 +2181,23 @@ window.__ModuleLoader__.load({
 
         /**
          * Debounced self-report to the Host. Diagnostics are best-effort: a
-         * failure is logged and never surfaces as a user-visible error.
+         * failure is logged and never surfaces as a user-visible error, and a
+         * host too old to have the route is remembered so the channel is not
+         * retried for the rest of the page's life.
          */
         let reportTimer = null
+        let diagnosticsSupported = true
         const scheduleReport = (delay = 600) => {
+          if (!diagnosticsSupported) return
           if (reportTimer !== null) clearTimeout(reportTimer)
           reportTimer = setTimeout(() => {
             reportTimer = null
             void postJson('diagnose', buildClientReport(store.state)).catch((error) => {
+              if (isDiagnosticsUnsupported(error)) {
+                diagnosticsSupported = false
+                console.info(`[${PLUGIN_ID}] 宿主半尚不支持自检上报（宿主半比客户端旧，重启 DSH 后生效）`)
+                return
+              }
               console.warn(`[${PLUGIN_ID}] 自检上报失败（不影响功能）：`, error?.message ?? error)
             })
           }, delay)
@@ -2456,6 +2482,7 @@ window.__ModuleLoader__.load({
           composeMainPrompt,
           askInMainConversation,
           buildClientReport,
+          isDiagnosticsUnsupported,
           renderRichText,
           pickSurface,
           dict: DICT,

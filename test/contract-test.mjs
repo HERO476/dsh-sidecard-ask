@@ -645,4 +645,12 @@ const emptyReport = pure.buildClientReport({ surface: 'flow', zoneAnchors: null,
 report.equal(emptyReport.sessionKnown, false, 'no session is reported honestly')
 report.equal(emptyReport.zoneAnchors, null, 'an unknown zone verdict stays null')
 
+// The two halves update independently (host on restart, client on page load),
+// so a newer client must stop reporting to a host that has no `/diagnose`.
+report.equal(pure.isDiagnosticsUnsupported({ code: 'not-found' }), true, 'a 404 host disables the channel')
+report.equal(pure.isDiagnosticsUnsupported({ code: 'bad-response' }), true, 'an SPA-fallback HTML answer disables it too')
+report.equal(pure.isDiagnosticsUnsupported({ code: 'unreachable' }), true, 'an unreachable host disables it too')
+report.equal(pure.isDiagnosticsUnsupported({ code: 'invalid-config' }), false, 'a real error does NOT disable it')
+report.equal(pure.isDiagnosticsUnsupported(undefined), false, 'an unknown failure does not disable it')
+
 report.summary()

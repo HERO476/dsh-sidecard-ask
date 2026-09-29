@@ -396,7 +396,7 @@ node test/smoke-test.mjs      # 端到端：流式/截断/取消/持久化/失�
 ```
 
 三个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模：verify 53 项 + contract 135 项 + smoke 134 项 = **322 项全部通过**。
+当前规模：verify 53 项 + contract 140 项 + smoke 134 项 = **327 项全部通过**。
 
 ### 10.2 版本能力探测（§7 矩阵的来源）
 
@@ -446,6 +446,10 @@ $tmp = Join-Path $env:TEMP 'probe.json'
 
 `native.reason` / `better.reason` 会写明**为什么**某个承载面不可用（例如 `no-tab-meta` 或注册表的报错原文）——
 1.2.1 修掉的那个 tab kind 冲突正是靠这类信息才定位到的。
+
+> **两半代际不一致是常态**：宿主半只在重启 DSH 时更新，客户端半在页面加载时更新。
+> 所以"新客户端 + 旧宿主"很常见——此时 `/diagnose` 还不存在，客户端会**识别这一点、只提示一次并停止重试**
+> （`not-found` / SPA 兜底 HTML / 不可达三类失败），不会每次加载都刷警告。
 
 **2026-09-28 在 DSH 0.1.7-rc.2 上的实测结果**（`provider=spawn`、`sideTools=readonly`）：
 `start x1 → reasoning x181 → delta x90 → status x1 → done x1`，耗时 2.6 s，`done.text` 为真实模型答案。
