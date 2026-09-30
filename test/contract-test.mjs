@@ -274,6 +274,19 @@ report.equal(byClass(overlayTree, 'dsa-trigger').length, 0, 'no trigger button b
 report.equal(byClass(overlayTree, 'dsa-card').length, 0, 'no answer card before a question is asked')
 report.equal(textOf(overlayTree).trim(), '', 'the idle overlay renders no visible text')
 
+// Desktop (Electron) window-drag guard. The desktop shell marks top-level
+// elements as window-drag regions, so a floating plugin surface that does not
+// opt out turns a click into a window drag; every root we draw must declare it.
+const styleNode = byTag(overlayTree, 'style')[0]
+const styleText = styleNode?.children?.join('') ?? ''
+report.ok(styleText.includes('-webkit-app-region:no-drag'), 'the stylesheet declares the window-drag guard')
+const guardRule = styleText.split('\n').find(line => line.includes('-webkit-app-region:no-drag') && line.includes('.dsa-')) ?? ''
+report.ok(guardRule !== '', 'the guard exists as a real rule, not only inside the comment')
+for (const root of ['dsa-layer', 'dsa-trigger', 'dsa-pop', 'dsa-card', 'dsa-toast', 'dsa-settings']) {
+  report.ok(guardRule.includes(`.${root}`), `the drag guard covers .${root}`)
+}
+report.ok(styleText.includes('pointer-events:none'), 'the overlay layer itself stays click-through')
+
 const settingsTree = expandTree(loadedClient.shim.React.createElement(settings.component, {}))
 const settingsText = textOf(settingsTree)
 for (const label of ['触发方式', '默认作答位置', '最大字符数', '快捷键', '捕获区域']) {

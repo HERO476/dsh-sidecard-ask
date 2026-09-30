@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.3.1'
+    const CLIENT_VERSION = '1.3.2'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -1032,6 +1032,17 @@ window.__ModuleLoader__.load({
 
     /** Theme-token-only stylesheet. Every class is prefixed `dsa-`. */
     const CSS_TEXT = `
+/* Desktop (Electron) window-drag guard.
+   The DSH desktop shell marks top-level elements as window-drag regions
+   (\`-webkit-app-region: drag\`), and a click landing inside such a region MOVES
+   THE WINDOW instead of reaching the UI — which would make the floating trigger,
+   the question popover and the cards unclickable in the desktop app. A
+   descendant of a drag region must opt out explicitly; dsh-better-sidebar ships
+   exactly this guard for its own host
+   (\`html[data-platform] body>[data-dsh-better-sidebar]{-webkit-app-region:initial}\`
+   plus \`[data-dsh-panel-host]>*{-webkit-app-region:no-drag}\`).
+   Every surface we draw declares it. The property is inert in a browser. */
+.dsa-layer,.dsa-trigger,.dsa-pop,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
 .dsa-layer{pointer-events:none;position:relative;z-index:60}
 .dsa-trigger{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:4px;
   padding:4px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));

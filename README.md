@@ -221,6 +221,50 @@ better-sidebar 会把收到的每个 tab 描述符**镜像注册进同一个原�
 
 两者共存、均 `active: true` —— 即"同 kind 冲突"已被消除，`auto` 默认走原生右侧栏，强制 `sideSurface: better-sidebar` 仍可用。
 
+### 5.3 与 DSH 桌面版（Electron）的适配核对（2026-09-30）
+
+桌面版与命令行/web 版**不是同一套运行形态**，核对结论如下。
+
+| 维度 | 事实（实测） |
+|---|---|
+| 桌面 App | `DeepSeek Harness.exe` **0.2.0-rc.2**（`resources\app-update.yml` 更新通道 `nightly`，源 `download.deepseek.com/dsh-desk/feeds/win-x64/`） |
+| 运行形态 | Electron-as-Node 跑 `app.asar\dsh\node_modules\@deepseek-ai\dsh-desktop-host\lib\index.js`；**框架包全部打包在 `app.asar` 内**（121 MB 归档，普通 shell/glob/grep 读不到，只能靠运行实例的 inspection 查） |
+| 自带运行时 | `resources\runtime\versions.json`：node **24.18.1** + pnpm **11.7.0**（装插件用的是它自带的 pnpm） |
+| profile | **`DSH_PROFILE=desktop` → `C:\Users\34332\.dsh\profiles\desktop`**，与 web 版的 `profiles\web` **互相独立**：两者各有自己的 `package.json`/`node_modules`/`dsh.profile.bundles`，插件必须分别安装 |
+| 本插件安装状态 | 桌面 profile 的 `package.json` 中为 `"dsh-sidecard-ask": "link:D:/Users/34332/AI/dsh-sidecard-ask"`，且已在 `dsh.profile.bundles` 内 → **无需改动即加载** |
+| 宿主半 | `GET http://127.0.0.1:19387/sidecard-ask/api/state` → `dsh-sidecard-ask v1.3.1`、`sideEngine=true`（provider `spawn,fork`）、`capabilities.parent` 正常、配置落点 `~/.dsh/sidecard-ask/config.json` |
+| 客户端半 | 由本插件自己的自检上报读出：`version=1.3.1`、`slots={overlay: shell.overlay, settings: settings.section, sessionProbe: conversation.input.right}`、`native.available=true`、`better.available=true` 且 `better.version=0.24.1` |
+| 端到端 | 真机 `start→reasoning×106→delta×46→status→done`，1.89 s，`done.text` 是真实答案（子代理 + 流式帧 + 只读工具白名单全部正常） |
+| 客户端服务目录 | 与 web 版**完全一致**（layout / locale / sessions / slots / theme / timer / uiWorkspace / workspaces），无桌面专属差异 |
+
+**桌面版用到的 dsh-better-sidebar 是 0.24.1**（比上轮核对的 0.22.1 新）：0.22.1 → 0.24.1 的
+`lib/types/client/service.d.ts` 差异是**纯增量**——`target?: 'right' | 'bottom'` 增加 `'side'`（右侧栏第二窗格），
+并新增可选 `preferNewPane?: boolean`；`SIDEBAR_FEATURES` 仍含 `tabMeta`，`dsh.client.inject` 未变。
+本插件不传这两个字段 → **不受影响**（默认落点行为未变）。
+
+**桌面版特有的适配修改（1.3.2）：窗口拖拽区。** 桌面外壳会把顶层元素标记为窗口拖拽区
+（`-webkit-app-region: drag`），落在拖拽区内的点击会**变成拖动窗口**而不是点中 UI。同生态的
+dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[data-dsh-better-sidebar]{-webkit-app-region:initial}`
++ `[data-dsh-panel-host]>*{-webkit-app-region:no-drag}`）。本插件的浮层此前**没有这条防御**，现已在样式表里为
+每个自有根节点声明 `-webkit-app-region:no-drag`
+（`.dsa-layer/.dsa-trigger/.dsa-pop/.dsa-stack/.dsa-card/.dsa-toast/.dsa-settings`），并加回归测试锁定该规则。
+该属性在浏览器里无效，不影响 web 版。
+
+**桌面形态下确认「不需要改」的两点**：
+
+- `styles.insert` / `host.call` 属于**动态运行时**的插件能力（inspection 的 `Builtin` 定义就是
+  "Plain-JavaScript symbols available to a **dynamic** Client half"）。本插件是**静态**客户端半
+  （`__ModuleLoader__.load` + `require('react')`），官方形态就是手工插入 `<style>`——同为静态形态的
+  `uiskin-theme` 在源码里注明 "the static twin of the dynamic runner's `styles.insert`"；宿主通信走自有的
+  `/sidecard-ask/api` 路由；
+- 名为 `shortcuts` 与 `conversation` 的客户端服务**都不在运行实例的服务目录里**（inspection 明确报
+  `no catalogued Service named ...`）。所以"并入宿主快捷键注册表"与"使用 composer 草稿服务"两条路都不存在：
+  本插件继续自带 keydown 监听（快捷键可配置）与 `PLACEHOLDER: composer-draft` 降级路径。
+
+**仍未验证的部分（如实记录）**：桌面窗口内的**视觉与点击行为**（本工作区无 GUI 自动化，无法点按验证）；
+`Alt+Q` 是否会撞上桌面 App 的菜单加速键（Electron 的菜单加速键由菜单先处理，页面的 keydown 可能收不到；
+若冲突，在设置页改成 `Ctrl+Alt+Q` 之类即可）；Electron 下 `navigator.clipboard` 的写入权限（已有"选中文本"降级兜底）。
+
 ---
 
 ## 六、未知 DSH API：占位接口与替换方式
@@ -396,7 +440,7 @@ node test/smoke-test.mjs      # 端到端：流式/截断/取消/持久化/失�
 ```
 
 三个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模：verify 53 项 + contract 140 项 + smoke 134 项 = **327 项全部通过**。
+当前规模：verify 53 项 + contract 149 项 + smoke 134 项 = **336 项全部通过**。
 
 ### 10.2 版本能力探测（§7 矩阵的来源）
 

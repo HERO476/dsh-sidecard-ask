@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.2
+
+**主题：核对并适配 DSH 桌面版（Electron，0.2.0-rc.2）。**
+
+核对结论（实测，详见 README §5.3）：
+
+- 桌面版是**独立运行形态**：Electron-as-Node 跑 `app.asar\dsh\...\dsh-desktop-host`，框架包全在 `app.asar` 内，
+  自带 node 24.18.1 + pnpm 11.7.0；`DSH_PROFILE=desktop`，与 web 版的 `profiles\web` **各自独立**；
+- 本插件在桌面 profile 中已登记（`link:D:/Users/34332/AI/dsh-sidecard-ask` + `dsh.profile.bundles`），
+  **无需改动即加载**：宿主半 `v1.3.1` 正常，客户端自检上报显示三个槽位落点正常、两个适配器均可用，
+  真机 `start→reasoning×106→delta×46→status→done`（1.89 s）通过；
+- 桌面版用的 dsh-better-sidebar 是 **0.24.1**：与 0.22.1 的消费端契约差异**纯增量**
+  （`target` 增加 `'side'`、新增可选 `preferNewPane`），本插件不传这两项 → 不受影响。
+
+**桌面特有修改：窗口拖拽区防御。** 桌面外壳把顶层元素标记为窗口拖拽区（`-webkit-app-region: drag`），
+落在其中的点击会变成拖动窗口；同生态的 dsh-better-sidebar 为此专门带了一条防御，而本插件的浮层此前没有。
+现在样式表为每个自有根节点声明 `-webkit-app-region:no-drag`（`.dsa-layer/.dsa-trigger/.dsa-pop/.dsa-stack/
+.dsa-card/.dsa-toast/.dsa-settings`），并有回归测试锁定该规则（含"该规则是真实规则而非只出现在注释里"的断言）。
+该属性在浏览器中无效，web 版不受影响。
+
+**确认无需改动的部分**：`styles.insert` / `host.call` 只属于**动态**客户端半（本插件是静态形态，官方等价做法
+就是手工插 `<style>`，宿主通信走自有 HTTP 路由）；名为 `shortcuts` 与 `conversation` 的客户端服务在运行实例中
+**都不存在**（inspection 报 `no catalogued Service`），因此快捷键与 composer 草稿保持既有实现与占位降级。
+
+自测 327 → **336 项**（verify 53 / contract 149 / smoke 134）。
+
 ## 1.3.1
 
 **主题：让"两半代际不一致"成为一个被处理的状态，而不是噪声。**
