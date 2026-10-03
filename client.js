@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.3.2'
+    const CLIENT_VERSION = '1.4.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -69,6 +69,13 @@ window.__ModuleLoader__.load({
      * registry rule so the collision cannot come back.
      */
     const CARD_KIND_BETTER = 'sidecard-ask:card:workbench'
+
+    /**
+     * How many earlier turns of a card ride the next ask payload. Mirrors the
+     * Host's own cap (contract-asserted): the Host trims to the same number,
+     * so sending more would only be dead wire weight.
+     */
+    const HISTORY_TURNS = 6
 
     /**
      * Client-side mirror of the Host `DEFAULT_CONFIG`. The client needs values
@@ -129,6 +136,9 @@ window.__ModuleLoader__.load({
         answerStopped: '已停止',
         answerNonStreaming: '当前 DSH 版本未提供流式帧，答案一次性返回',
         answerEmpty: '（没有内容）',
+        cardClosed: '该卡片已关闭',
+        cardMovedToFlow: '该卡片已移至浮层显示',
+        reasoningTitle: '思考过程',
         copy: '复制',
         copied: '已复制',
         copySelectedHint: '已选中答案文本，请按 Ctrl+C 复制',
@@ -146,6 +156,18 @@ window.__ModuleLoader__.load({
         noMainCarrier: '主对话发送接口不可用：既不能提交消息，也不能写入输入框',
         errorTitle: '作答失败',
         errorNoSideEngine: '这台 DSH 组合没有可用的子代理，无法在侧边卡片作答；可以改到主对话提问。',
+        errorTooLarge: '请求体过大',
+        errorBadRequest: '请求无效（问题或选中文本为空）',
+        errorUnloaded: '插件正在卸载，无法受理新的追问',
+        errorDuplicate: '该追问已在处理中，请等它完成',
+        errorBusy: '并发追问已达上限（{n}），请稍后再试',
+        errorNoSideEngineBody: '这台 DSH 组合没有可用的子代理 provider',
+        errorNoParentBody: '当前没有活动的会话代理，无法发起独立作答',
+        errorAborted: '作答被取消或超时',
+        errorUnreachableBody: '宿主接口不可达',
+        errorBadResponseBody: '宿主返回了无法解析的响应',
+        errorStreamBrokenBody: '流式连接中断',
+        errorStreamEndedBody: '流式连接意外结束',
         surfaceFlow: '浮层卡片',
         surfaceNative: '右侧栏卡片',
         surfaceBetter: '侧边卡片插件',
@@ -175,6 +197,10 @@ window.__ModuleLoader__.load({
         setSideTools: '侧边作答工具权限',
         setSideToolsReadonly: '只读（推荐）',
         setSideToolsInherit: '继承当前会话',
+        setSideTimeout: '侧边作答超时（毫秒）',
+        setSideTimeoutHint: '超过该时间未完成即停止作答',
+        setSideProvider: '子代理 provider',
+        setSideProviderHint: 'auto = 自动挑选已注册的 provider',
         save: '保存',
         saving: '保存中…',
         saved: '已保存',
@@ -232,6 +258,9 @@ window.__ModuleLoader__.load({
         answerStopped: 'Stopped',
         answerNonStreaming: 'This DSH build publishes no stream frames; the answer arrived at once',
         answerEmpty: '(empty)',
+        cardClosed: 'This card was closed',
+        cardMovedToFlow: 'This card moved to the floating stack',
+        reasoningTitle: 'Reasoning',
         copy: 'Copy',
         copied: 'Copied',
         copySelectedHint: 'Answer selected — press Ctrl+C to copy',
@@ -249,6 +278,18 @@ window.__ModuleLoader__.load({
         noMainCarrier: 'The main-chat send API is unavailable: neither submitting a message nor writing the composer draft worked',
         errorTitle: 'Answer failed',
         errorNoSideEngine: 'This DSH composition has no usable subagent, so the side card cannot answer; ask in the main chat instead.',
+        errorTooLarge: 'The request body is too large',
+        errorBadRequest: 'Invalid request (empty question or empty selection)',
+        errorUnloaded: 'The plugin is unloading and cannot take new follow-ups',
+        errorDuplicate: 'This follow-up is already being answered; wait for it to finish',
+        errorBusy: 'Too many concurrent answers (limit {n}); try again shortly',
+        errorNoSideEngineBody: 'This DSH composition has no usable subagent provider',
+        errorNoParentBody: 'No active session agent to answer independently',
+        errorAborted: 'The answer was cancelled or timed out',
+        errorUnreachableBody: 'The host API is unreachable',
+        errorBadResponseBody: 'The host returned an unreadable response',
+        errorStreamBrokenBody: 'The stream connection broke',
+        errorStreamEndedBody: 'The stream ended without a terminal event',
         surfaceFlow: 'Floating card',
         surfaceNative: 'Right rail',
         surfaceBetter: 'Sidebar plugin',
@@ -278,6 +319,10 @@ window.__ModuleLoader__.load({
         setSideTools: 'Side answerer tool access',
         setSideToolsReadonly: 'Read-only (recommended)',
         setSideToolsInherit: 'Inherit from the session',
+        setSideTimeout: 'Side answer timeout (ms)',
+        setSideTimeoutHint: 'The answer stops once this time is exceeded',
+        setSideProvider: 'Subagent provider',
+        setSideProviderHint: 'auto picks a registered provider automatically',
         save: 'Save',
         saving: 'Saving…',
         saved: 'Saved',
@@ -310,13 +355,37 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /** The active language id, kept in step with the harness locale service. */
-    let lang = (() => {
-      const raw = typeof navigator !== 'undefined' && typeof navigator.language === 'string'
-        ? navigator.language.toLowerCase()
-        : 'zh'
-      return raw.startsWith('zh') ? 'zh' : 'en'
-    })()
+    /**
+     * Pick a dictionary id from locale candidates, best first. A candidate
+     * naming neither zh nor en is skipped, so a lesser preference can still
+     * win — `navigator.languages` is an ordered preference list, and a user
+     * whose first choice the UI cannot serve should get their second, not a
+     * hard fallback. This is the ONE place locale strings become a dictionary
+     * id; the harness locale subscription below feeds the same helper.
+     * @param {unknown[]} candidates locale strings, best first.
+     * @param {'zh'|'en'} fallback applied only when no candidate matches.
+     * @returns {'zh'|'en'} the dictionary id.
+     */
+    function resolveLanguage(candidates, fallback) {
+      for (const candidate of candidates) {
+        if (typeof candidate !== 'string' || candidate === '') continue
+        const lower = candidate.toLowerCase()
+        if (lower.startsWith('zh')) return 'zh'
+        if (lower.startsWith('en')) return 'en'
+      }
+      return fallback
+    }
+
+    /**
+     * The active language id, kept in step with the harness locale service.
+     * When the browser lists a language the UI does not carry, the next
+     * preference decides; only a list with no zh/en entry at all falls back.
+     */
+    const initialLocales = [
+      ...(Array.isArray(navigator?.languages) ? [...navigator.languages] : []),
+      ...(typeof navigator?.language === 'string' ? [navigator.language] : []),
+    ]
+    let lang = resolveLanguage(initialLocales, initialLocales.length > 0 ? 'en' : 'zh')
 
     /**
      * Translate one key with `{name}` interpolation.
@@ -330,6 +399,37 @@ window.__ModuleLoader__.load({
         for (const [name, value] of Object.entries(vars)) text = text.split(`{${name}}`).join(String(value))
       }
       return text
+    }
+
+    /**
+     * Wire-error codes whose meaning is fully known Client-side, so an English
+     * interface never has to show the Host's Chinese message line. Codes that
+     * carry a live diagnostic in their message (engine-error, blocked-step,
+     * http-*, internal, main-failed) are deliberately absent: the Host message
+     * is the only place that reason exists, and replacing it would lose it.
+     * `vars` receives the whole error when the copy needs a live value.
+     */
+    const ERROR_CODES = {
+      'too-large': { key: 'errorTooLarge' },
+      'bad-request': { key: 'errorBadRequest' },
+      unloaded: { key: 'errorUnloaded' },
+      duplicate: { key: 'errorDuplicate' },
+      busy: { key: 'errorBusy', vars: () => ({ n: store?.state?.config?.maxConcurrentAsks ?? 0 }) },
+      'no-side-engine': { key: 'errorNoSideEngineBody' },
+      'no-parent': { key: 'errorNoParentBody' },
+      aborted: { key: 'errorAborted' },
+      unreachable: { key: 'errorUnreachableBody' },
+      'bad-response': { key: 'errorBadResponseBody' },
+      'stream-broken': { key: 'errorStreamBrokenBody' },
+      'stream-ended': { key: 'errorStreamEndedBody' },
+    }
+
+    /** One localized line for a wire error; unknown codes keep the Host text. */
+    function localizeError(error) {
+      if (error === null || error === undefined) return ''
+      const entry = ERROR_CODES[error?.code]
+      if (entry === undefined) return error.message ?? String(error?.code ?? error)
+      return t(entry.key, entry.vars?.(error))
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -652,7 +752,7 @@ window.__ModuleLoader__.load({
     function shouldOffer(candidate, config, options) {
       if (candidate === null) return { ok: false, reason: 'empty' }
       if (config.trigger === 'shortcut') return { ok: false, reason: 'shortcut-only' }
-      if (candidate.text.trim().length < config.minChars) return { ok: false, reason: 'too-short' }
+      if (codePointLength(candidate.text.trim()) < config.minChars) return { ok: false, reason: 'too-short' }
       if (options?.anchors === false) return { ok: true, zoneFiltering: 'unavailable' }
       const zones = config.captureZones
       const zone = candidate.zone
@@ -675,20 +775,27 @@ window.__ModuleLoader__.load({
 
     /**
      * Truncate an over-long selection for an outgoing prompt, keeping head and
-     * tail. Mirrors the Host's `truncateSelection` (asserted by contract test).
+     * tail. Mirrors the Host's `truncateSelection` (asserted by contract test):
+     * code points, not UTF-16 units, so a surrogate pair is never split.
      * @returns {{text: string, truncated: boolean, droppedChars: number}}
      */
     function truncateSelection(text, maxChars) {
       const source = typeof text === 'string' ? text : ''
-      if (source.length <= maxChars) return { text: source, truncated: false, droppedChars: 0 }
+      const points = Array.from(source)
+      if (points.length <= maxChars) return { text: source, truncated: false, droppedChars: 0 }
       const head = Math.max(1, Math.ceil(maxChars * 0.7))
       const tail = Math.max(0, maxChars - head)
-      const dropped = source.length - head - tail
+      const dropped = points.length - head - tail
       return {
-        text: `${source.slice(0, head)}\n…（已省略中间 ${dropped} 个字符）…\n${tail > 0 ? source.slice(source.length - tail) : ''}`,
+        text: `${points.slice(0, head).join('')}\n…（已省略中间 ${dropped} 个字符）…\n${tail > 0 ? points.slice(points.length - tail).join('') : ''}`,
         truncated: true,
         droppedChars: dropped,
       }
+    }
+
+    /** Character count a Chinese user would expect: one glyph = one char. */
+    function codePointLength(text) {
+      return Array.from(String(text ?? '')).length
     }
 
     /** Parse a `Ctrl+Shift+K`-style accelerator into matcher facts. */
@@ -880,9 +987,20 @@ window.__ModuleLoader__.load({
           this.controller.openTab(CARD_KIND, { params: { cardId: card.id }, revealIfOpened: true })
           return true
         },
-        close() {
-          // The right rail owns its tab lifecycle; the store entry is enough.
-          return true
+        close(card) {
+          // The right rail owns its tab lifecycle, so closing never blocks on
+          // it — but since 0.2.0 the rail controller exposes `closeTab` with
+          // the same shape `openTab` has (verified only for `openTab` on this
+          // machine; see README §6). Probe defensively: a mismatching rail
+          // simply keeps the tab, and CardHost then shows the closed-card note.
+          if (typeof this.controller?.closeTab !== 'function') return false
+          try {
+            this.controller.closeTab(CARD_KIND, { params: { cardId: card.id } })
+            return true
+          } catch (error) {
+            console.warn(`[${PLUGIN_ID}] native closeTab rejected the close:`, error)
+            return false
+          }
         },
       },
       better: {
@@ -1047,7 +1165,8 @@ window.__ModuleLoader__.load({
 .dsa-trigger{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:4px;
   padding:4px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
-  font-size:12px;line-height:16px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.18);font-family:inherit}
+  font-size:12px;line-height:16px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.18);
+  font-family:inherit;white-space:nowrap}
 .dsa-trigger:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
 .dsa-trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4c8dff);outline-offset:1px}
 .dsa-pop{pointer-events:auto;position:fixed;width:min(420px, 92vw);display:flex;flex-direction:column;gap:8px;
@@ -1090,6 +1209,19 @@ window.__ModuleLoader__.load({
 .dsa-answer .dsa-ul{margin:0 0 6px;padding-left:18px}
 .dsa-answer .dsa-h{font-weight:600;margin:0 0 6px}
 .dsa-answer .dsa-gap{height:4px}
+.dsa-details summary{cursor:pointer;user-select:none;font-size:12px;line-height:18px;
+  color:var(--dsw-alias-label-secondary, #666)}
+.dsa-reasoning{max-height:24vh;overflow:auto;margin:4px 0 8px;padding:6px 8px;word-break:break-word;
+  border-left:3px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));border-radius:4px;
+  background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08));font-size:12px;line-height:17px}
+.dsa-a{color:var(--dsw-alias-brand-primary, #0066cc);text-decoration:underline;word-break:break-all}
+.dsa-quote{margin:0 0 6px;padding:6px 10px;border-left:3px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  border-radius:4px;background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08));
+  font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary, #555)}
+.dsa-table{border-collapse:collapse;margin:0 0 6px;font-size:12px;max-width:100%}
+.dsa-table th,.dsa-table td{border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  padding:4px 8px;text-align:left;word-break:break-word;vertical-align:top}
+.dsa-table th{background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12));font-weight:600}
 .dsa-pre{margin:0 0 6px;padding:8px;border-radius:8px;overflow:auto;
   background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12));font-size:12px;line-height:17px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -1117,10 +1249,10 @@ window.__ModuleLoader__.load({
       return h('style', { 'data-dsa-style': '' }, CSS_TEXT)
     }
 
-    /** Inline markdown-lite: `code` and **bold** only — never innerHTML. */
+    /** Inline markdown-lite: `code`, **bold**, *italic*, [label](http url) — never innerHTML. */
     function inlineNodes(text, key) {
       const out = []
-      const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g
+      const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g
       let last = 0
       let match
       let index = 0
@@ -1129,8 +1261,23 @@ window.__ModuleLoader__.load({
         const token = match[0]
         if (token.startsWith('`')) {
           out.push(h('code', { key: `c${key}-${index++}`, className: 'dsa-code' }, token.slice(1, -1)))
-        } else {
+        } else if (token.startsWith('**')) {
           out.push(h('strong', { key: `b${key}-${index++}` }, token.slice(2, -2)))
+        } else if (token.startsWith('*')) {
+          out.push(h('em', { key: `i${key}-${index++}` }, token.slice(1, -1)))
+        } else {
+          // [label](url). The protocol allow-list (http/https only) is the
+          // whole security story: a model answer must not be able to make a
+          // `javascript:` or `data:` URL clickable. The label stays plain
+          // text — no nested syntax inside a link label.
+          const split = token.indexOf('](')
+          out.push(h('a', {
+            key: `a${key}-${index++}`,
+            className: 'dsa-a',
+            href: token.slice(split + 2, -1),
+            target: '_blank',
+            rel: 'noopener noreferrer',
+          }, token.slice(1, split)))
         }
         last = match.index + token.length
       }
@@ -1140,8 +1287,8 @@ window.__ModuleLoader__.load({
 
     /**
      * Render answer text as React nodes: fenced code, lists, headings,
-     * paragraphs. No HTML injection anywhere, so model output cannot become
-     * markup.
+     * blockquotes, tables, paragraphs. No HTML injection anywhere, so model
+     * output cannot become markup.
      */
     function renderRichText(text) {
       const lines = String(text ?? '').split('\n')
@@ -1150,6 +1297,15 @@ window.__ModuleLoader__.load({
       let key = 0
       const isBullet = line => /^\s*([-*+]|\d+\.)\s+/.test(line)
       const isHeading = line => /^#{1,6}\s+/.test(line)
+      const isQuote = line => /^>\s?/.test(line)
+      // A GFM table separator: `|---|---|`, `---|:---:`, whole row nothing
+      // but pipes, dashes, colons and spaces.
+      const isTableSplit = line => /^\s*\|?[\s:|-]*\|[\s:|-]*$/.test(line)
+      const tableCells = rowText => rowText
+        .replace(/^\s*\|/, '')
+        .replace(/\|\s*$/, '')
+        .split('|')
+        .map(cell => cell.trim())
       while (i < lines.length) {
         const line = lines[i]
         if (/^```/.test(line)) {
@@ -1161,6 +1317,22 @@ window.__ModuleLoader__.load({
           }
           i += 1
           nodes.push(h('pre', { key: `f${key++}`, className: 'dsa-pre' }, h('code', null, body.join('\n'))))
+          continue
+        }
+        if (line.includes('|') && i + 1 < lines.length && isTableSplit(lines[i + 1])) {
+          const header = tableCells(line)
+          i += 2
+          const rows = []
+          while (i < lines.length && lines[i].trim() !== '' && lines[i].includes('|')) {
+            rows.push(tableCells(lines[i]))
+            i += 1
+          }
+          nodes.push(h('table', { key: `t${key}`, className: 'dsa-table' },
+            h('thead', null, h('tr', null,
+              header.map((cell, index) => h('th', { key: `th${key}-${index}` }, inlineNodes(cell, `${key}h-${index}`))))),
+            h('tbody', null, rows.map((row, rowIndex) => h('tr', { key: `tr${key}-${rowIndex}` },
+              row.map((cell, index) => h('td', { key: `td${key}-${rowIndex}-${index}` }, inlineNodes(cell, `${key}-${rowIndex}-${index}`))))))))
+          key += 1
           continue
         }
         if (isBullet(line)) {
@@ -1179,6 +1351,17 @@ window.__ModuleLoader__.load({
           i += 1
           continue
         }
+        if (isQuote(line)) {
+          const quoted = []
+          while (i < lines.length && isQuote(lines[i])) {
+            quoted.push(lines[i].replace(/^>\s?/, ''))
+            i += 1
+          }
+          nodes.push(h('blockquote', { key: `q${key}`, className: 'dsa-quote' },
+            quoted.map((row, index) => h('div', { key: `ql${key}-${index}` }, inlineNodes(row, `${key}-${index}`)))))
+          key += 1
+          continue
+        }
         if (line.trim() === '') {
           nodes.push(h('div', { key: `g${key++}`, className: 'dsa-gap' }))
           i += 1
@@ -1191,6 +1374,7 @@ window.__ModuleLoader__.load({
           && !/^```/.test(lines[i])
           && !isBullet(lines[i])
           && !isHeading(lines[i])
+          && !isQuote(lines[i])
         ) {
           paragraph.push(lines[i])
           i += 1
@@ -1199,6 +1383,26 @@ window.__ModuleLoader__.load({
         key += 1
       }
       return nodes
+    }
+
+    /**
+     * Rough advance width of a 12px label, in CSS pixels: full-width for CJK
+     * ideographs and fullwidth forms, ~0.55em for everything else. The zh
+     * trigger label ("追问选中内容") estimates ~72px of text while the en one
+     * ("Ask about selection") estimates ~125px — exactly the difference a
+     * hard-coded clamp width tuned for zh would miss.
+     */
+    function estimateLabelWidth(text, fontSize = 12) {
+      let units = 0
+      for (const char of typeof text === 'string' ? text : '') {
+        const code = char.codePointAt(0)
+        const fullWidth = (code >= 0x2e80 && code <= 0x9fff)
+          || (code >= 0xf900 && code <= 0xfaff)
+          || (code >= 0xff00 && code <= 0xffef)
+          || (code >= 0x30000 && code <= 0x3134f)
+        units += fullWidth ? 1 : 0.55
+      }
+      return units * fontSize
     }
 
     /** Clamp a fixed-position box into the viewport. */
@@ -1260,7 +1464,10 @@ window.__ModuleLoader__.load({
 
     /** The in-place trigger button floating at the selection. */
     function TriggerButton({ candidate, onOpen }) {
-      const box = clampBox(candidate.rect, 132, 30, 'below')
+      // The clamp width follows the live label: icon + gap + padding + border
+      // (~38px of chrome) plus a safety margin, over the estimated label width.
+      const width = Math.ceil(estimateLabelWidth(t('triggerLabel')) + 62)
+      const box = clampBox(candidate.rect, width, 30, 'below')
       return h('button', {
         type: 'button',
         className: 'dsa-trigger',
@@ -1322,11 +1529,14 @@ window.__ModuleLoader__.load({
       h('div', { className: 'dsa-row' },
         h('span', { className: 'dsa-title' }, t('askTitle')),
         h('span', { className: 'dsa-badge' }, zoneLabel(candidate)),
-        h('span', { className: 'dsa-badge' }, t('chars', { n: candidate.text.length })),
+        h('span', { className: 'dsa-badge' }, t('chars', { n: codePointLength(candidate.text) })),
         cut.truncated
           ? h('span', { className: 'dsa-badge dsa-badge-warn' }, t('truncatedBadge', { n: cut.droppedChars }))
           : null),
-      h('pre', { className: 'dsa-quote' }, candidate.text.length > 400 ? `${candidate.text.slice(0, 400)}…` : candidate.text),
+      h('pre', { className: 'dsa-quote' },
+        codePointLength(candidate.text) > 400
+          ? `${Array.from(candidate.text).slice(0, 400).join('')}…`
+          : candidate.text),
       h('textarea', {
         ref: areaRef,
         className: 'dsa-textarea',
@@ -1363,20 +1573,42 @@ window.__ModuleLoader__.load({
 
     /** The streamed answer card body, shared by every surface. */
     function AnswerBody({ card, containerRef }) {
+      // The reasoning stream is collapsible on purpose: it is diagnostic
+      // context, not the answer, and a long chain-of-thought would otherwise
+      // bury the answer the user asked for. Collapsed by default, open on
+      // demand — the text inside still streams live while it is open.
+      const reasoning = typeof card.reasoning === 'string' && card.reasoning !== ''
+        ? h('details', { className: 'dsa-details' },
+            h('summary', null, t('reasoningTitle')),
+            h('div', { className: 'dsa-reasoning' }, renderRichText(card.reasoning)))
+        : null
+      // Follow the stream only while the reader sits at the bottom; scrolling
+      // up to reread an earlier paragraph must win over the auto-scroll. The
+      // 48px slack keeps single-line deltas from losing the tail.
+      React.useEffect(() => {
+        if (card.status !== 'streaming') return undefined
+        const element = containerRef?.current
+        if (element === null || element === undefined) return undefined
+        if (element.scrollHeight - element.scrollTop - element.clientHeight <= 48) {
+          element.scrollTop = element.scrollHeight
+        }
+        return undefined
+      }, [card.text, card.reasoning, card.status, containerRef])
       if (card.error !== null) {
         const engineMissing = card.error.code === 'no-side-engine' || card.error.code === 'no-parent'
         return h('div', { className: 'dsa-error' },
           h('div', { className: 'dsa-title' }, t('errorTitle')),
-          h('div', null, card.error.message ?? String(card.error.code ?? '')),
+          h('div', null, localizeError(card.error)),
           engineMissing ? h('div', { className: 'dsa-muted' }, t('errorNoSideEngine')) : null)
       }
       if (card.text === '' && card.status === 'streaming') {
-        return h('div', { className: 'dsa-muted' }, t('answerStreaming'))
+        return h('div', null, reasoning, h('div', { className: 'dsa-muted' }, t('answerStreaming')))
       }
       if (card.text === '' && card.status === 'done') {
-        return h('div', { className: 'dsa-muted' }, t('answerEmpty'))
+        return h('div', null, reasoning, h('div', { className: 'dsa-muted' }, t('answerEmpty')))
       }
-      return h('div', { className: 'dsa-answer', ref: containerRef }, renderRichText(card.text))
+      return h('div', { className: 'dsa-answer', ref: containerRef },
+        reasoning, renderRichText(card.text))
     }
 
     /** Card footer: status, copy, follow-up, retry, close. */
@@ -1533,6 +1765,25 @@ window.__ModuleLoader__.load({
         onChange: event => setDraft({ ...draft, [key]: Number(event.target.value) }),
       })
 
+      /**
+       * Provider picker: `auto` plus whatever `/state` reported live. The
+       * current draft value is always offered, so a stale saved name or an
+       * unreachable host never blanks the select.
+       */
+      const providerSelect = () => {
+        const reported = Array.isArray(state.capabilities?.sideProviders)
+          ? state.capabilities.sideProviders.filter(name => typeof name === 'string' && name !== '')
+          : []
+        const known = ['auto', ...reported]
+        const value = String(draft.sideProvider)
+        const options = known.includes(value) ? known : [...known, value]
+        return h('select', {
+          className: 'dsa-input',
+          value,
+          onChange: event => setDraft({ ...draft, sideProvider: event.target.value }),
+        }, options.map(name => h('option', { key: name, value: name }, name)))
+      }
+
       const save = async () => {
         if (parseShortcut(draft.shortcut) === null) {
           setStatus(`error:${t('unsupportedTrigger')}`)
@@ -1585,7 +1836,9 @@ window.__ModuleLoader__.load({
           field(t('setSideTools'), select('sideTools', [
             ['readonly', t('setSideToolsReadonly')],
             ['inherit', t('setSideToolsInherit')],
-          ]))),
+          ])),
+          field(t('setSideTimeout'), number('sideTimeoutMs', 5000, 3600000), t('setSideTimeoutHint')),
+          field(t('setSideProvider'), providerSelect(), t('setSideProviderHint'))),
         h('label', { className: 'dsa-check' },
           h('input', {
             type: 'checkbox',
@@ -1715,7 +1968,7 @@ window.__ModuleLoader__.load({
         const disposers = []
         const controllers = new Map()
         /** Pending surface render-proof timers (cleared on unload). */
-        const pendingProofs = new Set()
+        const pendingProofs = new Map()
         let lastSignature = null
         let lastAt = 0
         let pendingTimer = null
@@ -1740,6 +1993,96 @@ window.__ModuleLoader__.load({
           }
         }
 
+        // ── card persistence ────────────────────────────────────────────
+        // A page reload used to lose every finished answer: the store is
+        // memory-only and the reload drops the SSE link mid-stream. Finished
+        // cards are therefore mirrored into `localStorage` (same data, no
+        // server round-trip) and replayed on boot. Everything here is optional
+        // by design — a private-mode window (throws on setItem), a full quota,
+        // or a tampered payload must degrade to "no history", never break boot.
+        const PERSIST_KEY = 'dsh-sidecard-ask:cards:v1'
+        const PERSIST_MAX_CARDS = 10
+        const PERSIST_TEXT_LIMIT = 65536
+
+        function readPersisted() {
+          let raw = null
+          try {
+            raw = window.localStorage?.getItem(PERSIST_KEY)
+          } catch { return [] }
+          if (raw === null || raw === undefined) return []
+          try {
+            const value = JSON.parse(raw)
+            if (value?.version !== 1 || !Array.isArray(value.cards)) return []
+            return value.cards
+              .filter(entry => typeof entry?.id === 'string' && entry.id !== '' && typeof entry.question === 'string')
+              .slice(0, PERSIST_MAX_CARDS)
+          } catch { return [] }
+        }
+
+        function writePersisted(cards) {
+          try {
+            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 1, cards }))
+          } catch (error) {
+            // Quota or privacy mode — the cards stay on screen, just not durable.
+            console.warn(`[${PLUGIN_ID}] card history not persisted:`, error)
+          }
+        }
+
+        /** Recompute the durable set from the live store and write it. */
+        const syncPersisted = () => {
+          const finished = store.state.cards
+            .filter(card => card.carrier === 'side'
+              && (card.status === 'done' || card.status === 'stopped')
+              && card.text !== '')
+            .slice(0, PERSIST_MAX_CARDS)
+            .map(card => ({
+              id: card.id,
+              question: card.question,
+              selected: String(card.selected ?? '').slice(0, PERSIST_TEXT_LIMIT),
+              selection: String(card.selection ?? '').slice(0, PERSIST_TEXT_LIMIT),
+              text: String(card.text ?? '').slice(0, PERSIST_TEXT_LIMIT),
+              reasoning: String(card.reasoning ?? '').slice(0, PERSIST_TEXT_LIMIT),
+              status: card.status === 'stopped' ? 'stopped' : 'done',
+              carrier: 'side',
+              zone: card.zone,
+              truncated: card.truncated === true,
+              droppedChars: Number(card.droppedChars ?? 0),
+              history: Array.isArray(card.history) ? card.history.slice(-12) : [],
+            }))
+          writePersisted(finished)
+        }
+
+        /** Replay finished cards from a previous page load into the store. */
+        const restorePersisted = () => {
+          const saved = readPersisted()
+          if (saved.length === 0) return
+          const replayed = saved.map(entry => ({
+            id: entry.id,
+            question: entry.question,
+            selected: String(entry.selected ?? ''),
+            selection: String(entry.selection ?? ''),
+            text: String(entry.text ?? ''),
+            reasoning: String(entry.reasoning ?? ''),
+            status: entry.status === 'stopped' ? 'stopped' : 'done',
+            carrier: 'side',
+            zone: entry.zone,
+            truncated: entry.truncated === true,
+            droppedChars: Number(entry.droppedChars ?? 0),
+            streaming: null,
+            error: null,
+            // A native/better tab cannot survive a reload, so history always
+            // comes back on the flow stack where it is visible immediately.
+            surface: 'flow',
+            open: true,
+            history: Array.isArray(entry.history)
+              ? entry.history
+                  .filter(turn => turn !== null && typeof turn === 'object')
+                  .map(turn => ({ question: String(turn.question ?? ''), answer: String(turn.answer ?? '') }))
+              : [],
+          }))
+          store.set({ cards: [...replayed, ...store.state.cards] })
+        }
+
         const actions = {
           openPopover(candidate) {
             store.set({ popover: { candidate } })
@@ -1759,7 +2102,6 @@ window.__ModuleLoader__.load({
               truncated: cut.truncated,
               droppedChars: cut.droppedChars,
               zone: candidate.zone,
-              cross: candidate.cross,
               carrier: payload.carrier,
               status: 'pending',
               text: '',
@@ -1817,11 +2159,13 @@ window.__ModuleLoader__.load({
               } else {
                 // Render proof: an adapter that accepts the open but never
                 // mounts our body would leave an empty tab. Unless the card is
-                // on screen shortly after, move it to the flow stack — the
-                // card's data lives in the store, so the running stream simply
-                // continues in the other surface.
+                // mounted by then (CardHost cancels its own proof on mount),
+                // move it to the flow stack — the card's data lives in the
+                // store, so the running stream simply continues on the other
+                // surface. A proof that fires before a lazy host mounts is
+                // what the "moved to the flow stack" body below covers.
                 const proof = setTimeout(() => {
-                  pendingProofs.delete(proof)
+                  pendingProofs.delete(card.id)
                   const live = store.state.cards.find(item => item.id === card.id)
                   if (live === undefined || live.surface === 'flow') return
                   if (renderedCardId === card.id) return
@@ -1830,7 +2174,7 @@ window.__ModuleLoader__.load({
                   toast(t('surfaceUnproven'))
                   scheduleReport(0)
                 }, 600)
-                pendingProofs.add(proof)
+                pendingProofs.set(card.id, proof)
               }
             }
             void runSideCard(card.id)
@@ -1877,7 +2221,15 @@ window.__ModuleLoader__.load({
           },
           cancel(card) {
             const controller = controllers.get(card.id)
-            if (controller !== undefined) controller.abort()
+            if (controller !== undefined) {
+              controller.abort()
+              // The local abort stops only the browser's stream: the Host's
+              // child run would keep burning until its timeout unless told,
+              // so POST /cancel too. Fire-and-forget on purpose — the card is
+              // already stopped locally, and a dead host must not turn the
+              // Stop button into a failure.
+              void postJson('cancel', { id: card.id }).catch(() => {})
+            }
             patchCard(card.id, { status: 'stopped' })
           },
           async sendToMain(card) {
@@ -1906,14 +2258,33 @@ window.__ModuleLoader__.load({
             }
           },
           close(card) {
-            controllers.get(card.id)?.abort()
+            const controller = controllers.get(card.id)
+            if (controller !== undefined) {
+              controller.abort()
+              // Same host-side release as the Stop button: closing a card
+              // mid-stream must not leave the child running server-side.
+              void postJson('cancel', { id: card.id }).catch(() => {})
+            }
             controllers.delete(card.id)
+            // A closed card's buffered-but-unflushed deltas belong to nobody:
+            // drop them here so the next tick's flush cannot touch them.
+            pendingDeltas.delete(card.id)
+            pendingReasonings.delete(card.id)
+            // Every surface gets a chance to close its own container: an
+            // orphaned native tab is indistinguishable from a stuck card to
+            // the user, so closing the card must close the tab too (the rail
+            // silently ignores a close it cannot perform).
             if (card.surface === 'better-sidebar') {
               try {
                 surfaces.better.close(card)
               } catch { /* the host may already be gone */ }
+            } else if (card.surface === 'native-rightbar') {
+              try {
+                surfaces.native.close(card)
+              } catch { /* the right rail owns its lifecycle */ }
             }
             store.set({ cards: store.state.cards.filter(item => item.id !== card.id) })
+            syncPersisted()
           },
           async saveConfig(patch) {
             const value = await postJson('config', patch)
@@ -1938,6 +2309,44 @@ window.__ModuleLoader__.load({
           },
         }
 
+        /**
+         * Streaming deltas coalesce into one store commit per tick. Every
+         * commit re-renders every card and re-parses the whole answer, so a
+         * fast stream on a long answer was quadratic work. A terminal event
+         * (or cancel, or close) flushes the buffer first, so no streamed text
+         * is ever lost on the way into the store.
+         */
+        const pendingDeltas = new Map()
+        const pendingReasonings = new Map()
+        let deltaFlushTimer = null
+
+        const flushStreamBuffers = () => {
+          if (deltaFlushTimer !== null) {
+            clearTimeout(deltaFlushTimer)
+            deltaFlushTimer = null
+          }
+          if (pendingDeltas.size > 0) {
+            for (const [cardId, chunk] of [...pendingDeltas.entries()]) appendCardText(cardId, chunk)
+            pendingDeltas.clear()
+          }
+          if (pendingReasonings.size > 0) {
+            for (const [cardId, chunk] of [...pendingReasonings.entries()]) appendCardReasoning(cardId, chunk)
+            pendingReasonings.clear()
+          }
+        }
+
+        const bufferStreamDelta = (cardId, chunk) => {
+          if (chunk === '') return
+          pendingDeltas.set(cardId, (pendingDeltas.get(cardId) ?? '') + chunk)
+          if (deltaFlushTimer === null) deltaFlushTimer = setTimeout(flushStreamBuffers, 50)
+        }
+
+        const bufferStreamReasoning = (cardId, chunk) => {
+          if (chunk === '') return
+          pendingReasonings.set(cardId, (pendingReasonings.get(cardId) ?? '') + chunk)
+          if (deltaFlushTimer === null) deltaFlushTimer = setTimeout(flushStreamBuffers, 50)
+        }
+
         /** Stream one side answer into its card. */
         const runSideCard = async (cardId) => {
           const card = store.state.cards.find(item => item.id === cardId)
@@ -1950,10 +2359,9 @@ window.__ModuleLoader__.load({
             question: card.question,
             selection: card.selected,
             zone: card.zone,
-            cross: card.cross,
             carrier: 'side',
             sessionId: currentSessionId(ctx),
-            history: card.history.slice(-6),
+            history: card.history.slice(-HISTORY_TURNS),
           }, {
             signal: controller.signal,
             onStart: (data) => {
@@ -1965,18 +2373,27 @@ window.__ModuleLoader__.load({
                 toolFilter: typeof data?.toolFilter === 'string' ? data.toolFilter : null,
               })
             },
-            onDelta: data => appendCardText(cardId, String(data?.text ?? '')),
-            onReasoning: data => appendCardReasoning(cardId, String(data?.text ?? '')),
+            onDelta: data => bufferStreamDelta(cardId, String(data?.text ?? '')),
+            onReasoning: data => bufferStreamReasoning(cardId, String(data?.text ?? '')),
             onDone: (data) => {
+              // A locally cancelled stream can still see its terminal frame
+              // (a harness stream ignores the abort signal; a real host may
+              // race the abort): the card's local "stopped" verdict wins.
+              if (controller.signal.aborted) return
+              flushStreamBuffers()
               const current = store.state.cards.find(item => item.id === cardId)
               patchCard(cardId, {
                 status: data?.aborted === true ? 'stopped' : 'done',
                 streaming: data?.streaming === true,
                 text: typeof data?.text === 'string' && data.text !== '' ? data.text : (current?.text ?? ''),
+                reasoning: typeof data?.reasoning === 'string' ? data.reasoning : (current?.reasoning ?? ''),
               })
               controllers.delete(cardId)
+              syncPersisted()
             },
             onError: (error) => {
+              if (controller.signal.aborted) return
+              flushStreamBuffers()
               patchCard(cardId, { status: 'error', error })
               controllers.delete(cardId)
             },
@@ -2080,7 +2497,10 @@ window.__ModuleLoader__.load({
                 id = snapshot?.locale ?? snapshot?.id ?? (typeof locale.getLocale === 'function' ? locale.getLocale()?.locale : null)
               } catch { /* keep the previous language */ }
               if (typeof id === 'string' && id !== '') {
-                const next = id.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+                // The service names ONE locale (no preference list behind it),
+                // so an id the UI cannot serve falls back to en — same rule the
+                // initial resolution applies to a preference list with no hit.
+                const next = resolveLanguage([id], 'en')
                 if (next !== lang) {
                   lang = next
                   store.set({})
@@ -2274,7 +2694,7 @@ window.__ModuleLoader__.load({
         // degrades to the next surface and logs, never breaks the plugin.
         // See README §6 for the replacement checklist.
         try {
-          ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => {
+          const uninject = ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => {
             try {
               const registry = injected.get('sidebarRightTabs')
               const controller = injected.get('sidebarRight')
@@ -2346,6 +2766,9 @@ window.__ModuleLoader__.load({
               console.error(`[${PLUGIN_ID}] native right-rail adapter unavailable:`, error)
             }
           })
+          // ctx.inject's own reverse-registration must unwind with the plugin
+          // too, or the host keeps routing injections into a disposed fiber.
+          if (typeof uninject === 'function') disposers.push(uninject)
         } catch (error) {
           surfaces.native.error = String(error?.message ?? error)
         }
@@ -2361,7 +2784,7 @@ window.__ModuleLoader__.load({
         // ("Features are never removed"), so the adapter gates on `tabMeta`
         // instead of on a version number.
         try {
-          ctx.inject(['betterSidebar'], (injected) => {
+          const uninject = ctx.inject(['betterSidebar'], (injected) => {
             try {
               const service = injected.get('betterSidebar')
               if (service === null || service === undefined) return
@@ -2398,6 +2821,7 @@ window.__ModuleLoader__.load({
               console.error(`[${PLUGIN_ID}] better-sidebar adapter unavailable:`, error)
             }
           })
+          if (typeof uninject === 'function') disposers.push(uninject)
         } catch (error) {
           surfaces.better.error = String(error?.message ?? error)
         }
@@ -2412,6 +2836,14 @@ window.__ModuleLoader__.load({
           React.useEffect(() => {
             if (typeof cardId !== 'string' || cardId === '') return undefined
             renderedCardId = cardId
+            // Mounting settles the render proof, even when this host mounted
+            // late (a lazy tab panel slower than the 600ms timer) — the proof
+            // must never fire after the card is demonstrably on screen.
+            const proof = pendingProofs.get(cardId)
+            if (proof !== undefined) {
+              clearTimeout(proof)
+              pendingProofs.delete(cardId)
+            }
             return () => {
               if (renderedCardId === cardId) renderedCardId = null
             }
@@ -2419,7 +2851,18 @@ window.__ModuleLoader__.load({
           if (card === undefined) {
             return h('div', { className: 'dsa-settings', 'data-dsa-root': '' },
               h(Styles, null),
-              h('div', { className: 'dsa-muted' }, t('answerEmpty')))
+              h('div', { className: 'dsa-muted' }, t('cardClosed')))
+          }
+          if (card.surface === 'flow') {
+            // The proof already moved this card to the flow stack and this
+            // host mounted afterwards. Rendering the answer again here would
+            // show it in two places, so close the tab we can and leave the
+            // note for a rail that keeps it.
+            try { surfaces.native.close(card) } catch { /* the rail owns its lifecycle */ }
+            try { surfaces.better.close(card) } catch { /* the host may already be gone */ }
+            return h('div', { className: 'dsa-settings', 'data-dsa-root': '' },
+              h(Styles, null),
+              h('div', { className: 'dsa-muted' }, t('cardMovedToFlow')))
           }
           return h('div', { className: 'dsa-settings', 'data-dsa-root': '', style: { padding: '10px' } },
             h(Styles, null),
@@ -2436,6 +2879,12 @@ window.__ModuleLoader__.load({
         }
 
         // ── boot ─────────────────────────────────────────────────────────
+        try {
+          restorePersisted()
+        } catch (error) {
+          // Corrupt-but-parseable history must never block startup.
+          console.warn(`[${PLUGIN_ID}] card history restore failed:`, error)
+        }
         void refreshState().catch(() => { /* the settings page shows the failure */ })
         // One report after the slot ladders have had time to settle, so the
         // Host ends up holding the CLIENT's real registration state.
@@ -2443,7 +2892,13 @@ window.__ModuleLoader__.load({
         disposers.push(() => {
           for (const controller of controllers.values()) controller.abort()
           controllers.clear()
-          for (const proof of pendingProofs) clearTimeout(proof)
+          pendingDeltas.clear()
+          pendingReasonings.clear()
+          if (deltaFlushTimer !== null) {
+            clearTimeout(deltaFlushTimer)
+            deltaFlushTimer = null
+          }
+          for (const proof of pendingProofs.values()) clearTimeout(proof)
           pendingProofs.clear()
           if (toastTimer !== null) clearTimeout(toastTimer)
           if (reportTimer !== null) clearTimeout(reportTimer)
@@ -2482,6 +2937,8 @@ window.__ModuleLoader__.load({
           IDS,
           CARD_KIND,
           CARD_KIND_BETTER,
+          HISTORY_TURNS,
+          estimateLabelWidth,
           parseSseBlock,
           truncateSelection,
           parseShortcut,
@@ -2496,6 +2953,9 @@ window.__ModuleLoader__.load({
           isDiagnosticsUnsupported,
           renderRichText,
           pickSurface,
+          localizeError,
+          errorCodes: ERROR_CODES,
+          resolveLanguage,
           dict: DICT,
         }),
       }),

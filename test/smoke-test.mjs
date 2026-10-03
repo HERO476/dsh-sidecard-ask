@@ -110,7 +110,7 @@ report.equal(a.engine.starts[0].request.parent.id, 'session-alpha', 'the asking 
 report.equal(a.engine.starts[0].request.prompt[0].type, 'text', 'the child receives one text block')
 report.ok(a.engine.promptOf(0).includes('槽位出口会带上 data-slot 标记。'), 'the selection reaches the child prompt')
 report.ok(a.engine.promptOf(0).includes('这句话是什么意思？'), 'the question reaches the child prompt')
-report.ok(a.engine.promptOf(0).includes('【选中来源】聊天区'), 'the prompt labels the source zone')
+report.ok(a.engine.promptOf(0).includes('Source: chat area'), 'the prompt labels the source zone')
 report.ok(a.engine.promptOf(0).includes('```text'), 'the selection is fenced as data')
 report.equal(a.engine.disposed, ['child-1'], 'the run was disposed after settling')
 report.equal(
@@ -125,6 +125,10 @@ report.ok(
 report.ok(
   typeof a.engine.starts[0].request.persona === 'string' && a.engine.starts[0].request.persona.includes('selection-answer'),
   'the persona travels as a provider field when supported',
+)
+report.ok(
+  a.engine.starts[0].request.persona.includes('language the question'),
+  'the persona tells the child to answer in the question\'s language',
 )
 report.equal(events[0].data.toolFilter, 'applied', 'the start event reports the read-only guard as applied')
 report.equal(events[0].data.persona, 'section', 'the start event reports the persona carrier')
@@ -198,7 +202,7 @@ const longEvents = longAsk.events()
 report.equal(longEvents[0].data.truncated, true, 'start reports the truncation')
 report.ok(longEvents[0].data.droppedChars > 0, 'start reports how many characters were dropped')
 report.ok(b.engine.promptOf(0).includes('已省略中间'), 'the child prompt carries the truncation marker')
-report.ok(b.engine.promptOf(0).includes('（文本过长，已截断）'), 'the child prompt marks the truncated source')
+report.ok(b.engine.promptOf(0).includes('(selection too long; truncated)'), 'the child prompt marks the truncated source')
 report.ok(b.engine.promptOf(0).length <= 60_000, 'the prompt stays inside the hard cap')
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -425,6 +429,16 @@ const crossOrigin = await callRoute(a.harness, '/state', {
   headers: { host: '127.0.0.1:8080', origin: 'https://evil.example' },
 })
 report.equal(crossOrigin.status, 403, 'a foreign Origin is refused')
+const portMismatch = await callRoute(a.harness, '/state', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', origin: 'http://127.0.0.1:9999' },
+})
+report.equal(portMismatch.status, 403, 'a same-hostname Origin from a different port is refused')
+const samePort = await callRoute(a.harness, '/state', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', origin: 'http://127.0.0.1:8080' },
+})
+report.equal(samePort.status, 200, 'an Origin matching the full host:port authority passes')
 const trusted = await callRoute(a.harness, '/state', {
   method: 'GET',
   headers: { host: 'box.local:8080', origin: 'http://box.local:8080' },
@@ -448,6 +462,11 @@ const allowed = await callRoute(trustedHost.harness, '/state', {
   headers: { host: 'box.local:8080', origin: 'http://box.local:8080' },
 })
 report.equal(allowed.status, 200, 'a configured trusted authority is allowed through the fence')
+const wrongTrustedPort = await callRoute(trustedHost.harness, '/state', {
+  method: 'GET',
+  headers: { host: 'box.local:9999' },
+})
+report.equal(wrongTrustedPort.status, 403, 'a port-scoped trusted entry does not trust other ports on the same host')
 
 // ────────────────────────────────────────────────────────────────────────────
 // 9. client self-report (the only channel that exposes browser-side state)

@@ -500,8 +500,25 @@ export function byTag(tree, tag) {
 }
 
 /**
+ * A functional `localStorage` stand-in (Map-backed) so client persistence can
+ * be exercised without a real browser. Quota-failure tests replace setItem.
+ */
+export function createLocalStorageStub() {
+  const data = new Map()
+  return {
+    getItem: key => (data.has(String(key)) ? data.get(String(key)) : null),
+    setItem(key, value) { data.set(String(key), String(value)) },
+    removeItem: key => { data.delete(String(key)) },
+    clear() { data.clear() },
+    get length() { return data.size },
+    key(index) { return [...data.keys()][index] ?? null },
+  }
+}
+
+/**
  * Load `client.js` in a synthetic browser and return its registered module.
- * @param {{fetchImpl?: Function, services?: Record<string, unknown>, language?: string}} [options]
+ * @param {{fetchImpl?: Function, services?: Record<string, unknown>, language?: string,
+ *   storage?: {getItem: Function, setItem: Function, removeItem: Function}}} [options]
  */
 export function loadClientModule(options = {}) {
   const source = readFileSync(CLIENT_ENTRY, 'utf8')
@@ -517,6 +534,7 @@ export function loadClientModule(options = {}) {
     addEventListener() {},
     removeEventListener() {},
     getSelection: () => null,
+    localStorage: options.storage ?? createLocalStorageStub(),
   }
   const listeners = new Map()
   const document = {
@@ -534,7 +552,11 @@ export function loadClientModule(options = {}) {
     execCommand: () => true,
     querySelector: () => null,
   }
-  const navigatorShim = { language: options.language ?? 'zh-CN', clipboard: null }
+  const navigatorShim = {
+    language: options.language ?? 'zh-CN',
+    languages: options.languages ?? [options.language ?? 'zh-CN'],
+    clipboard: null,
+  }
   const fetchImpl = options.fetchImpl ?? (async () => ({
     ok: true,
     status: 200,
@@ -580,6 +602,7 @@ export function makeClientCtx(options = {}) {
   const throwOnSlots = new Set(options.throwOnSlots ?? [])
   const registrations = []
   const injections = []
+  const uninjects = []
   const effects = []
   const ctx = {
     get: name => services[name],
@@ -593,7 +616,7 @@ export function makeClientCtx(options = {}) {
     inject(deps, callback) {
       injections.push(deps)
       callback({ get: name => services[name] })
-      return () => {}
+      return () => { uninjects.push(deps) }
     },
     slots: {
       inject(key, callback) {
@@ -614,6 +637,8 @@ export function makeClientCtx(options = {}) {
     services,
     registrations,
     injections,
+    /** Reverse-registrations the client called back (dispose symmetry). */
+    uninjects,
     effects,
     /** Look up one registration by slot + id. */
     find(slot, id) {
