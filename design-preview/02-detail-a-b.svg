@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="820" viewBox="0 0 1320 820" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif">
+  <rect width="1320" height="820" fill="#f7f8fa"/>
+
+  <text x="32" y="42" font-size="18" font-weight="600" fill="#111827">两个最高性价比方案的细节（示意图 2/2）</text>
+  <text x="32" y="66" font-size="12.5" fill="#6b7280">B 与 A 可以叠加：默认用 A 的胶囊，展开后就是 B 的卡片样式。两者共用同一套令牌，无新增依赖。</text>
+
+  <!-- ============ LEFT: B details ============ -->
+  <text x="32" y="106" font-size="14" font-weight="600" fill="#111827">B · 轻量卡片：同一位置，只改观感</text>
+  <text x="32" y="128" font-size="12" fill="#6b7280">① 标题栏 34px，状态点 + 标题 + 操作按钮同一行　② 引文默认折叠成一行　③ 底栏抽掉按钮，只留元信息</text>
+
+  <!-- B / done -->
+  <g transform="translate(32,148)">
+    <rect x="0" y="0" width="380" height="300" rx="12" fill="#fcfdfe" stroke="#e5e7eb"/>
+    <text x="0" y="-8" font-size="11.5" fill="#9ca3af">完成态</text>
+
+    <line x1="0" y1="36" x2="380" y2="36" stroke="#eef1f4"/>
+    <circle cx="18" cy="18" r="4.5" fill="#10b981"/>
+    <text x="32" y="23" font-size="12.5" font-weight="600" fill="#374151">追问</text>
+    <text x="68" y="23" font-size="11" fill="#9ca3af">· 聊天区</text>
+    <text x="300" y="23" font-size="11.5" fill="#9ca3af">复制</text>
+    <text x="366" y="23" font-size="13" fill="#9ca3af" text-anchor="end">✕</text>
+    <line x1="352" y1="16" x2="352" y2="20" stroke="#e5e7eb"/>
+
+    <text x="16" y="60" font-size="12" fill="#9ca3af">“现在可以直接打印，更具排版和表现力…”</text>
+
+    <text x="16" y="94" font-size="12.5" fill="#374151">答案会出现在主对话里，随对话正常流式输出。</text>
+    <text x="16" y="114" font-size="12.5" fill="#374151">也可以留在侧边卡片里，二者互不干扰。</text>
+
+    <line x1="16" y1="268" x2="364" y2="268" stroke="#f1f4f7"/>
+    <text x="16" y="286" font-size="10.5" fill="#b6bec9">侧边卡片 · max 4000 · 1.4s</text>
+    <text x="364" y="286" font-size="10.5" fill="#4c8dff" text-anchor="end">继续追问</text>
+  </g>
+
+  <!-- B / streaming -->
+  <g transform="translate(444,148)">
+    <rect x="0" y="0" width="380" height="300" rx="12" fill="#fcfdfe" stroke="#e5e7eb"/>
+    <text x="0" y="-8" font-size="11.5" fill="#9ca3af">流式态（进度条贴在卡片顶部内沿）</text>
+
+    <rect x="0" y="0" width="380" height="36" rx="12" fill="#fafbfc"/>
+    <rect x="0" y="24" width="380" height="12" fill="#fafbfc"/>
+    <line x1="0" y1="36" x2="380" y2="36" stroke="#eef1f4"/>
+    <circle cx="18" cy="18" r="4.5" fill="#4c8dff">
+      <animate attributeName="opacity" values="1;0.25;1" dur="1.4s" repeatCount="indefinite"/>
+    </circle>
+    <text x="32" y="23" font-size="12.5" font-weight="600" fill="#374151">作答中…</text>
+    <text x="96" y="23" font-size="11" fill="#9ca3af">· 聊天区</text>
+    <text x="366" y="23" font-size="11.5" fill="#9ca3af" text-anchor="end">停止</text>
+
+    <rect x="0" y="34" width="120" height="2.5" fill="#4c8dff">
+      <animate attributeName="x" values="-120;380" dur="1.8s" repeatCount="indefinite"/>
+    </rect>
+
+    <text x="16" y="60" font-size="12" fill="#9ca3af">“现在可以直接打印，更具排版和表现力…”</text>
+
+    <text x="16" y="94" font-size="12.5" fill="#374151">答案会出现在主对话里，</text>
+    <text x="16" y="114" font-size="12.5" fill="#374151">随对话正常流式输出</text>
+    <rect x="210" y="104" width="7" height="13" fill="#4c8dff">
+      <animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite"/>
+    </rect>
+
+    <line x1="16" y1="268" x2="364" y2="268" stroke="#f1f4f7"/>
+    <text x="16" y="286" font-size="10.5" fill="#b6bec9">已收到 96 字 · 侧边卡片 · max 4000</text>
+  </g>
+
+  <!-- before / after delta -->
+  <g transform="translate(32,478)">
+    <rect x="0" y="0" width="792" height="150" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="16" y="26" font-size="12.5" font-weight="600" fill="#111827">B 相对现状到底改了什么</text>
+    <g font-size="12" fill="#4b5563">
+      <text x="16" y="54">· 头/底结构：从「标题行 + 徽标行 + 正文 + 状态行 + 按钮行 + 脚注行」压到 <tspan font-weight="600" fill="#111827">3 段</tspan>（标题栏 / 正文 / 元信息行）→ 同样高度能多显示约 6 行正文。</text>
+      <text x="16" y="76">· 阴影：0 10px 30px rgba(0,0,0,.22) → <tspan font-weight="600" fill="#111827">0 4px 16px rgba(0,0,0,.08)</tspan>；描边仍走 --dsw-alias-border-l1，暗色主题不再是一块“发光的白板”。</text>
+      <text x="16" y="98">· 按钮：<tspan font-weight="600" fill="#111827">描边按钮只在需要时出现</tspan>（复制 / 继续追问 / 重试），关闭、复制、停止改为图标级；状态用状态点表达，不再和按钮同色同粗。</text>
+      <text x="16" y="120">· 引文：默认一行省略号（点击展开全文），把纵向空间让给答案本身。</text>
+      <text x="16" y="142">· 位置不变（仍是右下角 16px），因此 A 与否都不会挡住输入框；卡片高度上限由 70vh 收紧到 <tspan font-weight="600" fill="#111827">52vh</tspan>，超出部分内部滚动。</text>
+    </g>
+  </g>
+
+  <!-- ============ RIGHT: A details ============ -->
+  <text x="860" y="106" font-size="14" font-weight="600" fill="#111827">A · 悬浮胶囊 → 按需展开</text>
+  <text x="860" y="128" font-size="12" fill="#6b7280">作答期间只有 1 行高（约 44px），不遮挡正文；完成后胶囊显示答案首句</text>
+
+  <g transform="translate(860,148)">
+    <rect x="0" y="0" width="428" height="300" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+    <g fill="#e2e6ea">
+      <rect x="20" y="26" width="360" height="7" rx="3.5"/>
+      <rect x="20" y="42" width="300" height="7" rx="3.5"/>
+      <rect x="20" y="58" width="340" height="7" rx="3.5"/>
+      <rect x="20" y="74" width="200" height="7" rx="3.5"/>
+      <rect x="20" y="90" width="330" height="7" rx="3.5"/>
+      <rect x="20" y="106" width="280" height="7" rx="3.5"/>
+    </g>
+
+    <!-- pill states stacked to show all three -->
+    <g transform="translate(96,128)">
+      <rect x="0" y="0" width="292" height="46" rx="23" fill="#ffffff" stroke="#e5e7eb"/>
+      <circle cx="24" cy="23" r="4.5" fill="#4c8dff">
+        <animate attributeName="opacity" values="1;0.25;1" dur="1.4s" repeatCount="indefinite"/>
+      </circle>
+      <text x="40" y="21" font-size="12" fill="#111827">正在作答…</text>
+      <text x="40" y="36" font-size="10.5" fill="#b6bec9">“现在可以直接打印，更具排版…”</text>
+      <text x="272" y="28" font-size="16" fill="#b6bec9">›</text>
+      <rect x="0" y="44" width="292" height="2.5" rx="1.25" fill="#4c8dff">
+        <animate attributeName="opacity" values="0.15;0.9;0.15" dur="2.2s" repeatCount="indefinite"/>
+      </rect>
+    </g>
+
+    <g transform="translate(96,196)">
+      <rect x="0" y="0" width="292" height="46" rx="23" fill="#ffffff" stroke="#e5e7eb"/>
+      <circle cx="24" cy="23" r="4.5" fill="#10b981"/>
+      <text x="40" y="21" font-size="12" fill="#111827">已完成 · 96 字</text>
+      <text x="40" y="36" font-size="10.5" fill="#b6bec9">答案会出现在主对话里，随对话正常流式…</text>
+      <text x="272" y="28" font-size="16" fill="#b6bec9">›</text>
+    </g>
+
+    <g transform="translate(96,264)">
+      <rect x="0" y="0" width="292" height="34" rx="17" fill="#fef2f2" stroke="#fecaca"/>
+      <circle cx="22" cy="17" r="4.5" fill="#ef4444"/>
+      <text x="36" y="21" font-size="11.5" fill="#b91c1c">作答失败 · 点开查看原因</text>
+    </g>
+  </g>
+
+  <g transform="translate(860,478)">
+    <rect x="0" y="0" width="428" height="150" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="16" y="26" font-size="12.5" font-weight="600" fill="#111827">A 的行为约定（决定后我按这个实现）</text>
+    <g font-size="12" fill="#4b5563">
+      <text x="16" y="54">· 胶囊仍贴右下角 16px，但宽度自适应内容（最长 320px），1 行高。</text>
+      <text x="16" y="76">· 点击 → 向上展开成完整卡片（即 B 的样式），带 160ms 高度过渡。</text>
+      <text x="16" y="98">· 多张卡片同时在跑：只保留 <tspan font-weight="600" fill="#111827">1 个展开</tspan>，其余折叠；超过 3 张时出现“还有 N 条”计数。</text>
+      <text x="16" y="120">· 设置项 <tspan font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#111827">cardDensity: compact | full</tspan>，默认 compact；不想要折叠的人可以切回现状。</text>
+      <text x="16" y="142">· 键盘：Esc 收起；展开后焦点进入卡片，Tab 循环在卡片内。</text>
+    </g>
+  </g>
+
+  <g font-size="12" fill="#6b7280">
+    <text x="32" y="670">以上两张图都只是静态示意；确定方向后我会先在 <tspan font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#111827">design-preview/</tspan> 出一份可点按的 HTML 原型（真实 CSS + 真实流式文本），</text>
+    <text x="32" y="690">你确认后再改 <tspan font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#111827">client.js</tspan>（§9 组件 + §8 样式表），并跑 verify / contract-test / smoke-test 三个脚本回归。</text>
+  </g>
+</svg>

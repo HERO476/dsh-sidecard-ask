@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>侧边卡片追问 · A+C 可点按原型</title>
+<style>
+/* =====================================================================
+   可点按原型（不是产品代码）。
+   目的只有一个：让你亲手验“C 停靠右栏 + A 悬浮胶囊 + 随时收起/隐藏”的手感。
+   颜色是本文件自带的近似值；真正写进 client.js 时全部换成 DSH 主题令牌
+   --dsw-alias-*，所以最终观感以此为准，这里只看交互与层级。
+   ===================================================================== */
+:root{
+  --bg:#f7f8fa; --panel:#fff; --line:#e6e9ee; --line-2:#dfe3e9;
+  --text:#111827; --text-2:#6b7280; --text-3:#9ca3af;
+  --brand:#4c8dff; --ok:#10b981; --err:#ef4444;
+  --surface:#fcfdfe; --fill:#f4f6f8;
+  --shadow:0 4px 16px rgba(0,0,0,.08);
+  --radius:14px;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#15171a; --panel:#1c1f23; --line:#2b3038; --line-2:#333943;
+    --text:#e8eaed; --text-2:#9aa3ae; --text-3:#6d7681;
+    --surface:#1f2328; --fill:#24282e;
+    --shadow:0 4px 16px rgba(0,0,0,.45);
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:13px/1.55 -apple-system,'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif}
+button{font:inherit;color:inherit;cursor:pointer}
+
+/* ---- mock app shell ------------------------------------------------ */
+.app{display:flex;height:100%;overflow:hidden}
+.rail{width:212px;flex:none;background:var(--panel);border-right:1px solid var(--line);
+  padding:14px 12px;display:flex;flex-direction:column;gap:10px}
+.rail h1{margin:0 0 6px;font-size:13px;font-weight:600}
+.rail .row{padding:7px 9px;border-radius:8px;color:var(--text-2)}
+.rail .row[data-on="1"]{background:var(--fill);color:var(--text);font-weight:500}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+.topbar{height:46px;flex:none;display:flex;align-items:center;gap:10px;
+  padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.topbar .tag{font-size:11.5px;color:var(--text-3)}
+.spacer{margin-left:auto}
+.thread{flex:1;overflow:auto;padding:22px 28px 120px}
+.msg{max-width:760px;margin:0 auto 16px}
+.msg.user{width:fit-content;margin-left:auto;background:var(--fill);padding:8px 12px;border-radius:10px}
+.msg.bot p{margin:0 0 8px}
+.dim{color:var(--text-2)}
+.sel{background:color-mix(in srgb,var(--brand) 22%,transparent);border-radius:3px}
+
+/* ---- controls used by the prototype -------------------------------- */
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:9px;overflow:hidden}
+.seg button{padding:4px 11px;border:0;background:transparent;color:var(--text-2);font-size:12px}
+.seg button[data-on="1"]{background:var(--fill);color:var(--text);font-weight:600}
+.ghost{border:1px solid var(--line-2);background:transparent;border-radius:9px;padding:4px 10px;font-size:12px}
+.ghost:hover{border-color:var(--brand);color:var(--brand)}
+.icon{border:0;background:transparent;padding:2px 6px;border-radius:7px;color:var(--text-3);font-size:14px;line-height:1}
+.icon:hover{background:var(--fill);color:var(--text)}
+
+/* ---- the card itself ----------------------------------------------- */
+.dsa-card{display:flex;flex-direction:column;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.dsa-card + .dsa-card{margin-top:10px}
+.dsa-head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line)}
+.dsa-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--text-3)}
+.dsa-head[data-status="streaming"] .dsa-dot{background:var(--brand);animation:pulse 1.4s infinite}
+.dsa-head[data-status="done"] .dsa-dot{background:var(--ok)}
+.dsa-head[data-status="error"] .dsa-dot{background:var(--err)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.dsa-title{font-weight:600}
+.dsa-chip{font-size:11px;color:var(--text-3)}
+.dsa-body{padding:10px 12px 12px}
+.dsa-quote{margin:0 0 8px;padding:6px 9px;border-left:3px solid var(--line-2);
+  background:var(--fill);border-radius:5px;color:var(--text-2);font-size:12px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.dsa-quote[data-open="1"]{white-space:normal}
+.dsa-answer p{margin:0 0 7px}
+.dsa-meta{display:flex;align-items:center;gap:10px;padding:7px 12px;border-top:1px solid var(--line);
+  font-size:11px;color:var(--text-3)}
+.dsa-meta .act{border:0;background:transparent;color:var(--brand);font-size:11.5px;padding:0}
+.dsa-meta .act.plain{color:var(--text-2)}
+.dsa-bar{height:2.5px;background:linear-gradient(90deg,transparent,var(--brand),transparent);
+  background-size:200% 100%;animation:sweep 1.4s linear infinite}
+@keyframes sweep{from{background-position:120% 0}to{background-position:-120% 0}}
+
+/* ---- A: the floating layer (capsule / full / off) -------------------
+   向右压缩的规则（原型与真实实现一致）：
+   1) 卡宽不再固定 400px，改为「自适应」，上限 --dsa-float-w；
+   2) 离窗口右边只有 --dsa-gap-r（8px），尽可能贴右，把左边界往右推；
+   3) 如果右边是右侧栏（承载面），再保证不与它交叠 --dsa-gap-sidebar；
+   4) 右栏、左栏折叠/窗口缩放时用 ResizeObserver 重算，不是写死的。 */
+.float{position:fixed;right:var(--dsa-gap-r,8px);bottom:16px;width:var(--dsa-float-w,340px);z-index:40;pointer-events:none}
+.float .dsa-capsule,.float .dsa-mini,.float .dsa-card{pointer-events:auto}
+.float .stack{max-height:52vh;overflow:auto;padding-right:2px}
+.measure{font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.warn{color:var(--err);font-weight:600}
+.dsa-capsule{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
+  padding:10px 13px;border:1px solid var(--line-2);border-radius:999px;background:var(--panel);
+  box-shadow:var(--shadow);position:relative;overflow:hidden}
+.dsa-capsule .txt{min-width:0}
+.dsa-capsule .l1{font-size:12.5px;font-weight:600;white-space:nowrap}
+.dsa-capsule .l2{font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsa-capsule .chev{margin-left:auto;font-size:15px;color:var(--text-3);padding:0 2px}
+.dsa-capsule .track{position:absolute;left:0;right:0;bottom:0;height:2px;background:transparent}
+.dsa-capsule .track i{display:block;height:100%;width:38%;background:var(--brand);opacity:.9;
+  animation:sweep2 1.8s ease-in-out infinite}
+@keyframes sweep2{0%{transform:translateX(-110%)}100%{transform:translateX(300%)}}
+.dsa-mini{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;
+  border:1px dashed var(--line-2);background:var(--panel);color:var(--text-2);font-size:11.5px;
+  box-shadow:var(--shadow)}
+.dsa-mini i{width:7px;height:7px;border-radius:50%;background:var(--brand);display:block}
+
+/* ---- C: the right rail--------------------------------------------- */
+.rightbar{width:330px;flex:none;background:var(--panel);border-left:1px solid var(--line);
+  display:flex;flex-direction:column}
+.rightbar[hidden]{display:none}
+.rb-head{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);
+  font-size:12px;font-weight:600}
+.rb-head .icon{margin-left:auto}
+.rb-body{flex:1;overflow:auto;padding:12px}
+.rcard{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.rcard .h{display:flex;align-items:center;gap:7px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:12px}
+.rcard .b{padding:9px 10px;font-size:12px}
+.rcard .q{margin:0 0 7px;padding:5px 7px;background:var(--fill);border-left:3px solid var(--line-2);
+  color:var(--text-2);font-size:11px;border-radius:4px}
+.rb-empty{color:var(--text-3);font-size:12px;padding:6px 2px}
+
+/* ---- settings preview --------------------------------------------- */
+.panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(460px,92vw);
+  background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 50px rgba(0,0,0,.28);
+  padding:18px 18px 14px;z-index:60}
+.panel[hidden]{display:none}
+.panel h2{margin:0 0 4px;font-size:14px}
+.panel .sub{color:var(--text-3);font-size:11.5px;margin-bottom:14px}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.field label{font-size:12px;color:var(--text-2)}
+.field select,.field input{padding:6px 9px;border-radius:9px;border:1px solid var(--line-2);
+  background:var(--surface);color:inherit;font:inherit}
+.hint{font-size:11px;color:var(--text-3)}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:55}
+.scrim[hidden]{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- left rail -->
+  <aside class="rail">
+    <h1>DSH · 原型</h1>
+    <div class="row" data-on="1">当前会话</div>
+    <div class="row">任务区</div>
+    <div class="row">插件设置</div>
+    <div class="spacer"></div>
+    <button class="ghost" id="open-settings">打开设置页预览…</button>
+  </aside>
+
+  <!-- conversation -->
+  <main class="main">
+    <div class="topbar">
+      <strong style="font-size:13px">追问原型</strong>
+      <span class="tag">A 胶囊 / C 右栏 · 贴右 + 自适应宽度</span>
+      <div class="spacer"></div>
+      <span class="measure" id="m-read">—</span>
+      <span class="tag">上限</span>
+      <div class="seg" id="w-seg">
+        <button data-w="260">260</button>
+        <button data-w="300">300</button>
+        <button data-w="340" data-on="1">340</button>
+        <button data-w="400">400</button>
+      </div>
+      <span class="tag">浮层默认形态</span>
+      <div class="seg" id="mode-seg">
+        <button data-mode="capsule" data-on="1">胶囊</button>
+        <button data-mode="full">展开</button>
+        <button data-mode="off">隐藏</button>
+      </div>
+    </div>
+
+    <div class="thread" id="thread">
+      <div class="msg user">这个右下角卡片怎么改才好看？</div>
+      <div class="msg bot">
+        <p>当前实现把整张卡固定压在右下角：<span class="sel">400px 宽、最多 70vh、阴影 0 10px 30px</span>，
+          所以观感像弹窗。</p>
+        <p class="dim">你可以直接在这个原型里试：右上角切「胶囊 / 展开 / 隐藏」，或者点胶囊本体展开，
+          点卡片标题栏最右的 ⇥ 收起、× 隐藏。</p>
+        <p class="dim">浮层现在贴窗口右边（8px），宽度上限可切 260/300/340/400。顶部那行实时显示
+          「压入对话区 Npx」——N 是浮层左边界越过对话区右边界的距离。拖动窗口宽度、或点右栏 ×，
+          这个数会跟着变：可用空间不够时浮层自动收窄，不会硬顶。</p>
+        <p class="dim">右侧栏可以点顶部的「关闭右栏」看回退行为（右栏不可用时，A 仍照常工作）。</p>
+      </div>
+      <div class="msg bot">
+        <p class="dim">—— 下面留白，方便观察浮层是否遮挡正文 ——</p>
+        <p class="dim">Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor
+          incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
+          exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
+        <p class="dim">Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu
+          fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident.</p>
+      </div>
+    </div>
+
+    <!-- A: floating layer -->
+    <div class="float" id="float"></div>
+  </main>
+
+  <!-- C: right rail -->
+  <aside class="rightbar" id="rightbar">
+    <div class="rb-head">
+      <span>侧边卡片</span>
+      <span class="dsa-chip" id="rb-count">2 条</span>
+      <button class="icon" id="close-rb" title="关闭右栏（模拟未安装/未启用右栏）">×</button>
+    </div>
+    <div class="rb-body" id="rb-body"></div>
+  </aside>
+</div>
+
+<!-- settings page preview -->
+<div class="scrim" id="scrim" hidden></div>
+<section class="panel" id="panel" hidden>
+  <h2>划词追问 · 设置页预览</h2>
+  <div class="sub">这一页只是原型里新增控件的样子，不会保存到真实配置。</div>
+
+  <div class="field">
+    <label>浮层默认形态</label>
+    <select id="set-mode">
+      <option value="capsule">胶囊（省位置，随时展开）</option>
+      <option value="full">直接展开成卡片</option>
+      <option value="off">关闭浮层（只留一个小圆点）</option>
+    </select>
+    <span class="hint">选项会在刷新后保留，等价于 client.js 里的 <code>floatMode</code>。</span>
+  </div>
+
+  <div class="field">
+    <label>浮层宽度上限</label>
+    <select id="set-w">
+      <option value="260">260px（最不挡正文）</option>
+      <option value="300">300px</option>
+      <option value="340">340px（推荐）</option>
+      <option value="400">400px（原值）</option>
+    </select>
+    <span class="hint">真实实现对应 <code>floatMaxWidth</code>；可用空间不足时会自动再收窄，不会硬顶。</span>
+  </div>
+
+  <div class="field">
+    <label>侧边承载面</label>
+    <select>
+      <option>auto（优先原生右侧栏）</option>
+      <option>native-rightbar</option>
+      <option>better-sidebar</option>
+      <option>flow（内置浮层）</option>
+    </select>
+    <span class="hint">现有配置项 sideSurface，未改动。</span>
+  </div>
+
+  <button class="ghost" id="close-panel">关闭</button>
+</section>
+
+<script>
+/* ---------------------------------------------------------------------
+   Prototype state. Real implementation keeps this in the plugin's
+   localStorage record and mirrors the mode onto the card header.
+   ------------------------------------------------------------------- */
+const KEY = 'dsa.prototype.floatMode'
+const WKEY = 'dsa.prototype.maxW'
+const state = {
+  mode: localStorage.getItem(KEY) || 'capsule',
+  maxW: Number(localStorage.getItem(WKEY)) || 340,
+  railOpen: true,
+  cards: [
+    { id:'a', zone:'聊天区', carrier:'side', status:'done',
+      q:'现在可以直接打印，更具排版和表现力来决定自我评价的字数',
+      a:['答案会出现在主对话里，随对话正常流式输出。','也可以留在侧边卡片里，二者互不干扰。'],
+      meta:'侧边卡片 · max 4000 · 1.4s' },
+    { id:'b', zone:'任务区', carrier:'side', status:'streaming',
+      q:'把这段改成命令行参数解析',
+      a:['解析顺序是先长选项后短选项，遇到'],
+      meta:'已收到 21 字 · 侧边卡片 · max 4000' },
+  ],
+}
+
+const $ = (s) => document.querySelector(s)
+const esc = (s) => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))
+const streaming = () => state.cards.some(c => c.status === 'streaming')
+
+function cardHTML(card, compact){
+  const openQ = card.qOpen ? '1' : '0'
+  const answer = card.a.map(p => `<p>${esc(p)}</p>`).join('')
+  const actions = compact
+    ? `<button class="act" data-act="copy" data-id="${card.id}">复制</button>
+       <button class="act plain" data-act="follow" data-id="${card.id}">继续追问</button>
+       <span style="margin-left:auto"></span>
+       <button class="act plain" data-act="retry" data-id="${card.id}">重试</button>`
+    : `<button class="act" data-act="copy" data-id="${card.id}">复制</button>
+       <button class="act plain" data-act="follow" data-id="${card.id}">继续追问</button>
+       <span style="margin-left:auto"></span>
+       <span>${esc(card.meta)}</span>`
+  return `
+  <section class="dsa-card" data-id="${card.id}">
+    <div class="dsa-head" data-status="${card.status}">
+      <span class="dsa-dot"></span>
+      <span class="dsa-title">${card.status === 'done' ? '追问' : card.status === 'streaming' ? '作答中…' : '作答失败'}</span>
+      <span class="dsa-chip">· ${card.zone}</span>
+      <span class="spacer" style="margin-left:auto"></span>
+      <button class="icon" data-act="collapse" title="收起为胶囊（不挡正文）">⇥</button>
+      <button class="icon" data-act="hide" title="隐藏浮层（只留小圆点）">×</button>
+    </div>
+    ${card.status === 'streaming' ? '<div class="dsa-bar"></div>' : ''}
+    <div class="dsa-body">
+      <p class="dsa-quote" data-open="${openQ}" data-act="quote" data-id="${card.id}">“${esc(card.q)}”</p>
+      <div class="dsa-answer">${answer}${card.status === 'streaming' ? '<span class="sel">&nbsp;</span>' : ''}</div>
+    </div>
+    <div class="dsa-meta">${actions}</div>
+  </section>`
+}
+
+function capsuleHTML(){
+  const done = state.cards.filter(c => c.status === 'done').length
+  const s = streaming()
+  const first = state.cards[0]
+  return `
+  <button class="dsa-capsule" data-act="expand">
+    <span class="dsa-dot" style="background:${s ? 'var(--brand)' : 'var(--ok)'}"></span>
+    <span class="txt">
+      <span class="l1">${s ? '正在作答…' : `已完成 ${done} 条`}</span>
+      <span class="l2">“${esc(first.q.slice(0, 22))}…”</span>
+    </span>
+    <span class="chev">›</span>
+    ${s ? '<span class="track"><i></i></span>' : ''}
+  </button>`
+}
+
+function miniHTML(){
+  const n = state.cards.length
+  return `<button class="dsa-mini" data-act="expand"><i></i>${n} 条追问回答 · 点开</button>`
+}
+
+function renderFloat(){
+  const box = $('#float')
+  if (state.mode === 'off'){ box.innerHTML = miniHTML(); return }
+  if (state.mode === 'capsule'){ box.innerHTML = capsuleHTML(); return }
+  box.innerHTML = `<div class="stack">${state.cards.map(c => cardHTML(c, true)).join('')}</div>`
+}
+
+function renderRail(){
+  const bar = $('#rightbar')
+  bar.hidden = !state.railOpen
+  $('#rb-count').textContent = `${state.cards.length} 条`
+  $('#rb-body').innerHTML = state.railOpen
+    ? state.cards.map(c => `
+      <div class="rcard" style="margin-bottom:10px">
+        <div class="h">
+          <span class="dsa-dot" style="background:${c.status === 'done' ? 'var(--ok)' : 'var(--brand)'}"></span>
+          <span>追问 · ${c.zone}</span>
+          <span class="icon" style="margin-left:auto" data-act="rail-close" data-id="${c.id}">✕</span>
+        </div>
+        <div class="b">
+          <p class="q">“${esc(c.q)}”</p>
+          ${c.a.map(p => `<p style="margin:0 0 6px">${esc(p)}</p>`).join('')}
+        </div>
+        <div class="dsa-meta">
+          <button class="act">复制</button>
+          <button class="act plain">继续追问</button>
+        </div>
+      </div>`).join('')
+    : '<div class="rb-empty">右侧栏已关闭 —— 这是「承载面不可用」的回退演示：卡片继续待在 A 浮层里。</div>'
+}
+
+function syncSeg(){
+  document.querySelectorAll('#mode-seg button').forEach(b => {
+    b.dataset.on = String(b.dataset.mode === state.mode)
+  })
+  document.querySelectorAll('#w-seg button').forEach(b => {
+    b.dataset.on = String(Number(b.dataset.w) === state.maxW)
+  })
+  $('#set-mode').value = state.mode
+  $('#set-w').value = String(state.maxW)
+}
+
+function render(){ renderFloat(); renderRail(); syncSeg(); layout(); }
+
+/* ---------------------------------------------------------------------
+   向右压缩的真实做法：不写死宽度与偏移，按「可用空间」算。
+   - 贴右：离窗口右边缘只留 gapR
+   - 让位：如果右边是承载面（右栏），保证不压到它
+   - 收窄：可用宽度小于上限时自动缩到可用宽度（下限 minW，低于它就贴住边界）
+   ------------------------------------------------------------------- */
+const GAP_R = 8          // 离窗口右边的距离（原来 16）
+const GAP_SIDEBAR = 10   // 与右侧栏之间的最小净空
+const MIN_W = 240
+let lastSig = ''         // 只在数值真的变了才写 DOM（流式刷新时避免每帧样式重算）
+
+function layout(){
+  const main = $('.main')
+  const rail = $('#rightbar')
+  const laneRect = main.getBoundingClientRect()
+  const railRect = (rail.hidden || !state.railOpen) ? null : rail.getBoundingClientRect()
+
+  // 对话区右边界 → 窗口右边缘是浮层可以占用的整条预留带（右栏也在这条带里）。
+  // 右栏开着时，只再扣掉右栏自身宽度与净空：不许压到承载面本身。
+  let avail = window.innerWidth - GAP_R - laneRect.right
+  if (railRect) avail = Math.min(avail, window.innerWidth - railRect.left - GAP_SIDEBAR)  // 与 04-check-placement.mjs 同式
+  avail = Math.max(MIN_W, Math.floor(avail))
+
+  const w = Math.min(state.maxW, avail)
+  const bleed = Math.max(0, Math.round(laneRect.right - ($('#float').getBoundingClientRect().left)))
+  const sig = `${w}|${state.maxW}|${bleed}`
+  if (sig === lastSig) return
+  lastSig = sig
+
+  const root = document.documentElement.style
+  root.setProperty('--dsa-float-w', w + 'px')
+  root.setProperty('--dsa-gap-r', GAP_R + 'px')
+
+  $('#m-read').innerHTML =
+    `宽 ${w}px${w < state.maxW ? `（上限 ${state.maxW} 收窄）` : ''} · 压入对话区 `
+    + `<span class="${bleed > 0 ? 'warn' : ''}">${bleed}px</span>`
+}
+
+let raf = 0
+const relayout = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(layout) }
+new ResizeObserver(relayout).observe($('.main'))
+new ResizeObserver(relayout).observe($('#rightbar'))
+window.addEventListener('resize', relayout)
+
+function setMode(mode){
+  state.mode = mode
+  localStorage.setItem(KEY, mode)
+  render()
+}
+
+function setMaxW(px){
+  state.maxW = px
+  localStorage.setItem(WKEY, String(px))
+  render()
+}
+
+/* interactions */
+document.addEventListener('click', (ev) => {
+  const el = ev.target.closest('[data-act]')
+  if (!el) return
+  const act = el.dataset.act
+  const id = el.dataset.id
+  const card = state.cards.find(c => c.id === id)
+
+  if (act === 'expand')      return setMode('full')
+  if (act === 'collapse')    return setMode('capsule')
+  if (act === 'hide')        return setMode('off')
+  if (act === 'quote' && card) { card.qOpen = !card.qOpen; return render() }
+  if (act === 'rail-close')  { state.cards = state.cards.filter(c => c.id !== id); return render() }
+  if (act === 'copy')        return flash(el, '已复制')
+  if (act === 'follow')      return flash(el, '继续追问（原型不实现）')
+  if (act === 'retry')       return flash(el, '重试（原型不实现）')
+})
+
+function flash(el, text){
+  const old = el.textContent
+  el.textContent = text
+  setTimeout(() => { el.textContent = old }, 900)
+}
+
+$('#mode-seg').addEventListener('click', e => {
+  const b = e.target.closest('button')
+  if (b) setMode(b.dataset.mode)
+})
+$('#w-seg').addEventListener('click', e => {
+  const b = e.target.closest('button')
+  if (b) setMaxW(Number(b.dataset.w))
+})
+$('#close-rb').addEventListener('click', () => { state.railOpen = false; render() })
+$('#open-settings').addEventListener('click', () => {
+  $('#panel').hidden = false; $('#scrim').hidden = false
+})
+const closePanel = () => { $('#panel').hidden = true; $('#scrim').hidden = true }
+$('#close-panel').addEventListener('click', closePanel)
+$('#scrim').addEventListener('click', closePanel)
+$('#set-mode').addEventListener('change', e => setMode(e.target.value))
+$('#set-w').addEventListener('change', e => setMaxW(Number(e.target.value)))
+
+/* fake streaming so the progress affordance is visible */
+setInterval(() => {
+  const c = state.cards.find(x => x.status === 'streaming')
+  if (!c) return
+  const words = ['随','对','话','正','常','流','式','输','出','。']
+  const next = words[c.a.length % words.length]
+  c.a[c.a.length - 1] += next
+  c.meta = `已收到 ${c.a.join('').length} 字 · 侧边卡片 · max 4000`
+  if (c.a.join('').length > 46){ c.status = 'done'; c.meta = '侧边卡片 · max 4000 · 1.9s' }
+  renderFloat()   // 流式只重画浮层区域，不跑整页 layout
+}, 420)
+
+render()
+</script>
+</body>
+</html>

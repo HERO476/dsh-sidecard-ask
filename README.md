@@ -8,6 +8,11 @@
 
 聊天记录、任务详情、右侧栏内容……只要是能选中的文本都能用；**没装侧边卡片插件也能跑**（自动回退到内置浮层卡片）。
 
+> **1.5.0 增强一览**（详见 CHANGELOG）：内置浮层不再压住主对话——宽度改由纯函数 `floatPlacement`
+> 按「对话区右侧可用带宽」计算（旧实现是固定 400px，在用户截图上压入正文约 113px）；浮层默认是**一行高的胶囊**，
+> 可随时「收起 / 隐藏」，运行时的形态切换不写回配置；新增 `floatMode`（默认 `capsule`）与
+> `floatMaxWidth`（默认 340）两项设置；卡片阴影减半。
+
 > **1.4.0 增强一览**（详见 CHANGELOG）：卡片**思考过程**（reasoning）可折叠展示并随答案流式渲染；
 > **已完成卡片写入 localStorage，刷新页面不丢**；答案渲染扩展链接/斜体/引用/表格；流式输出自动滚动到底；
 > 设置页补齐 `sideTimeoutMs` / `sideProvider` 控件；原生右侧栏 tab 可关闭（不再残留空壳）；
@@ -60,10 +65,15 @@ dsh-sidecard-ask/
 ├── README.md             本文件
 ├── CHANGELOG.md          版本变更记录
 ├── LICENSE               MIT
+├── design-preview/       1.5.0 的方案讨论资料，**不参与发布**：00–02 是手绘 SVG 示意图（非截图），
+│                         03-prototype-ac.html 是可直接双击打开的可点按原型（自带近似色板，非真实观感）
+├── tools/
+│   └── compat-probe.mjs  DSH 版本能力探测（§7 矩阵的来源）
 └── test/
     ├── harness.mjs       测试替身：假宿主 ctx / 假 req·res / 假子代理 provider / 合成浏览器 + 迷你 React
     ├── verify.mjs        静态完整性：清单、补丁、两半导出面、i18n 键覆盖、零依赖承诺
     ├── contract-test.mjs 两端契约：常量一致性、响应信封形状、SSE 逐帧往返、纯函数等价、槽位注册与渲染
+    ├── float-placement.mjs 浮层几何：宽度预算不越过对话区右边界、胶囊默认形态、源码钩子（1.5.0 新增）
     └── smoke-test.mjs    宿主端到端：流式、截断、取消、持久化与重启、失败分支、并发上限、传输围栏
 ```
 
@@ -139,6 +149,8 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `defaultCarrier` | `main` \| `side` | `side` | **默认作答位置**：提问框里仍可临时切换 | 立即 |
 | `sideSurface` | `auto` \| `native-rightbar` \| `better-sidebar` \| `flow` | `auto` | **窗口模式（侧边承载面）**：自动挑选 / 强制 DSH 原生右侧栏 / 强制 dsh-better-sidebar / 强制内置浮层卡片 | 立即 |
 | `maxChars` | 200–60000 | `4000` | **最大字符数**：超出部分头尾保留、中间截断并标注 | 立即 |
+| `floatMode` | `capsule` \| `full` \| `off` | `capsule` | **内置浮层的默认形态**：胶囊（一行，最小遮挡）/ 完整卡片栈 / 只留一个计数圆点。运行时可即时收起、隐藏，但不写回本项——刷新后仍回到这里设的默认 | 立即 |
+| `floatMaxWidth` | 240–560 | `340` | **内置浮层宽度上限**（px）：实际宽度 = `min(本项, 对话区右侧可用带宽)`，可用带宽不足 240px 时才会压入对话区 | 立即 |
 | `shortcut` | 形如 `Alt+Q`、`Ctrl+Shift+K` | `Alt+Q` | **快捷键**：唤起提问框（`trigger` 允许时） | 立即 |
 | `captureZones` | `auto` \| `chat` \| `task` \| `chat+task` | `auto` | 只在哪些区域触发 | 立即 |
 | `showInUnclassified` | 布尔 | `true` | 无法归类的区域是否也触发 | 立即 |
@@ -149,6 +161,30 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `sideProvider` | 字符串 \| `auto` | `auto` | 指定子代理 provider（`auto` 优先 `spawn`） | 下一次提问 |
 
 非法值会被拒绝（设置页报错、接口返回 `invalid-config`），并把被忽略的项列在 `/state` 的 `problems` 里——不会静默吞掉。
+
+### 4.1 内置浮层的位置规则（`floatPlacement`）
+
+用户实测报告过一个问题：浮层是 `position:fixed; right:16px; width:min(400px,92vw)` 的实心卡片。
+实测那一次（1400px 宽的窗口）对话区右边界在 x≈971，而浮层左边界在 x≈858，**压住正文约 113px**，
+最后几行答案被盖住。两点如实说明：**旧实现并不是任何窗口宽度下都越界**——1400px 窗口理论上
+`1400-16-400=984`，还在 971 右侧；越界与否取决于当时的帧宽与对话区带宽，而固定 400px 的选择
+让「窗口一窄就必然压住正文」。这条读数（971 / 858 / 113px）是截图上的像素测量，不是日志里的一手数据。
+现在的位置由 `client.js` 里的纯函数 `floatPlacement` 决定：
+
+```js
+// floatPlacement({ frameWidth, laneRight, railLeft = null, maxWidth = floatMaxWidth })
+avail = 帧宽 - 8 - 对话区右边界          // 对话区右侧那条「预留带」
+if (右栏存在) avail = min(avail, 帧宽 - 右栏左边界 - 10)
+avail = max(240, floor(avail))            // 240px 以下胶囊也不可用，故为硬下限
+width = min(floatMaxWidth, avail)
+left  = 帧宽 - 8 - width                  // 右锚定
+bleeds = 对话区右边界 - left > 1          // 只有带宽 < 240px 时才可能为 true
+```
+
+- 浮层**只使用对话区右侧的预留带**（右栏也在这条带里），窗口越窄它越窄，而不是越靠左。
+- `capped: true` 表示「上限没用满，是被可用带宽压住的」——这是正常的自适应，不是错误。
+- 挂载时、窗口 resize 时、右栏开合时（`ResizeObserver`）都会重算；流式刷新只重渲染，不动几何。
+- 浮层根节点带 `data-layer-width`（实际宽度）与 `data-dsa-float-mode`：报告问题时可直接读这两个值。
 
 ---
 
@@ -163,7 +199,10 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | 3 | **内置浮层卡片**（默认兜底） | 只需要 `shell.overlay` 槽位 | ——（这是保底面，永远可用） |
 
 - 装了 `dsh-better-sidebar`：卡片以它的 tab 形式出现在它的面板里，关闭卡片会同时 `closeTab`，不残留空 tab。
-- 没装：自动使用内置浮层卡片（右下角卡片栈），功能完全一致——**这条路径是本插件的默认与保底路径**。
+- 没装：自动使用内置浮层卡片，功能完全一致——**这条路径是本插件的默认与保底路径**。
+  浮层默认是**贴帧右边缘的胶囊**（一行高，只有状态与问题首句），点击才展开成完整卡片，
+  标题栏右侧的「收起 / 隐藏」可随时收回；它的宽度由 `floatPlacement` 计算，
+  只会占用**对话区右侧那条预留带**，不会压住正文（细节见 §4.1）。
 - 强制指定了一个不可用的承载面：回退到内置浮层，并在卡片上标注「已回退」。
 
 ### 5.1 与 dsh-better-sidebar 0.22.1 的适配核对（2026-09-28）
@@ -407,6 +446,14 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 5. 结束后状态变「已完成」；底部出现「复制 / 继续追问 / 关闭」；
 6. 点「复制」→ 出现「已复制」提示；点「继续追问」→ 输入第二条问题，卡片内容**重置换行**后继续流式；
 7. 点「关闭」→ 卡片消失；若承载面是 better-sidebar/原生右侧栏，对应 tab 也应关闭。
+8. **浮层形态与位置（1.5.0）**：默认应是一个**一行高的胶囊**（状态 + 问题首句），点它才展开成完整卡片；
+   展开后标题栏右侧有「收起为胶囊」（⇥）与「隐藏浮层」（×）——隐藏后只剩一个带计数的圆点，点它恢复。
+   用 F12 选中浮层根节点（`[data-dsa-root]`）读两个值自检：
+   - `data-dsa-float-mode` 应为 `capsule` / `full` / `off`；
+   - `data-layer-width` 应等于 `min(floatMaxWidth, 对话区右边界到帧右边缘的可用带宽)`。
+   **关键判据：胶囊/卡片的左边缘不得越过对话区（`[data-slot^="conversation"]`）的右边界**。
+   把窗口从 1920px 拖到 900px、再开关一次右侧栏，浮层应随之变窄而不是往左压住正文；
+   只有窗口窄到可用带宽不足 240px 时才允许压入（此时是设计内的降级，不是 bug）。
 
 **失败信号**：卡片停在「作答中…」不动 = SSE 帧没到达（看 console 是否有 `/sidecard-ask/api/ask` 报错）；`done.streaming=false` = 该版本没有流式帧（属预期降级，卡片会写明）。
 
@@ -440,13 +487,20 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 
 ```powershell
 cd D:\Users\34332\AI\dsh-sidecard-ask
-node test/verify.mjs          # 静态：清单/补丁/导出面/i18n/零依赖
-node test/contract-test.mjs   # 契约：常量、信封、SSE 逐帧、纯函数、槽位注册与渲染
-node test/smoke-test.mjs      # 端到端：流式/截断/取消/持久化/失败分支/并发/围栏
+node test/verify.mjs            # 静态：清单/补丁/导出面/i18n/零依赖
+node test/contract-test.mjs     # 契约：常量、信封、SSE 逐帧、纯函数、槽位注册与渲染
+node test/float-placement.mjs   # 几何：浮层宽度不越过对话区右边界（1.5.0 新增）
+node test/smoke-test.mjs        # 端到端：流式/截断/取消/持久化/失败分支/并发/围栏
 ```
 
-三个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模：verify 53 项 + contract 296 项 + smoke 138 项 = **487 项全部通过**。
+四个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
+当前规模（1.5.0 本机实测，四项均 exit 0）：verify **53** 项 + contract **296** 项 + float-placement **38** 项 +
+smoke **138** 项 = **525 项全部通过**。
+
+> 1.5.0 之前这里还放过 `tools/balance-check.mjs` 与 `tools/i18n-check.mjs` 两个「替代检查」。
+> 它们已被**删除**：前者用「正则字面量 vs 除号」的启发式判断，把 8 个源文件全部误报为残损；
+> 后者定位词典块的缩进假设写错，解析出 0 个键并误报上百条缺失。**跑不了测试时宁可标注「未验证」，
+> 也不要引入会撒谎的检查器**——真实把关始终只有上面那四个 `test/*.mjs`。
 
 ### 10.2 版本能力探测（§7 矩阵的来源）
 
@@ -553,9 +607,10 @@ Host: ctx.subagents.start('spawn')
 
 ```powershell
 npm whoami                     # 先确认登录态；本机用的是 granular Publish token
-node test/verify.mjs; node test/contract-test.mjs; node test/smoke-test.mjs
+node test/verify.mjs; node test/contract-test.mjs; node test/float-placement.mjs; node test/smoke-test.mjs
 npm publish --access public    # 1.0.1 那次被 npm 暂存（staged）后才转正；再遇到可用 --otp=<验证码>
 git push origin main           # 仓库：https://github.com/HERO476/dsh-sidecard-ask
+git tag v1.5.0; git push origin v1.5.0   # 版本号与 package.json 一致
 ```
 
 改名/迁移时的额外两步（1.1.0 实际做过）：
@@ -582,6 +637,20 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
    本机实测能识别：`conversation.*`（聊天）、`rightbar` / `sidebar.right.*` / 名字含 task·todo·schedule·team·job·plan 的面板（任务）。
 2. **浏览器内的视觉与交互未在本机验证**：本工作区没有浏览器自动化工具，因此"按钮出现在选区旁""卡片逐字增长""浮层不挡操作"这些**只能由你按第九节点一遍**。
    已做的保障是：只使用 `--dsw-alias-*` 主题令牌、只在槽位内渲染（`shell.overlay` / `settings.section` / `conversation.input.right`）、不写 `document.body`、不 import harness 客户端包。
+2b. **1.5.0 的浮层改动：四个测试脚本已在本机实跑通过（各 exit 0），但页面里的观感仍未验证**：
+   写这个版本的前半段，本工作区的 shell 工具整体不可用（任何命令都返回
+   `SetNamedSecurityInfoW failed (Win32 5): grantWrite(<工作区>)`），所以当时的改动**没有跑过任何命令**，
+   我也没有资格说它"验证过"。后半段该故障解除后已补跑：`node --check` 对全部源文件通过，
+   `verify` 53 / `contract` 296 / `float-placement` 38 / `smoke` 138 **全部 0 failed**。
+   其中 float-placement 第一轮曾报 7 条红，逐条查完**全部是我把测试写错**（旧实现的越界 fixture 算错、
+   `avail` 期望值用了带右栏的用例、`capped` 语义写反、以及去找一个源码里并不存在的
+   `setFloatMode('capsule')` 调用点——真实实现走 `floatControl('capsule','floatCollapse','⇥')` 的
+   `onFloatMode` 回调），实现本身没有因此改动。
+   仍未验证的是**浏览器内的视觉观感**：浮层实际宽度是否等于预算、是否真的不越过对话区右边界，
+   必须按第九节 **A 路径第 8 条**在真实页面上确认（读 `data-dsa-float-mode` 与 `data-layer-width`），测试替代不了。
+   此外，本版一度新增过 `tools/balance-check.mjs` 与 `tools/i18n-check.mjs` 两个"替代检查"，
+   **现已删除**：它们本身有错（前者把 8 个源文件全误报为残损，后者解析出 0 个词典键并误报上百条缺失），
+   属于会撒谎的检查器——跑不了测试时应当标注"未验证"，而不是用一个错的检查器去证明没问题。
 3. **原生右侧栏承载面未在真实宿主上验证**：本机 profile 虽已启用 `@deepseek-ai/dsh-client-ui-sidebar-right`，但没有浏览器控件去确认 tab 是否真的渲染。
    为此加了一道**渲染证明**：适配器接受了打开请求后 600ms 内若没有观察到我们的卡片组件挂载，就自动把卡片移到内置浮层（流式内容不丢，因为卡片数据在 store 里）。
 4. **主对话承载的"发送"依赖客户端会话服务**：`ctx.sessions.using(...).prompt(...)` 在会话未被保留/不可用时降级为草稿写入，

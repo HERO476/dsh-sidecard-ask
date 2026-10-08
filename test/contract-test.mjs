@@ -47,7 +47,11 @@ harness.services.agents = {
 harness.services.tools = {
   schemas: () => [{ name: 'read' }, { name: 'grep' }, { name: 'write' }],
 }
-host.apply(harness.ctx, { trigger: 'both', maxChars: 1200 })
+// `floatMode: 'full'` on purpose: the floating layer now DEFAULTS to the
+// capsule (1.5.0, user requirement), which renders one line and no card body.
+// These cases assert card *content*, so they ask for the expanded shape — the
+// capsule default itself is asserted in test/float-placement.mjs.
+host.apply(harness.ctx, { trigger: 'both', maxChars: 1200, floatMode: 'full' })
 
 /** Serve the host's own responses to the client half as a fetch. */
 function hostFetch(url, init = {}) {
@@ -531,7 +535,8 @@ reasoningHost.services.agents = {
   roots: () => [{ id: 'session-alpha' }],
   list: () => [{ id: 'session-alpha' }],
 }
-host.apply(reasoningHost.ctx, {})
+// Full shape so the reasoning block renders (the capsule default shows one line).
+host.apply(reasoningHost.ctx, { floatMode: 'full' })
 const reasoningFetch = (url, init = {}) => {
   const path = String(url).replace('/sidecard-ask/api/', '')
   const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -834,7 +839,7 @@ stored = JSON.parse(sharedStorage.getItem(PERSIST_KEY))
 report.equal(stored.cards.length, 0, 'closing a card removes it from the durable set too')
 
 // Simulate a reload: a fresh client module over the SAME storage replays the
-// history into the flow stack (a right-rail tab cannot survive a reload).
+// history into the floating layer (a right-rail tab cannot survive a reload).
 persistActions.submit(
   {
     text: '恢复节的选中文本',

@@ -42,7 +42,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.4.0'
+export const PLUGIN_VERSION = '1.5.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -73,6 +73,16 @@ export const DEFAULT_CONFIG = {
   sideTools: 'readonly',
   sideTimeoutMs: 180_000,
   sideProvider: 'auto',
+  /**
+   * Floating-layer (A) surface. `capsule` = one-line pill that never covers
+   * the conversation, `full` = the classic card stack, `off` = hidden behind a
+   * small launcher. The geometry for all three lives in `client.js`:
+   * the layer is anchored to the frame's right edge and never crosses the
+   * conversation column's right boundary (see `FLOAT_*` there).
+   */
+  floatMode: 'capsule',
+  /** Hard cap, in CSS px, for the floating layer's width. */
+  floatMaxWidth: 340,
 }
 
 /**
@@ -89,6 +99,7 @@ const ENUMS = {
   sideSurface: ['auto', 'native-rightbar', 'better-sidebar', 'flow'],
   captureZones: ['auto', 'chat', 'task', 'chat+task'],
   sideTools: ['readonly', 'inherit'],
+  floatMode: ['capsule', 'full', 'off'],
 }
 
 /** Numeric keys with their accepted range. */
@@ -97,6 +108,7 @@ const NUMBERS = {
   minChars: [0, 200],
   maxConcurrentAsks: [1, 12],
   sideTimeoutMs: [5_000, 3_600_000],
+  floatMaxWidth: [240, 560],
 }
 
 /**

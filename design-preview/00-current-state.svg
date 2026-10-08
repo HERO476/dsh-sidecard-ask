@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif">
+  <rect width="1280" height="760" fill="#f7f8fa"/>
+
+  <text x="48" y="46" font-size="19" font-weight="600" fill="#111827">现状：内置浮层卡片（当前实现）</text>
+  <text x="48" y="70" font-size="13" fill="#6b7280">右下角固定卡片栈 · 400px 宽 · 阴影 0 10px 30px rgba(0,0,0,.22) · 圆角 12px · 最多 70vh</text>
+
+  <!-- simulated chat region -->
+  <rect x="48" y="96" width="920" height="620" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+  <text x="72" y="132" font-size="13" font-weight="600" fill="#9ca3af">聊天区</text>
+
+  <rect x="72" y="152" width="520" height="34" rx="8" fill="#eef2f7"/>
+  <text x="88" y="174" font-size="13" fill="#374151">帮我看看这段说明为什么不直观</text>
+
+  <text x="72" y="228" font-size="13" fill="#4b5563">答案会出现在主对话里，随对话正常流式输出。</text>
+  <text x="72" y="258" font-size="13" fill="#4b5563">现在可以直接打印，更具排版和表现力来决定自我评价的字数。</text>
+  <rect x="70" y="274" width="474" height="20" rx="4" fill="#cfe0ff" opacity="0.75"/>
+
+  <!-- floating stack, as implemented (right:16px, bottom:16px) -->
+  <g transform="translate(760,150)">
+    <rect x="0" y="0" width="518" height="560" rx="14" fill="#000000" opacity="0.045"/>
+    <rect x="0" y="0" width="400" height="560" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+
+    <text x="16" y="30" font-size="13" font-weight="600" fill="#111827">追问</text>
+    <rect x="56" y="16" width="62" height="20" rx="10" fill="none" stroke="#d1d5db"/>
+    <text x="64" y="30" font-size="11" fill="#6b7280">聊天区</text>
+    <rect x="126" y="16" width="76" height="20" rx="10" fill="none" stroke="#d1d5db"/>
+    <text x="134" y="30" font-size="11" fill="#6b7280">侧边卡片</text>
+
+    <rect x="16" y="48" width="368" height="26" rx="4" fill="#f1f3f5"/>
+    <rect x="19" y="48" width="3" height="26" fill="#d1d5db"/>
+    <text x="28" y="65" font-size="12" fill="#6b7280">现在可以直接打印，更具排版和</text>
+
+    <text x="16" y="104" font-size="13" fill="#374151">答案会出现在主对话里，随对话正常流式输出。</text>
+    <text x="16" y="126" font-size="13" fill="#374151">答案会出现在主对话里，随对话正常流式输出。</text>
+
+    <text x="16" y="172" font-size="11" fill="#6b7280">已完成</text>
+    <rect x="60" y="156" width="56" height="26" rx="8" fill="none" stroke="#d1d5db"/>
+    <text x="76" y="173" font-size="12" fill="#111827">复制</text>
+    <rect x="124" y="156" width="88" height="26" rx="8" fill="none" stroke="#d1d5db"/>
+    <text x="136" y="173" font-size="12" fill="#111827">继续追问</text>
+    <rect x="316" y="156" width="68" height="26" rx="8" fill="none" stroke="#d1d5db"/>
+    <text x="334" y="173" font-size="12" fill="#111827">关闭</text>
+
+    <text x="16" y="212" font-size="11" fill="#6b7280">侧边卡片 · max 4000</text>
+  </g>
+
+  <!-- annotations -->
+  <g font-size="12.5" fill="#b45309">
+    <text x="48" y="736">问题 1：400 × 最多 70vh 的实心白块，直接压住聊天正文；阴影很重，观感像弹窗而不是“附属卡片”。</text>
+    <text x="48" y="754">问题 2：头/底各 3 行，正文区被挤窄；状态点、按钮、徽标同色同粗，没有层级。</text>
+  </g>
+</svg>

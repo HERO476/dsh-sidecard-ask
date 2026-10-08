@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.4.0'
+    const CLIENT_VERSION = '1.5.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -96,12 +96,62 @@ window.__ModuleLoader__.load({
       sideTools: 'readonly',
       sideTimeoutMs: 180000,
       sideProvider: 'auto',
+      floatMode: 'capsule',
+      floatMaxWidth: 340,
     }
 
     /** Zone classification: slot-key patterns the harness itself renders. */
     const ZONE_PATTERNS = {
       chat: [/^conversation\b/],
       task: [/\btask/i, /\btodo/i, /\bschedule/i, /\bteam/i, /\bjob/i, /\bplan/i, /^rightbar\b/, /^sidebar\.right\b/],
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // §1b floating-layer (A) geometry
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Placement rules for the floating layer, mirrored by
+     * `test/float-placement.mjs`.
+     *
+     * The layer is anchored to the FRAME's right edge, so it can only ever
+     * grow LEFT into the conversation column. Everything here exists to stop
+     * that: the layer may use the strip to the right of the conversation
+     * column's right boundary (where the right rail lives), but it never
+     * crosses that boundary while there is at least `minWidth` of room.
+     */
+    const FLOAT_GAP_RIGHT = 8
+    const FLOAT_GAP_SIDEBAR = 10
+    const FLOAT_MIN_WIDTH = 240
+    const FLOAT_MAX_WIDTH_LIMIT = 560
+
+    /**
+     * The floating layer's width for one frame.
+     *
+     * Pure (no DOM) so both the runtime and the tests can call it:
+     * `avail` is the distance from the conversation column's right boundary to
+     * the frame's right edge, minus the right rail when one is present. The
+     * boundary is treated as un-crossable while `avail >= minWidth`; below that
+     * the layer gives up and clamps to `minWidth` (a pill narrower than that is
+     * unusable), which is the only case where it may overlap the column.
+     *
+     * @param {object} input - `frameWidth`, `laneRight`, `railLeft`, `maxWidth`.
+     * @returns {{width: number, avail: number, capped: boolean, bleeds: boolean}}
+     */
+    function floatPlacement({ frameWidth, laneRight, railLeft = null, maxWidth = CLIENT_DEFAULTS.floatMaxWidth }) {
+      const frame = Number.isFinite(frameWidth) ? frameWidth : 0
+      const lane = Number.isFinite(laneRight) ? laneRight : 0
+      const cap = Math.min(
+        FLOAT_MAX_WIDTH_LIMIT,
+        Math.max(FLOAT_MIN_WIDTH, Number.isFinite(maxWidth) ? maxWidth : CLIENT_DEFAULTS.floatMaxWidth),
+      )
+      let avail = frame - FLOAT_GAP_RIGHT - lane
+      if (Number.isFinite(railLeft)) avail = Math.min(avail, frame - railLeft - FLOAT_GAP_SIDEBAR)
+      avail = Math.max(FLOAT_MIN_WIDTH, Math.floor(avail))
+      const width = Math.min(cap, avail)
+      // Left edge of a right-anchored layer of this width.
+      const left = frame - FLOAT_GAP_RIGHT - width
+      return { width, avail, capped: width < cap, bleeds: lane - left > 1 }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -185,6 +235,20 @@ window.__ModuleLoader__.load({
         setSurfaceFlow: '内置浮层卡片',
         setMaxChars: '最大字符数',
         setMaxCharsHint: '超过部分截断并在提问中标注',
+        setFloatMode: '浮层默认形态',
+        setFloatModeCapsule: '胶囊（不遮挡对话，可随时展开）',
+        setFloatModeFull: '直接展开成卡片',
+        setFloatModeOff: '关闭浮层（只留小圆点）',
+        setFloatModeHint: '浮层贴右侧边缘，只在空间不足时才可能压到对话区',
+        setFloatMaxWidth: '浮层宽度上限（px）',
+        setFloatMaxWidthHint: '空间不足时自动收窄，不会硬顶',
+        floatExpand: '展开侧边卡片',
+        floatCollapse: '收起为胶囊（不遮挡对话）',
+        floatHide: '隐藏浮层（只留小圆点）',
+        floatRestore: '恢复浮层',
+        floatCount: '{n} 条追问回答',
+        floatStreaming: '正在作答…',
+        floatDone: '已完成 {n} 条',
         setShortcut: '快捷键',
         setZones: '捕获区域',
         setZonesAuto: '全部区域',
@@ -307,6 +371,20 @@ window.__ModuleLoader__.load({
         setSurfaceFlow: 'Built-in floating card',
         setMaxChars: 'Max characters',
         setMaxCharsHint: 'Longer selections are truncated and marked in the question',
+        setFloatMode: 'Floating layer default',
+        setFloatModeCapsule: 'Capsule (never covers the conversation)',
+        setFloatModeFull: 'Expanded card stack',
+        setFloatModeOff: 'Hidden (small launcher only)',
+        setFloatModeHint: 'The layer is anchored to the right edge and only overlaps on very narrow frames',
+        setFloatMaxWidth: 'Floating layer max width (px)',
+        setFloatMaxWidthHint: 'Narrows automatically when there is not enough room',
+        floatExpand: 'Expand the side cards',
+        floatCollapse: 'Collapse to a capsule (stops covering the conversation)',
+        floatHide: 'Hide the layer (leaves a small launcher)',
+        floatRestore: 'Restore the floating layer',
+        floatCount: '{n} follow-up answers',
+        floatStreaming: 'Answering…',
+        floatDone: '{n} done',
         setShortcut: 'Shortcut',
         setZones: 'Capture regions',
         setZonesAuto: 'Every region',
@@ -567,6 +645,11 @@ window.__ModuleLoader__.load({
         hostReachable: null,
         surface: 'flow',
         surfaceNote: null,
+        /**
+         * In-session override of `config.floatMode`, set by the layer's own
+         * collapse/hide buttons. `null` = follow the configured default.
+         */
+        floatMode: null,
         sessionId: null,
         trigger: null,
         popover: null,
@@ -601,6 +684,18 @@ window.__ModuleLoader__.load({
       const [, bump] = React.useReducer(count => count + 1, 0)
       React.useEffect(() => store.subscribe(bump), [])
       return store.state
+    }
+
+    /**
+     * In-session override of the configured floating-layer shape. Deliberately
+     * NOT persisted: the settings page owns the durable default, and a reload
+     * should return to it (a pill hidden by accident must not stay hidden
+     * across sessions).
+     * @param {string} mode - `capsule` | `full` | `off`.
+     */
+    function setFloatMode(mode) {
+      if (mode !== 'capsule' && mode !== 'full' && mode !== 'off') return
+      store.set({ floatMode: mode })
     }
 
     /** Replace one card by id (immutably; a no-op when it is gone). */
@@ -1160,7 +1255,7 @@ window.__ModuleLoader__.load({
    (\`html[data-platform] body>[data-dsh-better-sidebar]{-webkit-app-region:initial}\`
    plus \`[data-dsh-panel-host]>*{-webkit-app-region:no-drag}\`).
    Every surface we draw declares it. The property is inert in a browser. */
-.dsa-layer,.dsa-trigger,.dsa-pop,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
+.dsa-layer,.dsa-trigger,.dsa-pop,.dsa-float,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
 .dsa-layer{pointer-events:none;position:relative;z-index:60}
 .dsa-trigger{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:4px;
   padding:4px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
@@ -1193,6 +1288,9 @@ window.__ModuleLoader__.load({
 .dsa-btn-primary{background:var(--dsw-alias-brand-primary, #4c8dff);border-color:var(--dsw-alias-brand-primary, #4c8dff);
   color:#fff;font-weight:500}
 .dsa-btn:disabled{opacity:.55;cursor:default}
+/* Icon-only variant (the floating layer's collapse/hide controls): square and
+   quiet so the card title bar stays one line and the title keeps the weight. */
+.dsa-btn-icon{padding:4px 7px;line-height:1;font-size:13px;color:var(--dsw-alias-label-secondary, #666)}
 .dsa-seg{display:inline-flex;border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));border-radius:8px;overflow:hidden}
 .dsa-seg button{padding:3px 10px;border:none;background:transparent;color:var(--dsw-alias-label-secondary, #555);
   font:inherit;font-size:12px;cursor:pointer}
@@ -1201,9 +1299,37 @@ window.__ModuleLoader__.load({
 .dsa-card{pointer-events:auto;display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
-  box-shadow:0 10px 30px rgba(0,0,0,.22);font-size:13px;line-height:19px}
-.dsa-stack{pointer-events:none;position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;
-  width:min(400px, 92vw);max-height:70vh;overflow:auto}
+  box-shadow:0 4px 16px rgba(0,0,0,.10);font-size:13px;line-height:19px}
+/* The floating layer (A). Anchored to the frame's RIGHT edge and sized by
+   \`floatPlacement\` through --dsa-float-w, so it grows left only as far as the
+   conversation column allows. pointer-events stays off on the container so the
+   empty area around the pill never eats a click meant for the conversation. */
+.dsa-float{pointer-events:none;position:fixed;right:var(--dsa-gap-right, 8px);bottom:16px;
+  display:flex;flex-direction:column;gap:8px;width:var(--dsa-float-w, 340px);max-width:92vw}
+.dsa-float > *{pointer-events:auto}
+.dsa-stack{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow:auto}
+.dsa-capsule{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;text-align:left;
+  padding:8px 12px;border-radius:999px;cursor:pointer;font:inherit;font-size:12px;line-height:18px;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
+  box-shadow:0 2px 10px rgba(0,0,0,.14)}
+.dsa-capsule:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
+.dsa-capsule:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4c8dff);outline-offset:1px}
+.dsa-capsule-dot{flex:none;width:8px;height:8px;border-radius:50%;
+  background:var(--dsw-alias-state-idle-primary, #8a8f98)}
+.dsa-capsule-dot[data-status="streaming"]{background:var(--dsw-alias-brand-primary, #4c8dff)}
+.dsa-capsule-dot[data-status="done"]{background:var(--dsw-alias-state-success-primary, #2e9e5b)}
+.dsa-capsule-dot[data-status="error"]{background:var(--dsw-alias-state-error-primary, #c0392b)}
+.dsa-capsule-dot[data-status="stopped"]{background:var(--dsw-alias-state-warn-primary, #b8860b)}
+.dsa-capsule-label{font-weight:600;white-space:nowrap}
+.dsa-capsule-q{min-width:0;flex:1;color:var(--dsw-alias-label-secondary, #666);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsa-capsule-chev{flex:none;color:var(--dsw-alias-label-secondary, #888)}
+.dsa-launcher{display:inline-flex;align-items:center;gap:6px;align-self:flex-start;padding:6px 11px;
+  border-radius:999px;cursor:pointer;font:inherit;font-size:12px;line-height:18px;
+  border:1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.45));
+  background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-secondary, #666)}
+.dsa-launcher:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
 .dsa-answer{max-height:44vh;overflow:auto;word-break:break-word}
 .dsa-answer .dsa-p{margin:0 0 6px}
 .dsa-answer .dsa-ul{margin:0 0 6px;padding-left:18px}
@@ -1642,18 +1768,40 @@ window.__ModuleLoader__.load({
         }, t('close')))
     }
 
-    /** One answer card; `embedded` is true inside a host's tab. */
-    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onClose, onCancel, onSendToMain }) {
+    /**
+     * One answer card; `embedded` is true inside a host's tab.
+     *
+     * `onFloatMode` is passed ONLY by the floating layer: it renders the
+     * collapse/hide controls that let the user get the layer out of the way
+     * (the layer is the only surface that can cover the conversation). A host
+     * tab that embeds the same card passes no callback and gets no buttons.
+     */
+    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onClose, onCancel, onSendToMain, onFloatMode }) {
       const [followOpen, setFollowOpen] = React.useState(false)
       const [draft, setDraft] = React.useState('')
       const answerRef = React.useRef(null)
       const config = store.state.config
+      // Icon-only, so the header row keeps one line: the full labels
+      // ("收起为胶囊（不遮挡对话）") are 12+ characters each and would wrap the
+      // title bar. The words stay on `title`/`aria-label`.
+      const floatControl = (mode, labelKey, glyph) => h('button', {
+        type: 'button',
+        className: 'dsa-btn dsa-btn-icon',
+        title: t(labelKey),
+        'aria-label': t(labelKey),
+        onClick: () => onFloatMode(mode),
+      }, glyph)
       return h('section', { className: 'dsa-card', 'aria-label': t('answerTitle') },
         h('div', { className: 'dsa-row' },
           h('span', { className: 'dsa-title' }, t('answerTitle')),
           h('span', { className: 'dsa-badge' }, zoneLabel(card)),
           surfaceLabel !== null ? h('span', { className: 'dsa-badge' }, surfaceLabel) : null,
-          card.truncated ? h('span', { className: 'dsa-badge dsa-badge-warn' }, t('truncatedBadge', { n: card.droppedChars })) : null),
+          card.truncated ? h('span', { className: 'dsa-badge dsa-badge-warn' }, t('truncatedBadge', { n: card.droppedChars })) : null,
+          typeof onFloatMode === 'function'
+            ? h('span', { className: 'dsa-row', style: { marginLeft: 'auto' } },
+              floatControl('capsule', 'floatCollapse', '⇥'),
+              floatControl('off', 'floatHide', '×'))
+            : null),
         h('pre', { className: 'dsa-quote' }, card.question),
         h(AnswerBody, { card, containerRef: answerRef }),
         card.toolFilter === 'unsupported'
@@ -1694,11 +1842,124 @@ window.__ModuleLoader__.load({
         surfaceLabel === null ? h('div', { className: 'dsa-muted' }, `${t('carrierSide')} · max ${config.maxChars}`) : null)
     }
 
-    /** The flow surface: a fixed stack of cards at the frame's bottom-right. */
-    function FlowStack({ cards, actions }) {
+    /**
+     * The flow surface, i.e. the floating layer (A).
+     *
+     * Three shapes, all sharing one right-anchored container:
+     *   - `capsule`: a single ~34px pill (status + truncated question). The
+     *     default, because a one-line pill cannot bury the conversation.
+     *   - `full`: the classic card stack, collapsed on demand.
+     *   - `off`: only a small launcher, so nothing covers the page until asked.
+     *
+     * The width comes from {@link floatPlacement}, so the layer stops growing
+     * left as soon as it would cross the conversation column's right boundary.
+     */
+    function FloatingLayer({ cards, actions }) {
+      const containerRef = React.useRef(null)
+      const state = useStoreState()
       const visible = cards.filter(card => card.surface === 'flow' && card.open)
-      if (visible.length === 0) return null
-      return h('div', { className: 'dsa-stack', 'data-dsa-root': '' },
+      const total = visible.length
+      const mode = state.floatMode ?? state.config.floatMode ?? CLIENT_DEFAULTS.floatMode
+      const maxWidth = state.config.floatMaxWidth ?? CLIENT_DEFAULTS.floatMaxWidth
+
+      // Measure the conversation column + right rail, then pin the layer's
+      // width to what is left. Recomputed on frame resize and on rail toggles
+      // (ResizeObserver), not once at mount. Every probe is optional: the test
+      // harness's synthetic DOM has no `querySelectorAll`, and an older WebView
+      // may have no `ResizeObserver` — neither may break the layer.
+      React.useEffect(() => {
+        const node = containerRef.current
+        if (node === null || node === undefined) return undefined
+        const selector = '[data-slot^="conversation"], .rightbar, [data-slot^="sidebar.right"], [data-dsh-panel-host]'
+        const all = () => {
+          try {
+            return typeof document.querySelectorAll === 'function'
+              ? [...document.querySelectorAll(selector)]
+              : []
+          } catch { return [] }
+        }
+        const one = (query) => {
+          try { return typeof document.querySelector === 'function' ? document.querySelector(query) : null } catch { return null }
+        }
+        let frame = 0
+        const apply = () => {
+          if (typeof node.style?.setProperty !== 'function') return
+          const lane = one('[data-slot^="conversation"]')
+          const rail = one('.rightbar, [data-slot^="sidebar.right"], [data-dsh-panel-host]')
+          const rootWidth = document.documentElement?.clientWidth ?? window.innerWidth
+          const laneRight = lane === null
+            ? rootWidth
+            : lane.getBoundingClientRect().right
+          const railLeft = rail === null ? null : rail.getBoundingClientRect().left
+          const placement = floatPlacement({ frameWidth: rootWidth, laneRight, railLeft, maxWidth })
+          node.style.setProperty('--dsa-float-w', `${placement.width}px`)
+          node.style.setProperty('--dsa-gap-right', `${FLOAT_GAP_RIGHT}px`)
+          // Readable placement, so a user report can say WHERE the layer sat.
+          node.dataset.layerWidth = String(placement.width)
+        }
+        const schedule = () => {
+          if (typeof window.requestAnimationFrame !== 'function') { apply(); return }
+          if (frame !== 0) return
+          frame = window.requestAnimationFrame(() => {
+            frame = 0
+            apply()
+          })
+        }
+        apply()
+        let observer = null
+        if (typeof window.ResizeObserver === 'function') {
+          observer = new window.ResizeObserver(schedule)
+          for (const target of all()) {
+            try { observer.observe(target) } catch { /* not an element we can watch */ }
+          }
+        }
+        if (typeof window.addEventListener === 'function') window.addEventListener('resize', schedule)
+        return () => {
+          if (typeof window.removeEventListener === 'function') window.removeEventListener('resize', schedule)
+          if (observer !== null) { try { observer.disconnect() } catch { /* already gone */ } }
+          if (frame !== 0 && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frame)
+        }
+      }, [maxWidth, total, mode])
+
+      if (total === 0) return null
+
+      const dot = h('span', {
+        className: 'dsa-capsule-dot',
+        'data-status': visible.some(card => card.status === 'streaming') ? 'streaming' : visible[0].status,
+      })
+      const label = visible.some(card => card.status === 'streaming')
+        ? t('floatStreaming')
+        : t('floatDone', { n: total })
+      const firstQuestion = visible[0].question
+
+      const container = children => h('div', {
+        className: 'dsa-float',
+        'data-dsa-root': '',
+        ref: containerRef,
+        'data-dsa-float-mode': mode,
+      }, children)
+
+      if (mode === 'off') {
+        return container(h('button', {
+          type: 'button',
+          className: 'dsa-launcher',
+          title: t('floatRestore'),
+          onClick: () => setFloatMode('full'),
+        }, dot, t('floatCount', { n: total })))
+      }
+
+      if (mode === 'capsule') {
+        return container(h('button', {
+          type: 'button',
+          className: 'dsa-capsule',
+          title: t('floatExpand'),
+          onClick: () => setFloatMode('full'),
+        }, dot, h('span', { className: 'dsa-capsule-label' }, label),
+        h('span', { className: 'dsa-capsule-q' }, firstQuestion),
+        h('span', { className: 'dsa-capsule-chev' }, '›')))
+      }
+
+      return container(h('div', { className: 'dsa-stack' },
         visible.map(card => h(AnswerCard, {
           key: card.id,
           card,
@@ -1709,7 +1970,8 @@ window.__ModuleLoader__.load({
           onCancel: () => actions.cancel(card),
           onSendToMain: () => actions.sendToMain(card),
           onClose: () => actions.close(card),
-        })))
+          onFloatMode: setFloatMode,
+        }))))
     }
 
     /** The `shell.overlay` entry: styles + trigger + popover + cards + toast. */
@@ -1731,7 +1993,7 @@ window.__ModuleLoader__.load({
             onSubmit: payload => actions.submit(popover.candidate, payload),
           })
           : null,
-        h(FlowStack, { cards: state.cards, actions }),
+        h(FloatingLayer, { cards: state.cards, actions }),
         state.toast !== null ? h('div', { className: 'dsa-toast' }, state.toast) : null)
     }
 
@@ -1826,6 +2088,12 @@ window.__ModuleLoader__.load({
             ['chat+task', t('setZonesBoth')],
           ])),
           field(t('setMaxChars'), number('maxChars', 200, 60000), t('setMaxCharsHint')),
+          field(t('setFloatMode'), select('floatMode', [
+            ['capsule', t('setFloatModeCapsule')],
+            ['full', t('setFloatModeFull')],
+            ['off', t('setFloatModeOff')],
+          ]), t('setFloatModeHint')),
+          field(t('setFloatMaxWidth'), number('floatMaxWidth', 240, 560), t('setFloatMaxWidthHint')),
           field(t('setMinChars'), number('minChars', 0, 200)),
           field(t('setConcurrency'), number('maxConcurrentAsks', 1, 12)),
           field(t('setShortcut'), h('input', {
@@ -2953,6 +3221,7 @@ window.__ModuleLoader__.load({
           isDiagnosticsUnsupported,
           renderRichText,
           pickSurface,
+          floatPlacement,
           localizeError,
           errorCodes: ERROR_CODES,
           resolveLanguage,
