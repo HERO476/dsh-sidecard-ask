@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.5.1
+
+**主题：1.5.0 的发布收尾——把发布闸门补全，并把校验记录进版本号。**
+
+功能与 1.5.0 **完全一致，没有任何行为改动**（`client.js` 与 `index.js` 只有版本号字符串不同，
+可用 sha256 逐字节核对）。这个补丁版存在的理由是发布流程本身：
+
+- `README` 第十三节的发布闸门原先只列了 `verify` / `contract-test` / `smoke-test` 三个脚本，
+  **漏掉了 1.5.0 新增的 `float-placement`**——照那一节执行会漏跑浮层几何用例（1.5.0 发布时就漏跑了，
+  事后才补上，38 项通过）。现已把 `node test/float-placement.mjs` 加进闸门，并把 `git tag v1.5.0`
+  改成 `git tag v<package.json 的 version>`，避免照抄上一版的标签号。**1.5.0 的 npm 包内 README 是补全前的版本，这一版起才是补全后的。**
+- 版本号三处同步到 1.5.1：`package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`、`client.js` 的 `CLIENT_VERSION`
+  （`test/verify.mjs` 会同时断言这三处一致）。这样 npm 上的 `latest` 带上了完整的闸门说明，
+  下一次发布不会再照着缺一行的清单执行。
+- 1.5.0 的发布过程有个值得记的坑：`npm publish` 返回的是 **HTTP 202 "being processed"**，
+  之后约 2 分钟 registry 文档仍显示 `latest: 1.4.0`、`...-1.5.0.tgz` 还是 404。
+  这**不是失败**，不要立即重发（重发会撞版本已存在）；等 2–5 分钟再查 `npm view dsh-sidecard-ask dist-tags` 即可。
+
+本机实测（四项均 exit 0）：verify 53 / contract 296 / float-placement 38 / smoke 138 = **525 项全部通过**。
+
 ## 1.5.0
 
 **主题：浮层不再压住主对话——「A 胶囊 + C 右栏」定案，一个算宽度的纯函数 + 一个默认收起的形态。**
