@@ -42,7 +42,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.5.1'
+export const PLUGIN_VERSION = '1.6.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -542,10 +542,64 @@ function createSideEngine(ctx, configOf) {
     }
   }), 'sidecard-ask: durable chunk bridge')
 
-  /** The optional subagents service, or undefined. */
+  /**
+   * The optional subagents service, or undefined.
+   *
+   * 0.2.1-alpha.2 replaced `subagents.start(provider, request)` with the
+   * managed-activations API `subagents.startActivation(spec)`; a build carries
+   * exactly one of the two launch methods, so either one means the service is
+   * present and launchable.
+   */
   function subagentsService() {
     const service = ctx.get('subagents')
-    return service !== undefined && typeof service.start === 'function' ? service : undefined
+    if (service === undefined) return undefined
+    const launchable = typeof service.start === 'function' || typeof service.startActivation === 'function'
+    return launchable ? service : undefined
+  }
+
+  /** Whether this runtime speaks the managed-activations API. */
+  function usesActivationApi(service) {
+    return typeof service?.startActivation === 'function' && typeof service?.start !== 'function'
+  }
+
+  /**
+   * Start one child answer, normalizing both subagents API generations to the
+   * shape the stream bridge consumes (`{id, localAgent?, result, dispose}`).
+   *
+   * Old API (≤0.2.1-alpha.1): `start(provider, request)` returns a SubagentRun.
+   * New API (0.2.1-alpha.2+): `startActivation({provider, label, request,
+   * signal, delivery: 'caller'})` returns `{childId, result, dispose}`; the
+   * caller-delivery policy keeps the child out of the parent's visible
+   * conversation — the same independent-answer semantics the old run had.
+   *
+   * @returns {Promise<{id: string, localAgent?: object, result: Promise<object>,
+   *   dispose: Function, api: 'start'|'activation'}>}
+   */
+  async function startSubagent(service, provider, fields) {
+    if (typeof service.start === 'function') {
+      const run = await service.start(provider, fields)
+      return { id: run.id, localAgent: run.localAgent, result: run.result, dispose: run.dispose, api: 'start' }
+    }
+    const activation = await service.startActivation({
+      provider,
+      label: fields.label,
+      delivery: 'caller',
+      signal: fields.signal,
+      request: {
+        prompt: fields.prompt,
+        parent: fields.parent,
+        ...(fields.persona === undefined ? {} : { persona: fields.persona }),
+        ...(fields.toolFilter === undefined ? {} : { toolFilter: fields.toolFilter }),
+      },
+    })
+    return {
+      id: activation.childId,
+      // No live Agent handle on the activation face; frame attribution falls
+      // back to the child session id (onFrame already matches that path).
+      result: activation.result,
+      dispose: () => activation.dispose(),
+      api: 'activation',
+    }
   }
 
   /** Registered subagent provider names (empty when the service is absent). */
@@ -825,7 +879,7 @@ function createSideEngine(ctx, configOf) {
       const personaSupported = caps?.persona === true
       const toolFilterSupported = caps?.toolFilter === true
       const promptText = personaSupported ? prompt : `${SIDE_PERSONA}\n\n${prompt}`
-      const run = await service.start(provider, {
+      const run = await startSubagent(service, provider, {
         label: `划词追问：${question.slice(0, 40)}`,
         prompt: [{ type: 'text', text: promptText }],
         parent: parent.agent,
@@ -1131,6 +1185,22 @@ export function apply(ctx, patchConfig) {
           .filter(feature => typeof feature === 'string')
           .slice(0, 40)
           .map(feature => feature.slice(0, 40))
+      }
+    }
+    // §4.5 family singleton verdict (bounded, same hardening as slots).
+    if (raw.family !== null && typeof raw.family === 'object' && !Array.isArray(raw.family)) {
+      out.family = {
+        leader: flag(raw.family.leader) ?? true,
+        legacy: flag(raw.family.legacy) ?? false,
+        peers: Array.isArray(raw.family.peers)
+          ? raw.family.peers
+            .filter(peer => peer !== null && typeof peer === 'object')
+            .slice(0, 8)
+            .map(peer => ({
+              id: short(peer.id, 64) ?? 'peer',
+              ...(short(peer.version, 24) !== undefined ? { version: short(peer.version, 24) } : {}),
+            }))
+          : [],
       }
     }
     return out

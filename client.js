@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.5.1'
+    const CLIENT_VERSION = '1.6.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -294,6 +294,10 @@ window.__ModuleLoader__.load({
         none: '无',
         unsupportedTrigger: '无法识别该快捷键，请用形如 Alt+Q / Ctrl+Shift+K 的写法',
         surfaceUnavailable: '所选侧边承载面不可用',
+        familySuppressed: '检测到同系列更新版本（{version}）已在本页运行，本实例已自动停用划词触发与快捷键，界面由更新版本接管。建议在插件页卸载本旧版本。',
+        familyLegacyToast: '检测到旧版 dsh-selection-followup 同时启用，已由本版本接管；建议卸载旧包',
+        familyLegacyDiag: '旧版共载',
+        familyPeers: '同页实例',
       },
       en: {
         triggerLabel: 'Ask about selection',
@@ -430,6 +434,10 @@ window.__ModuleLoader__.load({
         none: 'none',
         unsupportedTrigger: 'Unrecognized shortcut — use a form like Alt+Q / Ctrl+Shift+K',
         surfaceUnavailable: 'The chosen side surface is unavailable',
+        familySuppressed: 'A newer family build ({version}) is already running on this page; this copy has disabled its trigger and shortcut so only one UI answers. Uninstall this older package.',
+        familyLegacyToast: 'Legacy dsh-selection-followup detected alongside this plugin; this build took over. Uninstall the old package.',
+        familyLegacyDiag: 'Legacy co-load',
+        familyPeers: 'Copies on page',
       },
     }
 
@@ -659,6 +667,12 @@ window.__ModuleLoader__.load({
         zoneAnchors: null,
         /** Which ladder rung each registration actually landed on. */
         slots: {},
+        /** §4.5 family election: this copy owns the interaction surface. */
+        familyLeader: true,
+        /** Other cooperating copies currently live in this page. */
+        familyPeers: [],
+        /** A non-cooperating legacy build (≤1.0.x) is present and suppressed. */
+        familyLegacy: false,
         revision: 0,
       },
       listeners: new Set(),
@@ -684,6 +698,94 @@ window.__ModuleLoader__.load({
       const [, bump] = React.useReducer(count => count + 1, 0)
       React.useEffect(() => store.subscribe(bump), [])
       return store.state
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // §4.5 family singleton
+    //
+    // The plugin shipped under two npm names (`dsh-selection-followup` ≤1.0.1
+    // and `dsh-sidecard-ask` ≥1.1.0), and a profile can accidentally enable
+    // BOTH bundles — or the same bundle twice. Two live copies used to mean
+    // two trigger buttons stacked on the selection and two Alt+Q popovers.
+    //
+    // Cooperating copies (any build with this section) share one registry on
+    // `window` and elect a single leader by version (ties → first loaded);
+    // non-leaders keep their settings page but mount NO interaction surface.
+    //
+    // The old 1.0.x build cannot cooperate: it is detected structurally (its
+    // overlay carries the same `dsa-layer` class without an owner marker), the
+    // leader hides its UI with one stylesheet rule, and the user is told to
+    // uninstall the old package.
+    // ─────────────────────────────────────────────────────────────────────
+
+    const FAMILY_WINDOW_KEY = '__dshSidecardFamily'
+    const INSTANCE_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const OWNER_TOKEN = `${PLUGIN_ID}@${CLIENT_VERSION}#${INSTANCE_ID}`
+
+    /** Compare dotted numeric versions; non-numeric parts sort first. */
+    function compareVersions(a, b) {
+      const parts = v => String(v).split(/[.+-]/).map(part => (/^\d+$/.test(part) ? Number(part) : -1))
+      const pa = parts(a)
+      const pb = parts(b)
+      for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+        const x = pa[i] ?? -1
+        const y = pb[i] ?? -1
+        if (x !== y) return x < y ? -1 : 1
+      }
+      return 0
+    }
+
+    /**
+     * Elect the leader: highest version wins; a tie goes to the member that
+     * joined first (Map insertion order). Pure so the contract test can pin it.
+     * @returns {string} the winning member id.
+     */
+    function electFamilyLeader(members, selfId) {
+      let winner = null
+      for (const member of members) {
+        // Strictly greater version replaces; an equal version keeps the member
+        // that joined earlier (Map insertion order = load order).
+        if (winner === null || compareVersions(member.version, winner.version) > 0) {
+          winner = member
+        }
+      }
+      return winner?.id ?? selfId
+    }
+
+    /** Fetch-or-create the cross-copy registry (survives HMR on `window`). */
+    function familyTable(win) {
+      const existing = win[FAMILY_WINDOW_KEY]
+      if (existing !== undefined && existing !== null && typeof existing.subscribe === 'function') {
+        return existing
+      }
+      const members = new Map()
+      const listeners = new Set()
+      const emit = () => { for (const fn of [...listeners]) { try { fn() } catch { /* peer listener */ } } }
+      const table = {
+        join(member) { members.set(member.id, member); emit() },
+        leave(id) { members.delete(id); emit() },
+        list: () => [...members.values()],
+        subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+      }
+      try {
+        Object.defineProperty(win, FAMILY_WINDOW_KEY, { value: table, configurable: true, writable: true })
+      } catch {
+        win[FAMILY_WINDOW_KEY] = table
+      }
+      return table
+    }
+
+    /**
+     * Find legacy (≤1.0.x, non-cooperating) family UI: a `dsa-layer` carrying
+     * a trigger button but no owner marker. Every layer this build renders
+     * stamps `data-dsa-owner`, so an unmarked layer can only be the old build.
+     */
+    function findLegacyLayers(root) {
+      if (typeof root.querySelectorAll !== 'function') return []
+      try {
+        return [...root.querySelectorAll('.dsa-layer:not([data-dsa-owner])')]
+          .filter(node => node.querySelector?.('.dsa-trigger, .dsa-pop') !== null)
+      } catch { return [] }
     }
 
     /**
@@ -1210,6 +1312,12 @@ window.__ModuleLoader__.load({
           ...(surfaces.better.reason === null ? {} : { reason: String(surfaces.better.reason) }),
           features: surfaces.better.features,
         },
+        // §4.5 family singleton verdict (host-side diagnostics only).
+        family: {
+          leader: state.familyLeader !== false,
+          peers: Array.isArray(state.familyPeers) ? state.familyPeers : [],
+          legacy: state.familyLegacy === true,
+        },
       }
     }
 
@@ -1368,6 +1476,15 @@ window.__ModuleLoader__.load({
 .dsa-check{display:flex;align-items:center;gap:6px;font-size:12px}
 .dsa-diag{display:flex;flex-direction:column;gap:2px;font-size:12px;
   color:var(--dsw-alias-label-secondary, #555)}
+/* §4.5 legacy coexistence: an unmarked dsa-layer can only be the old
+   dsh-selection-followup ≤1.0.x build. When this build is the elected
+   leader it hides the old build's whole interaction surface so exactly
+   one trigger button / popover answers the selection. Our own layer always
+   carries data-dsa-owner, so this never matches current-generation UI. */
+.dsa-layer:not([data-dsa-owner]){display:none!important}
+.dsa-family-notice{padding:8px 10px;border-radius:8px;font-size:12px;
+  border:1px solid var(--dsw-alias-state-warn-primary, #b8860b);
+  color:var(--dsw-alias-state-warn-primary, #b8860b)}
 `
 
     /** Render the stylesheet as a React element (removed with its component). */
@@ -1977,10 +2094,19 @@ window.__ModuleLoader__.load({
     /** The `shell.overlay` entry: styles + trigger + popover + cards + toast. */
     function OverlayRoot({ actions }) {
       const state = useStoreState()
+      // §4.5 a non-leader copy mounts no interaction surface at all (its
+      // settings page stays available to explain the situation).
+      if (state.familyLeader === false) return null
       const config = state.config
       const candidate = state.trigger
       const popover = state.popover
-      return h('div', { className: 'dsa-layer', 'data-dsa-root': '' },
+      return h('div', {
+        className: 'dsa-layer',
+        'data-dsa-root': '',
+        // §4.5 stamps ownership so the legacy-suppression stylesheet can
+        // distinguish this build's layer from an unmarked ≤1.0.x layer.
+        'data-dsa-owner': OWNER_TOKEN,
+      },
         h(Styles, null),
         candidate !== null && popover === null && config.trigger !== 'shortcut'
           ? h(TriggerButton, { candidate, onOpen: () => actions.openPopover(candidate) })
@@ -2060,11 +2186,20 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // §4.5 a non-leader copy explains why its interaction surface is gone.
+      const familyBanner = state.familyLeader === false
+        ? h('div', { className: 'dsa-family-notice', role: 'status' },
+          t('familySuppressed', { version: (state.familyPeers[0]?.version) ?? '?' }))
+        : (state.familyLegacy === true
+          ? h('div', { className: 'dsa-family-notice', role: 'status' }, t('familyLegacyToast'))
+          : null)
+
       return h('div', { className: 'dsa-settings', 'data-dsa-root': '' },
         h(Styles, null),
         h('div', null,
           h('div', { className: 'dsa-title' }, t('settingsTitle')),
           h('div', { className: 'dsa-muted' }, t('settingsDesc'))),
+        familyBanner,
         h('div', { className: 'dsa-grid' },
           field(t('setTrigger'), select('trigger', [
             ['selection', t('setTriggerSelection')],
@@ -2671,20 +2806,30 @@ window.__ModuleLoader__.load({
         // ── selection listeners ──────────────────────────────────────────
         const evaluate = () => {
           pendingTimer = null
+          // §4.5 a non-leader copy must not surface its trigger, even if a
+          // stale selection event arrives.
+          if (store.state.familyLeader === false) return
           const config = store.state.config
           const candidate = readSelection()
           // Zone anchors: the harness stamps every slot outlet with
-          // `data-slot="<key>"`. A build that renders no such marker (or a
-          // selection made outside the frame's own tree) leaves the slot path
-          // empty, and then region filtering is impossible — reported once and
-          // relaxed rather than silently swallowing every trigger.
-          if (candidate !== null) {
-            const anchored = candidate.slotPath.length > 0
-            if (store.state.zoneAnchors !== anchored) {
-              store.set({ zoneAnchors: anchored })
-              if (!anchored) {
-                console.info(`[${PLUGIN_ID}] 该版本没有 data-slot 锚点，区域过滤不可用，已按"全部区域"工作`)
-              }
+          // `data-slot="<key>"`. This is a property of the BUILD, not of the
+          // current selection — a selection on a body-mounted node (an
+          // onboarding modal, another plugin's raw-DOM panel) has an empty
+          // slot path even though the frame is full of anchors. Probe the
+          // whole document instead, or one such selection would flip the
+          // global verdict to "missing" and silently disable zone filtering.
+          if (candidate !== null && store.state.zoneAnchors !== true) {
+            const buildHasAnchors = candidate.slotPath.length > 0
+              || (typeof document !== 'undefined' && document.querySelector('[data-slot]') !== null)
+            if (buildHasAnchors) {
+              if (store.state.zoneAnchors !== true) scheduleReport(0)
+              store.set({ zoneAnchors: true })
+            } else if (store.state.zoneAnchors === null && candidate.slotPath.length === 0) {
+              // Only the build-wide miss (and never a single unanchored
+              // selection) flips the verdict to unavailable.
+              store.set({ zoneAnchors: false })
+              scheduleReport(0)
+              console.info(`[${PLUGIN_ID}] 该版本没有 data-slot 锚点，区域过滤不可用，已按"全部区域"工作`)
             }
           }
           const decision = shouldOffer(candidate, config, { anchors: store.state.zoneAnchors !== false })
@@ -2715,6 +2860,9 @@ window.__ModuleLoader__.load({
         }
 
         const onKeyDown = (event) => {
+          // §4.5 only the leader answers the shortcut; otherwise two copies
+          // would each preventDefault and each open their own popover.
+          if (store.state.familyLeader === false) return
           const config = store.state.config
           const facts = parseShortcut(config.shortcut)
           if (matchesShortcut(event, facts)) {
@@ -3153,6 +3301,61 @@ window.__ModuleLoader__.load({
           // Corrupt-but-parseable history must never block startup.
           console.warn(`[${PLUGIN_ID}] card history restore failed:`, error)
         }
+
+        // §4.5 family singleton: register this copy, (re)elect on every join
+        // or leave, and gate the interaction surface on the verdict.
+        const family = familyTable(window)
+        family.join({ id: INSTANCE_ID, version: CLIENT_VERSION, at: Date.now() })
+        const reelect = () => {
+          const members = family.list()
+          const leaderId = electFamilyLeader(members, INSTANCE_ID)
+          const leader = leaderId === INSTANCE_ID
+          const peers = members
+            .filter(member => member.id !== INSTANCE_ID)
+            .map(member => ({ id: member.id, version: member.version }))
+          store.set({ familyLeader: leader, familyPeers: peers })
+          scheduleReport(0)
+          if (leader) detectLegacy()
+        }
+        const unsubscribeFamily = family.subscribe(reelect)
+
+        // Legacy (≤1.0.x) detection: it never joins the registry, so watch
+        // the overlay tree for an unmarked dsa-layer carrying family UI. The
+        // suppression stylesheet then hides it; we only need detection to
+        // raise the toast/report. Repeated matches are a no-op.
+        let legacyAnnounced = false
+        let legacyObserver = null
+        const detectLegacy = () => {
+          if (store.state.familyLeader !== true || legacyAnnounced === true) return
+          const root = typeof document !== 'undefined' ? document : null
+          if (root === null) return
+          const found = findLegacyLayers(root).length > 0
+          if (found === false) return
+          legacyAnnounced = true
+          // Inject the suppression rule directly: the React stylesheet only
+          // exists while our overlay is mounted, but the legacy layer must
+          // stay hidden even during its own re-renders.
+          try {
+            if (root.getElementById('dsa-family-legacy-style') === null) {
+              const style = root.createElement('style')
+              style.id = 'dsa-family-legacy-style'
+              style.textContent = '.dsa-layer:not([data-dsa-owner]){display:none!important}'
+              root.head?.appendChild(style)
+            }
+          } catch { /* React stylesheet already carries the same rule */ }
+          store.set({ familyLegacy: true })
+          toast(t('familyLegacyToast'))
+          scheduleReport(0)
+        }
+        const legacyTimers = [300, 1200, 3000].map(delay => setTimeout(detectLegacy, delay))
+        if (typeof document !== 'undefined' && typeof MutationObserver === 'function') {
+          legacyObserver = new MutationObserver(() => detectLegacy())
+          try {
+            legacyObserver.observe(document.documentElement ?? document, { childList: true, subtree: true })
+          } catch { /* document without a root yet — timers still cover it */ }
+        }
+
+        reelect()
         void refreshState().catch(() => { /* the settings page shows the failure */ })
         // One report after the slot ladders have had time to settle, so the
         // Host ends up holding the CLIENT's real registration state.
@@ -3170,6 +3373,15 @@ window.__ModuleLoader__.load({
           pendingProofs.clear()
           if (toastTimer !== null) clearTimeout(toastTimer)
           if (reportTimer !== null) clearTimeout(reportTimer)
+          for (const timer of legacyTimers) clearTimeout(timer)
+          try {
+            if (typeof document !== 'undefined' && document.getElementById) {
+              document.getElementById('dsa-family-legacy-style')?.remove()
+            }
+          } catch { /* torn down */ }
+          try { legacyObserver?.disconnect() } catch { /* already gone */ }
+          try { unsubscribeFamily() } catch { /* registry torn down */ }
+          try { family.leave(INSTANCE_ID) } catch { /* registry torn down */ }
           store.set({
             trigger: null,
             popover: null,
@@ -3222,6 +3434,9 @@ window.__ModuleLoader__.load({
           renderRichText,
           pickSurface,
           floatPlacement,
+          compareVersions,
+          electFamilyLeader,
+          findLegacyLayers,
           localizeError,
           errorCodes: ERROR_CODES,
           resolveLanguage,

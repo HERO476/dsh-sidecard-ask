@@ -12,3 +12,9 @@ tmp-*.mjs
 
 # Local agent work journal (not part of the plugin; the repo owner keeps it out of git)
 .workbuddy/
+
+# Local third-party tool residue (graphflow / mnemon indexes, never part of the plugin)
+.graphflow/
+.graphflow-cache/
+.mnemon/
+graphflow-out/

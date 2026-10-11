@@ -1416,6 +1416,9 @@ report.equal(reportBody.slots.overlay, 'shell.overlay', 'the report carries the 
 report.ok(typeof reportBody.native.available === 'boolean', 'the report carries the native adapter state')
 report.ok(typeof reportBody.better.available === 'boolean', 'the report carries the side-card plugin state')
 report.ok(Array.isArray(reportBody.better.features), 'the plugin capability list is reported')
+report.equal(reportBody.family.leader, true, 'the report carries the family leader verdict')
+report.equal(reportBody.family.legacy, false, 'the report carries the legacy-peer verdict')
+report.ok(Array.isArray(reportBody.family.peers), 'the report carries the family peers list')
 
 const emptyReport = pure.buildClientReport({ surface: 'flow', zoneAnchors: null, sessionId: null, slots: {} })
 report.equal(emptyReport.sessionKnown, false, 'no session is reported honestly')
@@ -1428,5 +1431,89 @@ report.equal(pure.isDiagnosticsUnsupported({ code: 'bad-response' }), true, 'an 
 report.equal(pure.isDiagnosticsUnsupported({ code: 'unreachable' }), true, 'an unreachable host disables it too')
 report.equal(pure.isDiagnosticsUnsupported({ code: 'invalid-config' }), false, 'a real error does NOT disable it')
 report.equal(pure.isDiagnosticsUnsupported(undefined), false, 'an unknown failure does not disable it')
+
+// ────────────────────────────────────────────────────────────────────────────
+// family singleton (§4.5)
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nfamily singleton')
+report.equal(pure.compareVersions('1.6.0', '1.5.1'), 1, '1.6.0 is newer than 1.5.1')
+report.equal(pure.compareVersions('1.10.0', '1.9.0'), 1, 'version compare is numeric, not lexicographic')
+report.equal(pure.compareVersions('1.6.0', '1.6.0'), 0, 'equal versions compare to 0')
+report.equal(pure.compareVersions('1.5.1', '1.6.0'), -1, 'older compares negative')
+
+const older = { id: 'a', version: '1.0.1' }
+const newer = { id: 'b', version: '1.6.0' }
+report.equal(pure.electFamilyLeader([older, newer], 'b'), 'b', 'the higher version wins the election')
+report.equal(pure.electFamilyLeader([newer, older], 'a'), 'b', 'load order cannot override a newer version')
+// Equal versions: the member that joined first wins, regardless of who asks.
+const first = { id: 'first', version: '1.6.0' }
+const second = { id: 'second', version: '1.6.0' }
+report.equal(pure.electFamilyLeader([first, second], 'second'), 'first', 'a tie keeps the first-loaded copy as leader')
+report.equal(pure.electFamilyLeader([second, first], 'first'), 'second', 'tie resolution follows join order, not identity')
+report.equal(pure.electFamilyLeader([], 'solo'), 'solo', 'a lone member elects itself')
+
+// Legacy-layer detection over a minimal DOM contract.
+{
+  const legacyLayer = { querySelector: selector => (/dsa-trigger|dsa-pop/.test(selector) ? {} : null) }
+  const triggerlessLayer = { querySelector: () => null }
+  const root = {
+    querySelectorAll: selector => (selector.includes(':not([data-dsa-owner])')
+      ? [legacyLayer, triggerlessLayer]
+      : []),
+  }
+  const found = pure.findLegacyLayers(root)
+  report.equal(found.length, 1, 'only an unmarked layer CARRYING family UI is a legacy layer')
+  report.ok(found[0] === legacyLayer, 'the trigger-carrying layer is the one detected')
+  const emptyRoot = { querySelectorAll: () => [] }
+  report.equal(pure.findLegacyLayers(emptyRoot).length, 0, 'no unmarked layer means no legacy peer')
+  const noQueryRoot = {}
+  report.equal(pure.findLegacyLayers(noQueryRoot).length, 0, 'a DOM without querySelectorAll yields no false positive')
+}
+
+// Two real client copies in one page: the second 1.6.0 copy loses the tie to
+// the first-loaded one and mounts NO interaction surface.
+{
+  const stubFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true, value: { config: {}, capabilities: {}, provenance: {} } }),
+  })
+  const leaderLoaded = loadClientModule({ fetchImpl: stubFetch, language: 'zh-CN' })
+  const loserLoaded = loadClientModule({ fetchImpl: stubFetch, language: 'zh-CN' })
+  const leaderCtx = makeClientCtx()
+  const loserCtx = makeClientCtx()
+  leaderLoaded.module.apply(leaderCtx.ctx)
+  // The loser must see the leader's registry before its own apply runs.
+  delete loserLoaded.window.__dshSidecardFamily
+  loserLoaded.window.__dshSidecardFamily = leaderLoaded.window.__dshSidecardFamily
+  loserLoaded.module.apply(loserCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  report.equal(leaderLoaded.module.api.snapshot().familyLeader, true, 'the first-loaded copy leads')
+  report.equal(loserLoaded.module.api.snapshot().familyLeader, false, 'the second copy stands down')
+  report.equal(loserLoaded.module.api.snapshot().familyPeers.length, 1, 'the loser sees one peer')
+  report.equal(loserLoaded.module.api.snapshot().familyPeers[0].version, client.api.version, 'the peer reports the real version')
+
+  const leaderOverlay = leaderCtx.find('shell.overlay', pure.IDS.overlay)
+  const loserOverlay = loserCtx.find('shell.overlay', pure.IDS.overlay)
+  const leaderTree = expandTree(leaderLoaded.shim.React.createElement(leaderOverlay.component, {}))
+  const loserTree = expandTree(loserLoaded.shim.React.createElement(loserOverlay.component, {}))
+  report.ok(leaderTree !== null, 'the leader mounts its overlay')
+  report.equal(loserTree, null, 'the loser mounts no overlay (single trigger button page-wide)')
+  report.ok(byClass(leaderTree, 'dsa-layer').length === 1, 'the leader still renders one layer')
+  const ownerAttrs = JSON.stringify(leaderTree).match(/data-dsa-owner/g) ?? []
+  report.ok(ownerAttrs.length >= 1, 'the leader stamps its layer with an owner marker')
+
+  // The loser's settings page stays available but explains the stand-down.
+  const loserSettings = loserCtx.find('settings.section', pure.IDS.settings)
+  const loserSettingsTree = expandTree(loserLoaded.shim.React.createElement(loserSettings.component, {}))
+  report.ok(textOf(loserSettingsTree).includes('同系列更新版本'), 'the loser settings page explains why it is inactive')
+
+  // The loser's self-report carries the family verdict for host diagnostics.
+  const loserReport = pure.buildClientReport(loserLoaded.module.api.snapshot())
+  report.equal(loserReport.family.leader, false, 'the loser reports itself as non-leader')
+  report.ok(loserReport.family.peers.length >= 1, 'the report lists the leading peer')
+}
 
 report.summary()

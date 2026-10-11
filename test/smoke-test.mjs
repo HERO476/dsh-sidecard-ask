@@ -188,6 +188,37 @@ report.equal(
   'inherit mode passes no tool filter',
 )
 
+// 0.2.1-alpha.2 replaced subagents.start() with startActivation(spec): the
+// plugin must detect the new face, speak the caller-delivery shape, and keep
+// streaming via session-id attribution (no live Agent handle exists).
+console.log('\nmanaged-activations API (0.2.1-alpha.2+)')
+const act = await boot({ engineOptions: { activationApi: true } })
+const actState = (await callRoute(act.harness, '/state', { method: 'GET' })).json()
+report.equal(actState.value.capabilities.sideEngine, true, 'the engine gate accepts the startActivation face')
+report.equal(actState.value.capabilities.sideProviders, ['spawn'], 'providers are listed on the new face')
+const actAsk = await callRoute(act.harness, '/ask', {
+  body: { id: 'ask-activation', question: 'q', selection: 'text' },
+})
+const actEvents = actAsk.events()
+report.equal(actEvents[0].event, 'start', 'the new-API stream opens with start')
+report.equal(actEvents.at(-1).event, 'done', 'the new-API stream closes with done')
+report.equal(actEvents.at(-1).data.text, '这是一个流式答案', 'the answer arrives on the activation face')
+report.equal(actEvents.at(-1).data.streaming, true, 'frames are attributed by child session id without a localAgent handle')
+report.equal(act.engine.starts.length, 1, 'exactly one activation was started')
+const spec0 = act.engine.starts[0]
+report.equal(spec0.name, 'spawn', 'the activation targets the spawn provider')
+report.equal(spec0.request.parent.id, 'session-alpha', 'the parent agent rides inside request')
+report.equal(spec0.request.prompt[0].type, 'text', 'the prompt rides inside request')
+report.equal(typeof spec0.request.persona, 'string', 'the persona rides inside request')
+report.equal(spec0.request.toolFilter, { allow: ['read', 'glob', 'web_search'] }, 'the tool filter rides inside request')
+report.equal(typeof spec0.signal?.aborted, 'boolean', 'the activation receives the abort signal')
+report.equal(spec0.delivery, 'caller', 'caller delivery keeps the answer out of the parent conversation')
+report.ok(/^划词追问：/.test(spec0.label), 'the activation carries the side-answer label')
+// The harness double records only the startActivation face in this mode.
+report.equal(typeof act.harness.services.subagents.start, 'undefined', 'the new face carries no legacy start method')
+report.equal(typeof act.harness.services.subagents.startActivation, 'function', 'startActivation is present')
+report.equal(act.engine.disposed, ['child-1'], 'the activation was disposed after settling')
+
 // ────────────────────────────────────────────────────────────────────────────
 // 3. truncation of an over-long selection
 // ────────────────────────────────────────────────────────────────────────────
@@ -513,5 +544,28 @@ report.equal(afterTruncate.value.client.better.features.length, 2, 'non-string f
 const badReport = await callRoute(fresh.harness, '/diagnose', { body: '"not an object"' })
 report.equal(badReport.status, 400, 'a non-object report is refused')
 report.equal(badReport.json().error.code, 'bad-request', 'the refusal carries a code')
+
+// §4.5 family singleton verdict survives the same bounded sanitization.
+const familyReport = await callRoute(fresh.harness, '/diagnose', {
+  body: {
+    family: {
+      leader: false,
+      legacy: true,
+      peers: [
+        { id: 'peer-1', version: '1.6.0' },
+        { id: 42, version: 'x'.repeat(100) },
+        'not-an-object',
+      ],
+    },
+  },
+})
+report.equal(familyReport.status, 200, 'a family report is accepted')
+const afterFamily = (await callRoute(fresh.harness, '/state', { method: 'GET' })).json()
+report.equal(afterFamily.value.client.family.leader, false, 'the leader verdict is kept')
+report.equal(afterFamily.value.client.family.legacy, true, 'the legacy verdict is kept')
+report.equal(afterFamily.value.client.family.peers.length, 2, 'non-object peers are dropped')
+report.equal(afterFamily.value.client.family.peers[0].version, '1.6.0', 'the peer version is kept')
+report.ok(afterFamily.value.client.family.peers[1].id.length <= 64, 'peer ids are bounded')
+report.ok(afterFamily.value.client.family.peers[1].version.length <= 24, 'peer versions are bounded')
 
 report.summary()

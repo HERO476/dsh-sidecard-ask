@@ -272,11 +272,15 @@ export async function callRoute(harness, path, options = {}) {
  * A subagents service double.
  * @param {{emit: Function, frames?: string[], delayMs?: number, chunksPerFrame?: number,
  *   startError?: Error, stopReason?: string, providerNames?: string[],
- *   capabilities?: Record<string, boolean>|null, localAgent?: boolean}} options
+ *   capabilities?: Record<string, boolean>|null, localAgent?: boolean,
+ *   activationApi?: boolean}} options
  *   `capabilities` mirrors a real provider's advertisement; `null` means this
  *   DSH version has no capability face at all, so the plugin must send no
  *   optional start field. `localAgent: false` models an older `SubagentRun`
  *   with no live-child handle, whose frames therefore cannot be attributed.
+ *   `activationApi: true` models 0.2.1-alpha.2+: the managed-activations API
+ *   (`startActivation(spec)`, no `start`), where attribution works through
+ *   the child session id instead of a live Agent handle.
  */
 export function makeSubagentEngine(options) {
   const emit = options.emit
@@ -287,9 +291,92 @@ export function makeSubagentEngine(options) {
     ? { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }
     : options.capabilities
   const withLocalAgent = options.localAgent !== false
+  const activationApi = options.activationApi === true
   const starts = []
   const disposed = []
   const live = new Set()
+
+  /** One simulated child run, shared by both API generations. */
+  function runChild(name, request) {
+    starts.push({ name, request })
+    if (options.startError !== undefined) throw options.startError
+    const id = `child-${starts.length}`
+    const child = { id, session: { id, header: { id } } }
+    // Without a live-child handle the frames cannot be attributed to this
+    // run (an older provider whose run/session ids do not line up), which
+    // is exactly the case the non-streaming fallback must cover.
+    const frameAgent = withLocalAgent ? child : { id: 'foreign-child', session: { id: 'foreign-child' } }
+    live.add(id)
+    const signal = request.signal
+    // `frameMode` models the two streaming surfaces the host supports:
+    // process-local frames (0.1.3+) and the durable `assistant/chunk` session
+    // event that only 0.1.2-rc.1 logs.
+    const frameMode = options.frameMode ?? 'frames'
+    const result = (async () => {
+      try {
+        for (let index = 0; index < frames.length; index += 1) {
+          await new Promise(resolve => setTimeout(resolve, delayMs))
+          if (signal?.aborted === true) return { output: [], stopReason: 'aborted' }
+          if (frameMode === 'frames') {
+            emit('agent/assistant-stream', {
+              agent: frameAgent,
+              frame: { type: 'start', attemptId: `attempt-${id}`, turn: 1, step: 1 },
+            })
+            emit('agent/assistant-stream', {
+              agent: frameAgent,
+              frame: {
+                type: 'chunk',
+                attemptId: `attempt-${id}`,
+                index,
+                time: Date.now(),
+                chunk: { type: 'text-delta', index: 0, text: frames[index] },
+              },
+            })
+            if (options.reasoningPrefix !== undefined) {
+              emit('agent/assistant-stream', {
+                agent: frameAgent,
+                frame: {
+                  type: 'chunk',
+                  attemptId: `attempt-${id}`,
+                  index: index + 1000,
+                  time: Date.now(),
+                  chunk: { type: 'reasoning-delta', index: 1, text: `${options.reasoningPrefix}${index}` },
+                },
+              })
+            }
+          } else if (frameMode === 'chunks') {
+            emit('session/event', child.session, {
+              type: 'assistant/chunk',
+              seq: index,
+              time: Date.now(),
+              data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: frames[index] } },
+            })
+          }
+        }
+        if (frameMode === 'frames') {
+          emit('agent/assistant-stream', { agent: frameAgent, frame: { type: 'end', stopReason: options.stopReason ?? 'completed' } })
+        } else if (frameMode === 'chunks' && options.reasoningPrefix !== undefined) {
+          emit('session/event', child.session, {
+            type: 'assistant/chunk',
+            seq: frames.length,
+            time: Date.now(),
+            data: { turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 1, text: options.reasoningPrefix } },
+          })
+        }
+        if (options.stopReason !== undefined && options.stopReason !== 'completed') {
+          return { output: [], stopReason: options.stopReason, diagnostic: 'engine said no' }
+        }
+        return {
+          output: [{ type: 'text', text: frames.join('') }],
+          stopReason: 'completed',
+        }
+      } finally {
+        live.delete(id)
+      }
+    })()
+    return { id, child, frameAgent, result }
+  }
+
   const service = {
     list: () => [...providerNames],
     getProvider: name => (providerNames.includes(name)
@@ -299,93 +386,41 @@ export function makeSubagentEngine(options) {
         ...(capabilities === null ? {} : { capabilities }),
       }
       : undefined),
-    async start(name, request) {
-      starts.push({ name, request })
-      if (options.startError !== undefined) throw options.startError
-      const id = `child-${starts.length}`
-      const child = { id, session: { id, header: { id } } }
-      // Without a live-child handle the frames cannot be attributed to this
-      // run (an older provider whose run/session ids do not line up), which is
-      // exactly the case the non-streaming fallback must cover.
-      const frameAgent = withLocalAgent ? child : { id: 'foreign-child', session: { id: 'foreign-child' } }
-      live.add(id)
-      const signal = request.signal
-      // `frameMode` models the two streaming surfaces the host supports:
-      // process-local frames (0.1.3+) and the durable `assistant/chunk` session
-      // event that only 0.1.2-rc.1 logs.
-      const frameMode = options.frameMode ?? 'frames'
-      const result = (async () => {
-        try {
-          for (let index = 0; index < frames.length; index += 1) {
-            await new Promise(resolve => setTimeout(resolve, delayMs))
-            if (signal?.aborted === true) return { output: [], stopReason: 'aborted' }
-            if (frameMode === 'frames') {
-              emit('agent/assistant-stream', {
-                agent: frameAgent,
-                frame: { type: 'start', attemptId: `attempt-${id}`, turn: 1, step: 1 },
-              })
-              emit('agent/assistant-stream', {
-                agent: frameAgent,
-                frame: {
-                  type: 'chunk',
-                  attemptId: `attempt-${id}`,
-                  index,
-                  time: Date.now(),
-                  chunk: { type: 'text-delta', index: 0, text: frames[index] },
-                },
-              })
-              if (options.reasoningPrefix !== undefined) {
-                emit('agent/assistant-stream', {
-                  agent: frameAgent,
-                  frame: {
-                    type: 'chunk',
-                    attemptId: `attempt-${id}`,
-                    index: index + 1000,
-                    time: Date.now(),
-                    chunk: { type: 'reasoning-delta', index: 1, text: `${options.reasoningPrefix}${index}` },
-                  },
-                })
-              }
-            } else if (frameMode === 'chunks') {
-              emit('session/event', child.session, {
-                type: 'assistant/chunk',
-                seq: index,
-                time: Date.now(),
-                data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: frames[index] } },
-              })
-            }
-          }
-          if (frameMode === 'frames') {
-            emit('agent/assistant-stream', { agent: frameAgent, frame: { type: 'end', stopReason: options.stopReason ?? 'completed' } })
-          } else if (frameMode === 'chunks' && options.reasoningPrefix !== undefined) {
-            emit('session/event', child.session, {
-              type: 'assistant/chunk',
-              seq: frames.length,
-              time: Date.now(),
-              data: { turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 1, text: options.reasoningPrefix } },
-            })
-          }
-          if (options.stopReason !== undefined && options.stopReason !== 'completed') {
-            return { output: [], stopReason: options.stopReason, diagnostic: 'engine said no' }
-          }
-          return {
-            output: [{ type: 'text', text: frames.join('') }],
-            stopReason: 'completed',
-          }
-        } finally {
-          live.delete(id)
+    ...(activationApi ? {} : {
+      // 0.1.5-0.2.1-alpha.1 generation: start(provider, request) -> SubagentRun
+      async start(name, request) {
+        const r = runChild(name, request)
+        return {
+          id: r.id,
+          ...(withLocalAgent ? { localAgent: r.child } : {}),
+          result: r.result,
+          async dispose() {
+            disposed.push(r.id)
+            request.signal?.abort?.()
+          },
         }
-      })()
-      return {
-        id,
-        ...(withLocalAgent ? { localAgent: child } : {}),
-        result,
-        async dispose() {
-          disposed.push(id)
-          signal?.abort?.()
-        },
-      }
-    },
+      },
+    }),
+    ...(activationApi ? {
+      // 0.2.1-alpha.2+ generation: managed activations, caller delivery
+      async startActivation(spec) {
+        const r = runChild(spec.provider, spec.request)
+        // Record the spec-level fields the harness test asserts on.
+        Object.assign(starts[starts.length - 1], {
+          signal: spec.signal,
+          delivery: spec.delivery,
+          label: spec.label,
+        })
+        return {
+          childId: r.id,
+          result: r.result,
+          async dispose() {
+            disposed.push(r.id)
+            spec.signal?.abort?.()
+          },
+        }
+      },
+    } : {}),
   }
   return {
     service,

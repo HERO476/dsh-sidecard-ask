@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.6.0
+
+**主题：最新版 DSH（0.2.1-alpha.2）适配 + 新旧包名共载时的单例护栏。**
+
+十版本真机矩阵（隔离 DSH_HOME、真实安装启动、HTTP/探针双证据）发现并修复：
+
+- **0.2.1-alpha.2 侧边作答引擎失效（真问题）**：该版本把 `subagents.start(provider, request)`
+  重构为受管激活 API `subagents.startActivation({provider, label, request, signal, delivery})`
+  （返回值由 `{id, localAgent, result, dispose}` 变为 `{childId, result, dispose}`）。
+  旧代码的能力门只认 `start()`，导致 provider 明明注册成功（spawn/fork）却自检显示
+  「侧边作答引擎：不可用」，侧答走降级。现按运行时方法面自动选择两代 API：新 API 用
+  `delivery: 'caller'` 保持"答案不进主对话"的旧语义，流式帧改由子会话 id 归因（新运行时不再
+  提供 live Agent 句柄）。0.1.5-rc.3～0.2.1-alpha.1 的调用路径保持不变。
+- **新旧包名同时启用时双重触发（真问题）**：`dsh-selection-followup`（≤1.0.1 旧名）与
+  `dsh-sidecard-ask` 被同时装入一个 profile 时，选区旁叠出两个悬浮按钮，一次 Alt+Q 弹两个
+  提问框。现新增**页面内家族注册表**（`window.__dshSidecardFamily`）：协作的副本按版本号选举
+  唯一领导者（同版本先加载者胜），落选副本保留设置页（显示停用说明横幅）但不挂载任何交互面、
+  不响应快捷键；无法协作的 1.0.x 旧版通过结构特征识别（无 owner 标记的 `dsa-layer`），
+  领导者注入一条样式规则隐藏其整个交互层，并提示卸载旧包。
+- **data-slot 锚点自检结果不稳定（真问题）**：旧逻辑用"当前选区是否落在锚点链内"反推
+  "本版本是否支持锚点"，选区落在直接挂 body 的节点（引导弹窗、第三方裸 DOM 面板）时会把
+  全局判定翻成"缺失"，导致同一次自检两次结果不一致。改为构建级探测（全文档是否存在
+  `[data-slot]`），单个无锚点选区不再影响全局判定。
+
+客户端自检上报新增 `family` 字段（leader/legacy/peers），宿主侧白名单做同样的长度裁剪。
+
+本机实测：verify 53 / contract 323 / float-placement 38 / smoke 163 = **577 项全部通过**；
+另在 0.2.0-rc.2 与 0.2.1-alpha.2 真机（headless）复核：两版引擎均可用、共载单实例、
+锚点判定稳定、better-sidebar 0.25.0 承载面识别正常。
+
 ## 1.5.1
 
 **主题：1.5.0 的发布收尾——把发布闸门补全，并把校验记录进版本号。**

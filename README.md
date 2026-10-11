@@ -392,11 +392,27 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 | 没有 `data-slot` 锚点 | 检测到选区但槽位路径为空 → 判定"区域锚点不可用"，**停用区域过滤**（否则 `captureZones:chat` 会静默失效）并在设置页自检里标明 | `contract-test`：`shouldOffer(..., {anchors:false})` 断言放宽且返回 `zoneFiltering:'unavailable'` |
 | 路由 kind 不被接受 | `prefix` 注册失败 → 退化为**逐方法精确路由**（`state/ask/cancel/config/reset`），处理器不变 | 前缀路由由 smoke 全流程覆盖；退化分支为纯 fallback（未在真机触发过） |
 
-### 7.3 还没做真机验证的部分（如实标注）
+### 7.3 真机验证记录（1.6.0，2026-10-11）
+
+1.6.0 把 §7.1/§7.2 的产物层证据升级为**真机证据**：最近 10 个发布版（0.1.5-rc.3 → 0.2.1-alpha.2，
+按 npm 发布时间）全部在隔离 `DSH_HOME` 中真实安装、启动并读取运行时能力面；
+0.2.0-rc.2（= npm `latest`）与 0.2.1-alpha.2（= npm `next`）另做无头浏览器真机验证。
+
+- 0.1.5-rc.3 … 0.2.1-alpha.1：引擎可用，provider=spawn/fork，0 启动告警。
+- **0.2.1-alpha.2：1.5.1 真机不可用 → 1.6.0 已修复**。该版本把子代理 API 从 `subagents.start(provider, request)`
+  重构为 `subagents.startActivation({provider, label, request, signal, delivery})`，1.5.1 的能力门只认旧方法
+  （provider 其实注册成功，自检却显示"不可用"）。1.6.0 按运行时方法面自动选择两代 API，新 API 用
+  `delivery:'caller'` 保持"答案不进主对话"，流式帧按子会话 id 归因。
+- 更早的 0.1.2-rc.1 … 0.1.4 仍只有产物层证据（§7.1/§7.2 的降级分支仍保留，双 API 调度不改动旧路径）。
+- 生态侧：25 个侧边卡片/侧边栏类插件做了产物扫描 + 4 组共载真机，localStorage 键 / 路由前缀 / tab kind /
+  patch id / 配置目录 / Alt+Q 零硬冲突；旧名包 `dsh-selection-followup@1.0.1` 共载时的双重触发由
+  1.6.0 的页面内家族单例选举解决。完整矩阵、复现脚本与截图见 `.compat-report/`。
+
+### 7.4 更早版本仍未做真机验证的部分（如实标注）
 
 - 上表所有 ✅/❌ 都是**包内容层面的证据**（字符串/签名存在于该版本的发布产物），不等于"插件在该版本上跑起来过"。
-  唯一跑过真机的是 **0.1.7-rc.2**（见 §10.1 的实测记录）。
-- 在 0.1.2-rc.1 … 0.1.6-alpha.2 这几个版本上，我只验证了"所需 API 是否存在 + 插件有为缺失准备的分支"，
+  真机覆盖为 0.1.5-rc.3 → 0.2.1-alpha.2（1.6.0 实测）与 0.1.7-rc.2（§10.1 的历史实测）。
+- 在 0.1.2-rc.1 … 0.1.4 这几个版本上，只验证了"所需 API 是否存在 + 插件有为缺失准备的分支"，
   **没有**在那些版本上安装并启动过插件。
 - `inputActions` 作为会话槽位标准 prop：13 个版本的 `dsh-client-ui-conversation` 产物里都有该名字，
   0.1.7-rc.2 的槽位目录也把它列为 `conversation.input.right` 的 standardProps；**更早版本是否真的把它下发给该槽位条目未验证**，
@@ -494,8 +510,8 @@ node test/smoke-test.mjs        # 端到端：流式/截断/取消/持久化/失
 ```
 
 四个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模（1.5.0 本机实测，四项均 exit 0）：verify **53** 项 + contract **296** 项 + float-placement **38** 项 +
-smoke **138** 项 = **525 项全部通过**。
+当前规模（1.6.0 本机实测，四项均 exit 0）：verify **53** 项 + contract **323** 项 + float-placement **38** 项 +
+smoke **163** 项 = **577 项全部通过**。
 
 > 1.5.0 之前这里还放过 `tools/balance-check.mjs` 与 `tools/i18n-check.mjs` 两个「替代检查」。
 > 它们已被**删除**：前者用「正则字面量 vs 除号」的启发式判断，把 8 个源文件全部误报为残损；
@@ -635,7 +651,9 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
 1. **区域归类是启发式的**：`data-slot` 名称来自 harness 自己；其它插件若在自己的面板里不再经由槽位渲染，
    该区域会被归为"其它区域"——用 `captureZones: auto` + `showInUnclassified: true`（默认）仍然可用，或改用 `captureZones` 限制。
    本机实测能识别：`conversation.*`（聊天）、`rightbar` / `sidebar.right.*` / 名字含 task·todo·schedule·team·job·plan 的面板（任务）。
-2. **浏览器内的视觉与交互未在本机验证**：本工作区没有浏览器自动化工具，因此"按钮出现在选区旁""卡片逐字增长""浮层不挡操作"这些**只能由你按第九节点一遍**。
+2. **浏览器内的视觉与交互**：1.6.0 起用无头 Edge（Playwright，系统浏览器 `channel:'msedge'`）做真机验证，
+   脚本见 `.compat-report/scripts/`，截图见 `.compat-report/shots/`——选区浮按钮、Alt+Q 弹层、共载单实例、
+   引擎自检均已在 0.2.0-rc.2 与 0.2.1-alpha.2 上自动核对。桌面 Electron 的视觉观感仍只有 2026-09-30 的人工实测（§5.3）。
    已做的保障是：只使用 `--dsw-alias-*` 主题令牌、只在槽位内渲染（`shell.overlay` / `settings.section` / `conversation.input.right`）、不写 `document.body`、不 import harness 客户端包。
 2b. **1.5.0 的浮层改动：四个测试脚本已在本机实跑通过（各 exit 0），但页面里的观感仍未验证**：
    写这个版本的前半段，本工作区的 shell 工具整体不可用（任何命令都返回
