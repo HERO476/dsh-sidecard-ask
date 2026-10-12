@@ -382,6 +382,24 @@ report.equal(byTag(badTree, 'a').length, 0, 'a javascript:/data: URL never becom
 report.ok(textOf(badTree).includes('javascript:alert(1)'), 'the unsafe link stays as visible text')
 report.equal(byTag(badTree, 'code').length + byTag(mdTree, 'code').length >= 1, true, 'inline code still renders')
 
+// P0-4: fenced code blocks get their own copy button. The block keeps its
+// dsa-pre styling and the exact code text; the button is icon-only with an
+// accessible label and closes over the code (never re-reads the DOM).
+const fenceTree = asTree(pure.renderRichText('前文\n\n```js\nconst a = 1\nconsole.log(a)\n```\n\n后文'))
+const wraps = byClass(fenceTree, 'dsa-pre-wrap')
+report.equal(wraps.length, 1, 'a fenced block renders inside a dsa-pre-wrap')
+report.equal(byClass(fenceTree, 'dsa-pre').length, 1, 'the fenced block keeps its dsa-pre element')
+const copyButtons = byClass(fenceTree, 'dsa-code-copy')
+report.equal(copyButtons.length, 1, 'the fenced block renders exactly one copy button')
+report.equal(copyButtons[0]?.type, 'button', 'the copy control is a real button')
+report.equal(copyButtons[0]?.props?.['aria-label'], '复制代码', 'the copy button is labelled for screen readers')
+report.equal(copyButtons[0]?.props?.title, '复制代码', 'the copy button carries its tooltip')
+report.ok(typeof copyButtons[0]?.props?.onClick === 'function', 'the copy button wires a click handler')
+report.ok(textOf(fenceTree).includes('const a = 1'), 'the code text stays visible next to the button')
+report.ok(textOf(fenceTree).includes('前文') && textOf(fenceTree).includes('后文'), 'prose around the fenced block survives')
+const twoFences = asTree(pure.renderRichText('```\na\n```\n\n```\nb\n```'))
+report.equal(byClass(twoFences, 'dsa-code-copy').length, 2, 'each fenced block gets its own copy button')
+
 report.ok(prompt.includes('```text'), 'host fences the selection as data')
 
 const mainPrompt = pure.composeMainPrompt('line1\nline2', '为什么？', 'chat', 1000)
@@ -404,6 +422,161 @@ report.ok(
   !pure.matchesShortcut({ key: 'q', altKey: false, ctrlKey: false, shiftKey: false, metaKey: false }, shortcut),
   'a bare Q does not match',
 )
+
+console.log('\nquick actions')
+// P0-1/P0-2: one-click quick actions. The config list is language-neutral
+// (builtin ids only); the client resolves labels/questions in the active
+// language. Disabled/unknown/malformed entries never reach a chip.
+{
+  const resolved = pure.quickActionsOf(pure.CLIENT_DEFAULTS)
+  report.equal(resolved.length, 5, 'the five built-in quick actions resolve enabled')
+  report.equal(resolved.map(action => action.label).join('/'), '解释/翻译/总结/润色/纠错', 'built-in labels resolve in zh')
+  report.ok(resolved.every(action => action.question.length > 0 && typeof action.shortcut === 'string'), 'every built-in carries a question and a shortcut slot')
+  report.ok(resolved.every(action => action.builtin === true), 'default entries are marked built-in')
+
+  const edited = pure.quickActionsOf({
+    quickActions: [
+      { id: 'builtin:explain', enabled: true },
+      { id: 'builtin:translate', enabled: false },
+      { id: 'builtin:does-not-exist', enabled: true },
+      { id: 'custom:mine', label: '英译中', question: 'Translate {selection}', enabled: true, shortcut: 'Alt+T' },
+      { id: 'custom:broken', enabled: true },
+      null,
+    ],
+  })
+  report.equal(edited.length, 2, 'disabled, unknown-builtin and malformed custom entries are skipped')
+  report.equal(edited[0].id, 'builtin:explain', 'the enabled builtin survives')
+  report.equal(edited[1].id, 'custom:mine', 'the well-formed custom action survives')
+  report.equal(edited[1].builtin, false, 'custom actions are marked non-builtin')
+  report.equal(
+    pure.quickActionsOf({ quickActions: 'nope' }).length,
+    0,
+    'a non-array quickActions config renders no chips',
+  )
+
+  // {selection} substitution: with the placeholder the cut selection is
+  // embedded; without it the question goes through verbatim (the Host fences
+  // the selection separately).
+  const custom = edited[1]
+  report.equal(
+    pure.renderActionQuestion(custom, 'SOURCE', 1000),
+    'Translate SOURCE',
+    '{selection} is replaced by the selected text',
+  )
+  const longText = '一'.repeat(50)
+  const rendered = pure.renderActionQuestion({ question: '译：{selection}' }, longText, 20)
+  report.ok(rendered.includes('已省略中间'), 'an over-long embedded selection is truncated and marked')
+  report.ok(rendered.startsWith('译：'), 'the template prefix is kept around the embedded selection')
+  report.equal(
+    pure.renderActionQuestion({ question: '解释这段' }, 'S', 1000),
+    '解释这段',
+    'a template without {selection} is sent unchanged',
+  )
+
+  // Draft validation (settings page pre-flight).
+  report.equal(pure.validateQuickActionsDraft(pure.CLIENT_DEFAULTS.quickActions, 'Alt+Q').ok, true, 'the default list validates')
+  report.equal(pure.validateQuickActionsDraft('x', 'Alt+Q').ok, false, 'a non-array draft fails validation')
+  report.equal(
+    pure.validateQuickActionsDraft(Array.from({ length: 13 }, (_, i) => ({ id: `c${i}`, label: 'L', question: 'Q' })), 'Alt+Q').key,
+    'qaTooMany',
+    'more than 12 actions is refused',
+  )
+  report.equal(
+    pure.validateQuickActionsDraft([{ id: 'c1', label: '', question: 'Q' }], 'Alt+Q').key,
+    'qaBadLabel',
+    'an empty custom label is refused',
+  )
+  report.equal(
+    pure.validateQuickActionsDraft([{ id: 'c1', label: 'L', question: '' }], 'Alt+Q').key,
+    'qaBadQuestion',
+    'an empty custom question is refused',
+  )
+  report.equal(
+    pure.validateQuickActionsDraft([{ id: 'builtin:explain', shortcut: 'Bogus+Q' }], 'Alt+Q').key,
+    'qaBadShortcut',
+    'an unparseable action shortcut is refused',
+  )
+  report.equal(
+    pure.validateQuickActionsDraft([
+      { id: 'builtin:explain', shortcut: 'Alt+Q' },
+    ], 'Alt+Q').key,
+    'qaDuplicateShortcut',
+    'an action shortcut colliding with the main shortcut is refused',
+  )
+  report.equal(
+    pure.validateQuickActionsDraft([
+      { id: 'builtin:explain', shortcut: 'Alt+T' },
+      { id: 'builtin:translate', shortcut: 'Alt+T' },
+    ], 'Alt+Q').key,
+    'qaDuplicateShortcut',
+    'two actions sharing one shortcut are refused',
+  )
+  report.equal(
+    pure.validateQuickActionsDraft([
+      { id: 'builtin:explain', shortcut: 'Alt+T' },
+      { id: 'builtin:translate', shortcut: 'alt+t' },
+    ], 'Alt+Q').key,
+    'qaDuplicateShortcut',
+    'shortcut collisions are case-insensitive (Alt+T vs alt+t)',
+  )
+  report.equal(
+    typeof pure.shortcutFingerprint('Alt+T'),
+    'string',
+    'shortcut fingerprints are canonical strings',
+  )
+}
+
+// Host-side structural validation of the same list.
+{
+  const hostProblems = []
+  const good = host.sanitizeQuickActions([
+    { id: 'builtin:explain', enabled: false },
+    { id: 'custom:x', label: 'L', question: 'Q', shortcut: 'Alt+T', extra: 'dropped' },
+  ], hostProblems)
+  report.equal(Array.isArray(good) && good.length, 2, 'the host accepts a well-formed quickActions list')
+  report.equal(good[0].enabled, false, 'the host keeps the enabled flag')
+  report.equal(good[1].extra, undefined, 'unknown entry fields are dropped by the host')
+  report.equal(hostProblems.length, 0, 'a good list records no problems')
+  for (const bad of [
+    null,
+    [{ id: 'custom:x' }],
+    [{ id: '' }],
+    Array.from({ length: 13 }, (_, i) => ({ id: `c${i}`, label: 'L', question: 'Q' })),
+  ]) {
+    const problems = []
+    report.equal(host.sanitizeQuickActions(bad, problems), undefined, `the host rejects a malformed list (${JSON.stringify(bad).slice(0, 30)})`)
+    report.ok(problems.length > 0, 'the rejection records a human-readable problem')
+  }
+  const layerProblems = []
+  const layer = host.sanitizeLayer({ quickActions: [{ id: 'custom:y', label: 'Y', question: 'Why?' }] }, layerProblems)
+  report.equal(layer.quickActions?.[0]?.id, 'custom:y', 'sanitizeLayer carries a valid quickActions list')
+  const badLayerProblems = []
+  const badLayer = host.sanitizeLayer({ quickActions: 42 }, badLayerProblems)
+  report.equal(badLayer.quickActions, undefined, 'sanitizeLayer drops a non-array quickActions value')
+  report.ok(badLayerProblems.length > 0, 'sanitizeLayer reports the dropped quickActions value')
+}
+
+// English resolution: the same built-in ids carry English labels/questions.
+{
+  const enQuickClient = loadClientModule({
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, value: {} }) }),
+    language: 'en',
+  })
+  const enQuickPure = enQuickClient.module.api.pure
+  const enResolved = enQuickPure.quickActionsOf(enQuickPure.CLIENT_DEFAULTS.quickActions)
+  report.equal(enResolved.map(action => action.label).join('/'), 'Explain/Translate/Summarize/Polish/Proofread', 'built-in labels resolve in en')
+  report.ok(enResolved[0].question.includes('passage'), 'built-in questions resolve in en')
+  // Some qa* keys are read through a dynamic t(result.key), invisible to
+  // verify.mjs's literal scan — pin whole-dictionary parity instead.
+  report.equal(
+    Object.keys(enQuickPure.dict.zh).sort().join(','),
+    Object.keys(enQuickPure.dict.en).sort().join(','),
+    'zh/en dictionaries carry exactly the same key set',
+  )
+  for (const key of Object.keys(enQuickPure.dict.en)) {
+    report.ok(enQuickPure.dict.en[key] !== '' && enQuickPure.dict.zh[key] !== '', `dictionary entry "${key}" is non-empty in both languages`)
+  }
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // 5. client registrations and rendering
@@ -459,7 +632,7 @@ const styleText = styleNode?.children?.join('') ?? ''
 report.ok(styleText.includes('-webkit-app-region:no-drag'), 'the stylesheet declares the window-drag guard')
 const guardRule = styleText.split('\n').find(line => line.includes('-webkit-app-region:no-drag') && line.includes('.dsa-')) ?? ''
 report.ok(guardRule !== '', 'the guard exists as a real rule, not only inside the comment')
-for (const root of ['dsa-layer', 'dsa-trigger', 'dsa-pop', 'dsa-card', 'dsa-toast', 'dsa-settings']) {
+for (const root of ['dsa-layer', 'dsa-trigger', 'dsa-quickbar', 'dsa-pop', 'dsa-card', 'dsa-toast', 'dsa-settings']) {
   report.ok(guardRule.includes(`.${root}`), `the drag guard covers .${root}`)
 }
 report.ok(styleText.includes('pointer-events:none'), 'the overlay layer itself stays click-through')
@@ -505,7 +678,24 @@ const settingsSelects = byTag(settingsTree, 'select')
 const providerSelectNode = settingsSelects.find(node => (node.children ?? []).some(
   option => option?.props?.value === 'spawn'))
 report.ok(providerSelectNode !== undefined, 'the provider picker offers the providers /state reported (spawn)')
-report.equal(providerSelectNode?.props?.value, 'auto', 'the provider picker defaults to auto')
+report.equal(providerSelectNode?.props.value, 'auto', 'the provider picker defaults to auto')
+
+// P0-2: the quick-action editor renders the five built-in rows plus the
+// add-custom-action control and the {selection} hint.
+report.ok(settingsText.includes('快捷动作'), 'settings page renders the quick-action section')
+report.ok(settingsText.includes('{selection}'), 'settings page documents the {selection} placeholder')
+const qaRows = byClass(settingsTree, 'dsa-qa-row')
+report.equal(qaRows.length, 5, 'the editor shows one row per default quick action')
+for (const label of ['解释', '翻译', '总结', '润色', '纠错']) {
+  report.ok(settingsText.includes(label), `the editor lists the built-in "${label}" action`)
+}
+report.ok(settingsText.includes('内置'), 'built-in rows carry the built-in badge')
+report.ok(settingsText.includes('＋ 添加动作'), 'the editor offers an add-action button')
+let qaChecks = 0
+for (const row of qaRows) {
+  qaChecks += byTag(row, 'input').filter(node => node.props.type === 'checkbox').length
+}
+report.equal(qaChecks, 5, 'each built-in row carries an enable checkbox')
 
 const probeTree = expandTree(loadedClient.shim.React.createElement(probe.component, { sessionId: 'session-beta' }))
 report.equal(probeTree, null, 'session probe renders nothing (no layout impact)')
@@ -517,6 +707,74 @@ report.equal(
   'dsh-sidecard-ask',
   'host still healthy after the client render pass',
 )
+
+// P0-1: with a selection raised, the trigger BAR (main button + chips)
+// renders, and the same chips show inside the popover for Alt+Q users.
+{
+  const mainActions = overlay.component().props.actions
+  const candidate = {
+    text: '一段被选中的聊天内容，值得解释一下。',
+    rect: { left: 12, top: 12, right: 320, bottom: 34, width: 308, height: 22 },
+    zone: 'chat',
+    cross: false,
+    slotPath: ['conversation.chat.node'],
+    kind: 'text',
+  }
+  mainActions.openPopover(candidate)
+  const popoverWithChips = expandTree(overlay.component())
+  report.equal(byClass(popoverWithChips, 'dsa-pop-chips').length, 1, 'the popover renders a chip row')
+  report.equal(byClass(popoverWithChips, 'dsa-chip').length, 5, 'the popover shows all five built-in chips')
+  for (const label of ['解释', '翻译', '总结', '润色', '纠错']) {
+    report.ok(textOf(popoverWithChips).includes(label), `the popover offers the "${label}" chip`)
+  }
+  mainActions.closePopover()
+  const idleAgain = expandTree(overlay.component())
+  report.equal(byClass(idleAgain, 'dsa-quickbar').length, 0, 'closing the popover leaves no trigger bar without a selection')
+
+  // Drive the real selectionchange → evaluate() path with a synthetic DOM
+  // selection in a conversation slot: the in-place trigger BAR (main button
+  // + chips, no popover) must render beside it.
+  const chatElement = {
+    nodeType: 1,
+    tagName: 'DIV',
+    parentElement: null,
+    getAttribute(name) { return name === 'data-slot' ? 'conversation.chat.node' : null },
+    closest() { return null },
+  }
+  const chatTextNode = { nodeType: 3, parentElement: chatElement }
+  const previousGetSelection = loadedClient.window.getSelection
+  loadedClient.window.getSelection = () => ({
+    rangeCount: 1,
+    isCollapsed: false,
+    toString() { return '选中的聊天文本，需要解释。' },
+    anchorNode: chatTextNode,
+    focusNode: chatTextNode,
+    getRangeAt() {
+      return {
+        getBoundingClientRect() {
+          return { left: 10, top: 10, right: 200, bottom: 30, width: 190, height: 20 }
+        },
+        getClientRects() { return [] },
+      }
+    },
+  })
+  for (const listener of loadedClient.listeners.get('selectionchange') ?? []) listener()
+  await new Promise(resolve => setTimeout(resolve, 170))
+  const barTree = expandTree(overlay.component())
+  report.equal(byClass(barTree, 'dsa-quickbar').length, 1, 'a selection raises the in-place trigger bar')
+  report.equal(byClass(barTree, 'dsa-pop').length, 0, 'the bar renders without opening the popover')
+  report.equal(byClass(barTree, 'dsa-trigger').length, 1, 'the bar contains the main trigger button')
+  report.equal(byClass(barTree, 'dsa-chip').length, 5, 'the bar offers the five built-in chips')
+  // Chip title carries the instruction text, so hover reveals what fires.
+  const explainChip = byClass(barTree, 'dsa-chip').find(node => textOf(node) === '解释')
+  report.ok(typeof explainChip?.props?.title === 'string' && explainChip.props.title.length > 0, 'a chip carries its question as its title')
+  // Clearing the selection removes the bar again.
+  loadedClient.window.getSelection = previousGetSelection
+  for (const listener of loadedClient.listeners.get('selectionchange') ?? []) listener()
+  await new Promise(resolve => setTimeout(resolve, 170))
+  const clearedTree = expandTree(overlay.component())
+  report.equal(byClass(clearedTree, 'dsa-quickbar').length, 0, 'the bar disappears once the selection is cleared')
+}
 
 console.log('\nreasoning reach')
 // A2: reasoning used to stream over the wire and land in the store but had
@@ -596,6 +854,80 @@ report.ok(
   byTag(reasoningTree, 'details').length === 1,
   'a card with no reasoning history still renders exactly one reasoning block',
 )
+
+console.log('\nquick-action end to end')
+// P0-1: a chip click goes straight to a side card with the builtin question,
+// no popover; a custom {selection} template embeds the source text.
+{
+  const qaCandidate = {
+    text: '需要被快速处理的一段原文',
+    rect: { left: 10, top: 10, right: 300, bottom: 32, width: 290, height: 22 },
+    zone: 'chat',
+    cross: false,
+    slotPath: ['conversation.chat.node'],
+    kind: 'text',
+  }
+  const explain = reasoningClient.module.api.pure.quickActionsOf(
+    reasoningClient.module.api.snapshot().config)[0]
+  report.equal(explain.id, 'builtin:explain', 'the first resolved action is explain')
+  reasoningActions.quickAsk(qaCandidate, explain)
+  await new Promise(resolve => setTimeout(resolve, 150))
+  const afterQuick = reasoningClient.module.api.snapshot().cards
+  report.equal(afterQuick.length, 2, 'quickAsk creates one more card')
+  const quickCard = afterQuick[0]
+  report.equal(quickCard.carrier, 'side', 'a quick action always answers in a side card')
+  report.equal(quickCard.question, pure.dict.zh.qaExplainQ, 'the card carries the builtin question')
+  report.equal(quickCard.status, 'done', 'the quick-action answer completed')
+  report.ok(quickCard.text.includes('答案文本'), 'the quick-action answer streamed into the card')
+  const startsBefore = reasoningEngine.starts.length
+  reasoningActions.quickAsk(qaCandidate, {
+    id: 'custom:e2e',
+    label: '自定义翻译',
+    question: '请翻译这句：{selection}',
+    shortcut: '',
+    builtin: false,
+  })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  const afterCustom = reasoningClient.module.api.snapshot().cards
+  const customCard = afterCustom[0]
+  report.ok(customCard.question.includes('请翻译这句：需要被快速处理的一段原文'), '{selection} is embedded in the custom question')
+  report.equal(reasoningEngine.starts.length, startsBefore + 1, 'the custom action started one child answer')
+  const customPrompt = reasoningEngine.promptOf(reasoningEngine.starts.length - 1)
+  report.equal(afterCustom.length, 3, 'the custom action created its own card (two quick asks + one submit)')
+  report.ok(customPrompt.includes('需要被快速处理的一段原文'), 'the child prompt carries the selection')
+  report.ok(customPrompt.includes('请翻译这句：需要被快速处理的一段原文'), 'the child prompt carries the rendered question')
+
+  // P0-3: edit the question and regenerate the SAME turn (history untouched).
+  const beforeRetryHistoryLength = quickCard.history.length
+  const cardsBeforeRetry = reasoningClient.module.api.snapshot().cards.length
+  reasoningActions.retryEdit(quickCard, '这是改后的问题吗？')
+  await new Promise(resolve => setTimeout(resolve, 150))
+  const retried = reasoningClient.module.api.snapshot().cards.find(item => item.id === quickCard.id)
+  report.equal(retried.question, '这是改后的问题吗？', 'retryEdit replaces the question on the same card')
+  report.equal(retried.status, 'done', 'the edited question re-ran and completed')
+  report.equal(retried.history.length, beforeRetryHistoryLength, 'retryEdit regenerates the turn; it does not append history')
+  report.ok(retried.text.includes('答案文本'), 'the regenerated answer streamed in')
+  report.equal(
+    reasoningClient.module.api.snapshot().cards.length,
+    cardsBeforeRetry,
+    'retryEdit reuses the card instead of creating one',
+  )
+  // An empty edited question is a no-op.
+  const cardsBeforeEmpty = reasoningClient.module.api.snapshot().cards.length
+  reasoningActions.retryEdit(retried, '   ')
+  report.equal(
+    reasoningClient.module.api.snapshot().cards.length,
+    cardsBeforeEmpty,
+    'a blank edited question does nothing',
+  )
+
+  // A done side card shows the edit-retry entry in its footer.
+  const retriedTree = expandTree(reasoningOverlay.component())
+  const buttons = byTag(retriedTree, 'button').map(node => textOf(node))
+  report.ok(buttons.includes('改问'), 'the finished card offers the edit-&-retry button')
+  report.ok(buttons.includes('复制'), 'the finished card keeps its copy button')
+  report.ok(buttons.includes('继续追问'), 'the finished card keeps follow-up')
+}
 
 console.log('\nstream coalescing')
 // B9: every streamed delta used to commit the store on arrival, and every

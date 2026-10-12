@@ -42,7 +42,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.6.0'
+export const PLUGIN_VERSION = '1.7.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -83,6 +83,32 @@ export const DEFAULT_CONFIG = {
   floatMode: 'capsule',
   /** Hard cap, in CSS px, for the floating layer's width. */
   floatMaxWidth: 340,
+  /**
+   * One-click quick actions rendered beside the selection trigger.
+   *
+   * Each entry is `{id, enabled, shortcut}`: the five `builtin:*` ids resolve
+   * their localized label/question on the Client (the Host stays language
+   * neutral); custom entries additionally carry `label` and `question`, and
+   * the question may embed a `{selection}` placeholder. The user layer
+   * REPLACES this list wholesale (the settings page edits the full list),
+   * which is why it can stay a plain JSON array with no merge semantics.
+   */
+  quickActions: [
+    { id: 'builtin:explain', enabled: true, shortcut: '' },
+    { id: 'builtin:translate', enabled: true, shortcut: '' },
+    { id: 'builtin:summarize', enabled: true, shortcut: '' },
+    { id: 'builtin:polish', enabled: true, shortcut: '' },
+    { id: 'builtin:fix', enabled: true, shortcut: '' },
+  ],
+}
+
+/** Bounds for the `quickActions` user layer (defense in depth). */
+const QUICK_ACTION_LIMITS = {
+  maxEntries: 12,
+  idLength: 40,
+  labelLength: 20,
+  questionLength: 500,
+  shortcutLength: 40,
 }
 
 /**
@@ -165,6 +191,85 @@ function clampNumber(value, min, max) {
 }
 
 /**
+ * Coerce one raw `quickActions` layer into a known-good list.
+ *
+ * The list is validated ALL-OR-NOTHING: a single malformed entry rejects the
+ * whole key (and `/config` answers 400), so the settings page can never
+ * silently save a half-edited list. Bounds mirror the Client's own
+ * `QUICK_ACTION_LIMITS`; structural validity only — the Host neither knows
+ * the builtin catalog nor interprets `question` text.
+ * @param {unknown} raw - the candidate array.
+ * @param {string[]} problems - collector for human-readable notes.
+ * @returns {Array<object>|undefined} the sanitized list, or undefined when
+ *   the key is absent/unusable (undefined = "do not override", a present but
+ *   bad array is reported and dropped).
+ */
+export function sanitizeQuickActions(raw, problems = []) {
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw)) {
+    problems.push('quickActions: 必须是数组，已忽略')
+    return undefined
+  }
+  if (raw.length > QUICK_ACTION_LIMITS.maxEntries) {
+    problems.push(`quickActions: 最多 ${QUICK_ACTION_LIMITS.maxEntries} 条，已忽略`)
+    return undefined
+  }
+  const ids = new Set()
+  const list = []
+  for (const [index, entry] of raw.entries()) {
+    const where = `quickActions[${index + 1}]`
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      problems.push(`${where}: 必须是对象，已忽略整份快捷动作配置`)
+      return undefined
+    }
+    const id = entry.id
+    if (typeof id !== 'string' || id.trim() === '' || id.length > QUICK_ACTION_LIMITS.idLength) {
+      problems.push(`${where}: id 缺失或超长（≤${QUICK_ACTION_LIMITS.idLength} 字符），已忽略整份快捷动作配置`)
+      return undefined
+    }
+    if (ids.has(id)) {
+      problems.push(`${where}: id "${id}" 重复，已忽略整份快捷动作配置`)
+      return undefined
+    }
+    ids.add(id)
+    const shortcut = entry.shortcut
+    if (shortcut !== undefined && (typeof shortcut !== 'string' || shortcut.length > QUICK_ACTION_LIMITS.shortcutLength)) {
+      problems.push(`${where}: shortcut 必须是 ≤${QUICK_ACTION_LIMITS.shortcutLength} 字符的字符串，已忽略整份快捷动作配置`)
+      return undefined
+    }
+    const safe = {
+      id,
+      enabled: entry.enabled === undefined ? true : Boolean(entry.enabled),
+      shortcut: typeof shortcut === 'string' ? shortcut : '',
+    }
+    // `builtin:*` ids resolve on the Client; anything else is a custom action
+    // and MUST carry its own label/question. The prefix is reserved so a user
+    // layer can never shadow a builtin with a malicious look-alike entry.
+    const isBuiltin = id.startsWith('builtin:')
+    if (isBuiltin && id === 'builtin:') {
+      problems.push(`${where}: 内置动作 id 不能为空，已忽略整份快捷动作配置`)
+      return undefined
+    }
+    if (!isBuiltin) {
+      const label = entry.label
+      const question = entry.question
+      if (typeof label !== 'string' || label.trim() === '' || label.length > QUICK_ACTION_LIMITS.labelLength) {
+        problems.push(`${where}: 自定义动作 label 缺失或超长（1–${QUICK_ACTION_LIMITS.labelLength} 字符），已忽略整份快捷动作配置`)
+        return undefined
+      }
+      if (typeof question !== 'string' || question.trim() === '' || question.length > QUICK_ACTION_LIMITS.questionLength) {
+        problems.push(`${where}: 自定义动作 question 缺失或超长（1–${QUICK_ACTION_LIMITS.questionLength} 字符），已忽略整份快捷动作配置`)
+        return undefined
+      }
+      safe.label = label
+      safe.question = question
+    }
+    list.push(safe)
+  }
+  return list
+}
+
+/**
  * Coerce one raw config layer into a known-good shape.
  * Unknown keys are dropped; out-of-range values fall back, and every
  * correction is recorded so `/state` can report it instead of hiding it.
@@ -199,6 +304,10 @@ export function sanitizeLayer(raw, problems = []) {
   if (raw.showInUnclassified !== undefined) {
     if (typeof raw.showInUnclassified === 'boolean') out.showInUnclassified = raw.showInUnclassified
     else problems.push('showInUnclassified: 必须是布尔值，已忽略')
+  }
+  if (raw.quickActions !== undefined) {
+    const list = sanitizeQuickActions(raw.quickActions, problems)
+    if (list !== undefined) out.quickActions = list
   }
   return out
 }

@@ -316,6 +316,49 @@ report.equal(reset.status, 200, '/reset answers ok')
 report.equal(reset.json().value.config.maxChars, 4000, '/reset restores the patch layer')
 report.equal(JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).maxChars, undefined, 'the user layer is emptied on disk')
 
+// quickActions: a bounded structured list. A valid list (one disabled builtin
+// + one custom action) persists and takes effect; malformed lists are refused
+// wholesale with invalid-config (the user layer must never half-save).
+const qaValid = [
+  { id: 'builtin:explain', enabled: false, shortcut: '' },
+  { id: 'custom:demo', label: '英译中', question: 'Translate: {selection}', enabled: true, shortcut: 'Alt+T' },
+]
+const qaSaved = await callRoute(restarted.harness, '/config', { body: { quickActions: qaValid } })
+report.equal(qaSaved.status, 200, 'a valid quickActions list is accepted')
+const qaConfig = qaSaved.json().value.config.quickActions
+report.equal(Array.isArray(qaConfig) && qaConfig.length, 2, 'the accepted list keeps both entries')
+report.equal(qaConfig[0].enabled, false, 'a disabled builtin keeps its enabled flag')
+report.equal(qaConfig[1].label, '英译中', 'a custom action keeps its label')
+report.equal(qaConfig[1].question, 'Translate: {selection}', 'a custom action keeps its question template')
+report.equal(
+  JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).quickActions?.[1]?.id,
+  'custom:demo',
+  'the quickActions list is written to the persisted user layer',
+)
+for (const [name, badList] of [
+  ['custom entry without label/question', [{ id: 'custom:broken' }]],
+  ['a non-array value', { id: 'builtin:explain' }],
+  ['more than 12 entries', Array.from({ length: 13 }, (_, i) => ({ id: `custom:x${i}`, label: 'L', question: 'Q' }))],
+  ['a duplicated id', [{ id: 'custom:d', label: 'A', question: 'Q' }, { id: 'custom:d', label: 'B', question: 'Q' }]],
+  ['an over-long label', [{ id: 'custom:long', label: 'x'.repeat(21), question: 'Q' }]],
+]) {
+  const bad = await callRoute(restarted.harness, '/config', { body: { quickActions: badList } })
+  report.equal(bad.status, 400, `quickActions validation refuses ${name}`)
+  report.equal(bad.json().error.code, 'invalid-config', `the refusal for ${name} carries invalid-config`)
+}
+// A refused list must not have touched the persisted layer (all-or-nothing).
+report.equal(
+  JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).quickActions?.length,
+  2,
+  'a refused quickActions save leaves the previous list intact',
+)
+const qaReset = await callRoute(restarted.harness, '/reset', { body: {} })
+report.equal(
+  qaReset.json().value.config.quickActions.filter(entry => entry.enabled !== false).length,
+  5,
+  '/reset restores the five enabled built-in quick actions',
+)
+
 // ────────────────────────────────────────────────────────────────────────────
 // 6. failure modes the client renders
 // ────────────────────────────────────────────────────────────────────────────

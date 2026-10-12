@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.6.0'
+    const CLIENT_VERSION = '1.7.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -98,6 +98,42 @@ window.__ModuleLoader__.load({
       sideProvider: 'auto',
       floatMode: 'capsule',
       floatMaxWidth: 340,
+      // Mirrors the Host's DEFAULT_CONFIG.quickActions (contract-asserted):
+      // `builtin:*` entries are resolved through QUICK_ACTION_BUILTINS, while
+      // custom entries (no builtin prefix) carry their own label/question.
+      quickActions: [
+        { id: 'builtin:explain', enabled: true, shortcut: '' },
+        { id: 'builtin:translate', enabled: true, shortcut: '' },
+        { id: 'builtin:summarize', enabled: true, shortcut: '' },
+        { id: 'builtin:polish', enabled: true, shortcut: '' },
+        { id: 'builtin:fix', enabled: true, shortcut: '' },
+      ],
+    }
+
+    /**
+     * Bounds for quick-action editing, mirrored by the Host validator. The
+     * settings page refuses anything outside these before it ever posts.
+     */
+    const QUICK_ACTION_LIMITS = {
+      maxEntries: 12,
+      idLength: 40,
+      labelLength: 20,
+      questionLength: 500,
+      shortcutLength: 40,
+    }
+
+    /**
+     * Built-in quick actions. The config list only carries `builtin:<id>`;
+     * the localized label and question live HERE so the wire/config layers
+     * stay language-neutral. Questions are instructions only — the Host
+     * fences the selection separately, so none of them needs to quote text.
+     */
+    const QUICK_ACTION_BUILTINS = {
+      'builtin:explain': { labelKey: 'qaExplain', questionKey: 'qaExplainQ' },
+      'builtin:translate': { labelKey: 'qaTranslate', questionKey: 'qaTranslateQ' },
+      'builtin:summarize': { labelKey: 'qaSummarize', questionKey: 'qaSummarizeQ' },
+      'builtin:polish': { labelKey: 'qaPolish', questionKey: 'qaPolishQ' },
+      'builtin:fix': { labelKey: 'qaFix', questionKey: 'qaFixQ' },
     }
 
     /** Zone classification: slot-key patterns the harness itself renders. */
@@ -298,6 +334,39 @@ window.__ModuleLoader__.load({
         familyLegacyToast: '检测到旧版 dsh-selection-followup 同时启用，已由本版本接管；建议卸载旧包',
         familyLegacyDiag: '旧版共载',
         familyPeers: '同页实例',
+        retryEdit: '改问',
+        editQuestionPlaceholder: '修改问题后重新提问…',
+        retryAskSubmit: '重新提问',
+        copyCode: '复制代码',
+        qaExplain: '解释',
+        qaExplainQ: '请用简洁的语言解释这段内容的含义。',
+        qaTranslate: '翻译',
+        qaTranslateQ: '请把这段内容翻译成中文；如果原文已经是中文，则翻译成英文。只输出译文，不要加解释。',
+        qaSummarize: '总结',
+        qaSummarizeQ: '请用简短的要点总结这段内容。',
+        qaPolish: '润色',
+        qaPolishQ: '请润色这段文字：保持原意、修正语病与不通顺之处，只输出润色后的内容。',
+        qaFix: '纠错',
+        qaFixQ: '请检查这段内容中的事实性、逻辑性与文字错误，逐条列出问题并给出修正建议。',
+        setQuickActions: '快捷动作',
+        setQuickActionsHint: '选中文字后显示的一键动作。自定义问题中的 {selection} 会替换为选中内容；不写占位符时，原文会随问题自动附上。',
+        qaEnabled: '启用',
+        qaAdd: '＋ 添加动作',
+        qaDelete: '删除',
+        qaBuiltinBadge: '内置',
+        qaLabelPlaceholder: '动作名称（如：英译中）',
+        qaQuestionPlaceholder: '问题指令，可用 {selection} 引用选中内容',
+        qaShortcutPlaceholder: '如 Alt+T，留空表示无快捷键',
+        qaTooMany: '快捷动作最多 {n} 条',
+        qaMalformed: '存在格式不正确的动作',
+        qaBadId: '动作 id 缺失或超长',
+        qaDuplicateId: '存在重复的动作 id',
+        qaBadLabel: '动作名称必填，且不超过 {n} 个字符',
+        qaBadQuestion: '问题指令必填，且不超过 {n} 个字符',
+        qaBadShortcut: '“{label}”的快捷键格式不正确，请用 Alt+Q 这样的写法',
+        qaDuplicateShortcut: '“{label}”的快捷键与“{other}”冲突',
+        familyLegacyDiag: '旧版共载',
+        familyPeers: '同页实例',
       },
       en: {
         triggerLabel: 'Ask about selection',
@@ -438,6 +507,37 @@ window.__ModuleLoader__.load({
         familyLegacyToast: 'Legacy dsh-selection-followup detected alongside this plugin; this build took over. Uninstall the old package.',
         familyLegacyDiag: 'Legacy co-load',
         familyPeers: 'Copies on page',
+        retryEdit: 'Edit & retry',
+        editQuestionPlaceholder: 'Edit the question, then ask again…',
+        retryAskSubmit: 'Ask again',
+        copyCode: 'Copy code',
+        qaExplain: 'Explain',
+        qaExplainQ: 'Explain what this passage means, concisely.',
+        qaTranslate: 'Translate',
+        qaTranslateQ: 'Translate this passage into English; if it is already in English, translate it into Chinese. Output the translation only, with no explanation.',
+        qaSummarize: 'Summarize',
+        qaSummarizeQ: 'Summarize the key points of this passage briefly.',
+        qaPolish: 'Polish',
+        qaPolishQ: 'Polish this text: keep the original meaning, fix grammar and awkward phrasing, and output only the polished version.',
+        qaFix: 'Proofread',
+        qaFixQ: 'Check this passage for factual, logical, and writing errors. List each issue with a suggested fix.',
+        setQuickActions: 'Quick actions',
+        setQuickActionsHint: 'One-click actions shown after selecting text. In a custom question, {selection} is replaced by the selected text; without it, the source text is attached automatically.',
+        qaEnabled: 'On',
+        qaAdd: '＋ Add action',
+        qaDelete: 'Delete',
+        qaBuiltinBadge: 'built-in',
+        qaLabelPlaceholder: 'Action name (e.g. EN→ZH)',
+        qaQuestionPlaceholder: 'Question; use {selection} for the selected text',
+        qaShortcutPlaceholder: 'e.g. Alt+T; blank for none',
+        qaTooMany: 'At most {n} quick actions',
+        qaMalformed: 'A malformed action exists',
+        qaBadId: 'An action id is missing or too long',
+        qaDuplicateId: 'Duplicate action ids exist',
+        qaBadLabel: 'Action names are required and at most {n} characters',
+        qaBadQuestion: 'Questions are required and at most {n} characters',
+        qaBadShortcut: 'The shortcut for "{label}" is invalid; use a form like Alt+Q',
+        qaDuplicateShortcut: 'The shortcut for "{label}" conflicts with "{other}"',
       },
     }
 
@@ -1028,6 +1128,134 @@ window.__ModuleLoader__.load({
         && event.metaKey === facts.meta
     }
 
+    /**
+     * Resolve the configured quick actions into renderable, ENABLED entries.
+     * The Host validator keeps a saved list well-formed; this is the
+     * render-time guard for an in-memory/edited draft: unknown `builtin:*`
+     * ids and custom entries missing label/question are skipped.
+     * @param {object|Array} configOrList - the effective config or a raw list.
+     * @returns {Array<{id:string,label:string,question:string,shortcut:string,builtin:boolean}>}
+     */
+    function quickActionsOf(configOrList) {
+      const list = Array.isArray(configOrList) ? configOrList : configOrList?.quickActions
+      if (!Array.isArray(list)) return []
+      const out = []
+      for (const entry of list) {
+        if (entry === null || typeof entry !== 'object') continue
+        if (entry.enabled === false) continue
+        const id = String(entry.id ?? '')
+        const meta = QUICK_ACTION_BUILTINS[id]
+        if (meta !== undefined) {
+          out.push({
+            id,
+            label: t(meta.labelKey),
+            question: t(meta.questionKey),
+            shortcut: typeof entry.shortcut === 'string' ? entry.shortcut : '',
+            builtin: true,
+          })
+          continue
+        }
+        // An unknown builtin id resolves to nothing the client knows.
+        if (id.startsWith('builtin:')) continue
+        if (typeof entry.label === 'string' && entry.label.trim() !== ''
+          && typeof entry.question === 'string' && entry.question.trim() !== '') {
+          out.push({
+            id,
+            label: entry.label,
+            question: entry.question,
+            shortcut: typeof entry.shortcut === 'string' ? entry.shortcut : '',
+            builtin: false,
+          })
+        }
+      }
+      return out
+    }
+
+    /**
+     * The question actually sent for one quick action. A template containing
+     * `{selection}` embeds the (truncated) selection inline; a template
+     * without it is sent as-is, because the Host fences the selection in
+     * every prompt regardless.
+     * @param {{question?: string}} action - a resolved quick action.
+     * @param {string} selection - the raw selected text.
+     * @param {number} maxChars - the selection truncation budget.
+     * @returns {string}
+     */
+    function renderActionQuestion(action, selection, maxChars) {
+      const template = String(action?.question ?? '')
+      if (!template.includes('{selection}')) return template
+      const cut = truncateSelection(String(selection ?? ''), maxChars)
+      return template.split('{selection}').join(cut.text)
+    }
+
+    /** Canonical fingerprint of an accelerator, for duplicate detection. */
+    function shortcutFingerprint(accelerator) {
+      const facts = parseShortcut(accelerator)
+      if (facts === null) return null
+      return `${facts.ctrl ? 1 : 0}|${facts.alt ? 1 : 0}|${facts.shift ? 1 : 0}|${facts.meta ? 1 : 0}|${facts.key}`
+    }
+
+    /**
+     * Validate a settings-page quick-action draft BEFORE posting it, so the
+     * Host's all-or-nothing refusal never comes back as a surprise. Also
+     * checks that no action shortcut collides with another action or with the
+     * main popover shortcut.
+     * @param {unknown} list - the draft `quickActions` array.
+     * @param {string} mainShortcut - the configured popover shortcut.
+     * @returns {{ok: true}|{ok: false, key: string, vars?: object}}
+     */
+    function validateQuickActionsDraft(list, mainShortcut) {
+      if (!Array.isArray(list) || list.length > QUICK_ACTION_LIMITS.maxEntries) {
+        return { ok: false, key: 'qaTooMany' }
+      }
+      const ids = new Set()
+      const taken = new Map()
+      const mainFingerprint = shortcutFingerprint(mainShortcut)
+      if (mainFingerprint !== null) taken.set(mainFingerprint, '')
+      const labelOf = (entry) => {
+        const meta = QUICK_ACTION_BUILTINS[String(entry.id ?? '')]
+        return meta !== undefined ? t(meta.labelKey) : String(entry.label ?? '')
+      }
+      for (const entry of list) {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+          return { ok: false, key: 'qaMalformed' }
+        }
+        const id = String(entry.id ?? '')
+        if (id === '' || id.length > QUICK_ACTION_LIMITS.idLength) return { ok: false, key: 'qaBadId' }
+        if (ids.has(id)) return { ok: false, key: 'qaDuplicateId' }
+        ids.add(id)
+        const meta = QUICK_ACTION_BUILTINS[id]
+        const label = labelOf(entry)
+        if (meta === undefined && !id.startsWith('builtin:')) {
+          const customLabel = String(entry.label ?? '')
+          const customQuestion = String(entry.question ?? '')
+          if (customLabel.trim() === '' || customLabel.length > QUICK_ACTION_LIMITS.labelLength) {
+            return { ok: false, key: 'qaBadLabel', vars: { n: QUICK_ACTION_LIMITS.labelLength } }
+          }
+          if (customQuestion.trim() === '' || customQuestion.length > QUICK_ACTION_LIMITS.questionLength) {
+            return { ok: false, key: 'qaBadQuestion', vars: { n: QUICK_ACTION_LIMITS.questionLength } }
+          }
+        }
+        const shortcut = String(entry.shortcut ?? '').trim()
+        if (shortcut !== '') {
+          if (parseShortcut(shortcut) === null) {
+            return { ok: false, key: 'qaBadShortcut', vars: { label } }
+          }
+          const fingerprint = shortcutFingerprint(shortcut)
+          if (taken.has(fingerprint)) {
+            const owner = taken.get(fingerprint)
+            return {
+              ok: false,
+              key: 'qaDuplicateShortcut',
+              vars: { label, other: owner === '' ? t('setShortcut') : owner },
+            }
+          }
+          taken.set(fingerprint, label)
+        }
+      }
+      return { ok: true }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // §6 carriers
     // ─────────────────────────────────────────────────────────────────────
@@ -1363,7 +1591,7 @@ window.__ModuleLoader__.load({
    (\`html[data-platform] body>[data-dsh-better-sidebar]{-webkit-app-region:initial}\`
    plus \`[data-dsh-panel-host]>*{-webkit-app-region:no-drag}\`).
    Every surface we draw declares it. The property is inert in a browser. */
-.dsa-layer,.dsa-trigger,.dsa-pop,.dsa-float,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
+.dsa-layer,.dsa-trigger,.dsa-quickbar,.dsa-pop,.dsa-float,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
 .dsa-layer{pointer-events:none;position:relative;z-index:60}
 .dsa-trigger{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:4px;
   padding:4px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
@@ -1372,6 +1600,26 @@ window.__ModuleLoader__.load({
   font-family:inherit;white-space:nowrap}
 .dsa-trigger:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
 .dsa-trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4c8dff);outline-offset:1px}
+/* The one-click action bar: the trigger button plus compact chips, laid out
+   in one wrapping row under the selection. The container is positioned by the
+   component; chips keep their own pointer-events because .dsa-layer is a
+   click-through layer. */
+.dsa-quickbar{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:6px;
+  max-width:min(620px, 92vw);flex-wrap:wrap;z-index:60}
+.dsa-chip{pointer-events:auto;padding:3px 10px;border-radius:999px;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
+  font:inherit;font-size:12px;line-height:16px;cursor:pointer;white-space:nowrap;
+  box-shadow:0 2px 8px rgba(0,0,0,.14)}
+.dsa-chip:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
+.dsa-chip:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4c8dff);outline-offset:1px}
+/* Chips rendered INSIDE the popover need no floating shadow. */
+.dsa-pop-chips{display:flex;gap:6px;flex-wrap:wrap}
+.dsa-pop-chips .dsa-chip{box-shadow:none}
+/* Inside the trigger bar the main button and chips are one flex row: the
+   trigger drops its own fixed positioning, chips join the row directly. */
+.dsa-trigger-embedded{position:static;box-shadow:0 2px 10px rgba(0,0,0,.18)}
+.dsa-quickbar-chips{display:contents}
 .dsa-pop{pointer-events:auto;position:fixed;width:min(420px, 92vw);display:flex;flex-direction:column;gap:8px;
   padding:12px;border-radius:12px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
@@ -1456,6 +1704,11 @@ window.__ModuleLoader__.load({
 .dsa-table th,.dsa-table td{border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   padding:4px 8px;text-align:left;word-break:break-word;vertical-align:top}
 .dsa-table th{background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12));font-weight:600}
+.dsa-pre-wrap{position:relative;margin:0 0 6px}
+.dsa-pre-wrap .dsa-pre{margin:0}
+.dsa-code-copy{position:absolute;top:4px;right:4px;padding:1px 7px;line-height:16px;
+  font-size:12px;opacity:.72;background:var(--dsw-alias-bg-overlay, #fff)}
+.dsa-code-copy:hover,.dsa-code-copy:focus-visible{opacity:1}
 .dsa-pre{margin:0 0 6px;padding:8px;border-radius:8px;overflow:auto;
   background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12));font-size:12px;line-height:17px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -1474,6 +1727,14 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-bg-layer-1, transparent);color:inherit}
 .dsa-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .dsa-check{display:flex;align-items:center;gap:6px;font-size:12px}
+/* Quick-action editor (settings page): one wrapped row per action. */
+.dsa-qa{display:flex;flex-direction:column;gap:8px}
+.dsa-qa-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:8px;border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));border-radius:8px}
+.dsa-qa-row .dsa-input{flex:1;min-width:120px}
+.dsa-qa-question{flex-basis:100%!important;min-width:0!important}
+.dsa-qa-head{display:flex;align-items:center;gap:8px;font-size:12px;
+  color:var(--dsw-alias-label-secondary, #555)}
 .dsa-diag{display:flex;flex-direction:column;gap:2px;font-size:12px;
   color:var(--dsw-alias-label-secondary, #555)}
 /* §4.5 legacy coexistence: an unmarked dsa-layer can only be the old
@@ -1559,7 +1820,33 @@ window.__ModuleLoader__.load({
             i += 1
           }
           i += 1
-          nodes.push(h('pre', { key: `f${key++}`, className: 'dsa-pre' }, h('code', null, body.join('\n'))))
+          const code = body.join('\n')
+          // A per-block copy button: answers are code-heavy, and dragging a
+          // selection across a scrollable <pre> used to miss lines. The
+          // click closes over the code text (never re-read from the DOM), and
+          // reuses the same clipboard API → selection fallback as card copy.
+          nodes.push(h('div', { key: `f${key++}`, className: 'dsa-pre-wrap' },
+            h('pre', { className: 'dsa-pre' }, h('code', null, code)),
+            h('button', {
+              type: 'button',
+              className: 'dsa-btn dsa-btn-icon dsa-code-copy',
+              title: t('copyCode'),
+              'aria-label': t('copyCode'),
+              onClick: (event) => {
+                try {
+                  const host = event?.currentTarget ?? event?.target
+                  const wrap = typeof host?.closest === 'function' ? host.closest('.dsa-pre-wrap') : null
+                  const codeNode = wrap !== null && typeof wrap?.querySelector === 'function'
+                    ? wrap.querySelector('code')
+                    : null
+                  void copyText(code, codeNode).then((result) => {
+                    toast(result === 'copied'
+                      ? t('copied')
+                      : result === 'selected' ? t('copySelectedHint') : t('copyFailed'))
+                  })
+                } catch { /* a clipboard failure must not break the card */ }
+              },
+            }, '⧉')))
           continue
         }
         if (line.includes('|') && i + 1 < lines.length && isTableSplit(lines[i + 1])) {
@@ -1706,15 +1993,15 @@ window.__ModuleLoader__.load({
     // ─────────────────────────────────────────────────────────────────────
 
     /** The in-place trigger button floating at the selection. */
-    function TriggerButton({ candidate, onOpen }) {
+    function TriggerButton({ candidate, onOpen, embedded = false }) {
       // The clamp width follows the live label: icon + gap + padding + border
       // (~38px of chrome) plus a safety margin, over the estimated label width.
       const width = Math.ceil(estimateLabelWidth(t('triggerLabel')) + 62)
-      const box = clampBox(candidate.rect, width, 30, 'below')
+      const box = embedded ? null : clampBox(candidate.rect, width, 30, 'below')
       return h('button', {
         type: 'button',
-        className: 'dsa-trigger',
-        style: { left: `${box.left}px`, top: `${box.top}px` },
+        className: embedded ? 'dsa-trigger dsa-trigger-embedded' : 'dsa-trigger',
+        style: embedded ? undefined : { left: `${box.left}px`, top: `${box.top}px` },
         title: t('triggerHint'),
         'aria-label': `${t('triggerLabel')}：${zoneLabel(candidate)}`,
         onMouseDown: (event) => { event.preventDefault() },
@@ -1726,14 +2013,64 @@ window.__ModuleLoader__.load({
       }, h('span', { 'aria-hidden': true }, '💬'), h('span', null, t('triggerLabel')))
     }
 
+    /**
+     * Compact quick-action chips, shared by the in-place trigger bar and the
+     * popover. The trigger bar lays chips out directly (`display:contents`);
+     * the popover wraps them in its own borderless chip row.
+     */
+    function QuickChips({ actions, onPick, inline = false }) {
+      if (!Array.isArray(actions) || actions.length === 0) return null
+      return h('div', { className: inline ? 'dsa-quickbar-chips' : 'dsa-pop-chips' },
+        actions.map(action => h('button', {
+          key: action.id,
+          type: 'button',
+          className: 'dsa-chip',
+          title: typeof action.shortcut === 'string' && action.shortcut.trim() !== ''
+            ? `${action.question}\n${action.shortcut}`
+            : action.question,
+          'aria-label': `${action.label}：${action.question}`,
+          onMouseDown: (event) => { event.preventDefault() },
+          onClick: (event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onPick(action)
+          },
+        }, action.label)))
+    }
+
+    /**
+     * The in-place trigger bar: the main "ask" button followed by every
+     * enabled quick action. A chip click skips the popover entirely — the
+     * question is fixed and the answer goes straight to the side card.
+     */
+    function TriggerBar({ candidate, config, onOpen, onQuick }) {
+      const actions = quickActionsOf(config)
+      const mainWidth = Math.ceil(estimateLabelWidth(t('triggerLabel')) + 62)
+      // Rough row width for viewport clamping: main button + 6px gap + an
+      // estimate per chip (label + ~24px padding/chrome). Wrapped rows cost
+      // height, not width, so the clamp stays usable even when it wraps.
+      const chipsWidth = actions.reduce(
+        (sum, action) => sum + Math.ceil(estimateLabelWidth(action.label) + 24), 0)
+      const rowWidth = Math.min(620, mainWidth + (actions.length > 0 ? 6 + chipsWidth : 0))
+      const box = clampBox(candidate.rect, rowWidth, 34, 'below')
+      return h('div', {
+        className: 'dsa-quickbar',
+        style: { left: `${box.left}px`, top: `${box.top}px` },
+        onMouseDown: event => event.stopPropagation(),
+      },
+        h(TriggerButton, { candidate, onOpen, embedded: true }),
+        h(QuickChips, { actions, onPick: onQuick, inline: true }))
+    }
+
     /** The question popover. */
-    function AskPopover({ candidate, config, onClose, onSubmit }) {
+    function AskPopover({ candidate, config, onClose, onSubmit, onQuick }) {
       const [question, setQuestion] = React.useState('')
       const [carrier, setCarrier] = React.useState(config.defaultCarrier)
       const [busy, setBusy] = React.useState(false)
       const areaRef = React.useRef(null)
       const cut = truncateSelection(candidate.text, config.maxChars)
-      const box = clampBox(candidate.rect, 420, 260, 'below')
+      const box = clampBox(candidate.rect, 420, 300, 'below')
+      const quickActions = quickActionsOf(config)
 
       React.useEffect(() => {
         const area = areaRef.current
@@ -1780,6 +2117,10 @@ window.__ModuleLoader__.load({
         codePointLength(candidate.text) > 400
           ? `${Array.from(candidate.text).slice(0, 400).join('')}…`
           : candidate.text),
+      // Same chips as the in-place bar: shortcut-only users reach them via
+      // Alt+Q, and a click here submits directly (the popover closes because
+      // submit/quickAsk both clear `popover`).
+      h(QuickChips, { actions: quickActions, onPick: action => onQuick(action) }),
       h('textarea', {
         ref: areaRef,
         className: 'dsa-textarea',
@@ -1854,8 +2195,8 @@ window.__ModuleLoader__.load({
         reasoning, renderRichText(card.text))
     }
 
-    /** Card footer: status, copy, follow-up, retry, close. */
-    function CardActions({ card, onCopy, onFollowUp, onRetry, onClose, onCancel, onSendToMain }) {
+    /** Card footer: status, copy, follow-up, retry/edit-retry, close. */
+    function CardActions({ card, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain }) {
       const terminal = card.status === 'done' || card.status === 'error' || card.status === 'stopped'
       return h('div', { className: 'dsa-row' },
         h('span', { className: 'dsa-muted' },
@@ -1865,8 +2206,14 @@ window.__ModuleLoader__.load({
         card.status === 'streaming'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onCancel }, t('cancelAnswer'))
           : null,
-        terminal && card.status !== 'done'
+        terminal && card.status !== 'done' && card.carrier === 'side'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onRetry }, t('retry'))
+          : null,
+        // Edit & retry is available for EVERY terminal side card: a typo in
+        // the question used to invalidate the whole card (plain retry only
+        // resends verbatim), and an error card can be corrected the same way.
+        terminal && card.carrier === 'side'
+          ? h('button', { type: 'button', className: 'dsa-btn', onClick: onRetryEdit }, t('retryEdit'))
           : null,
         card.status === 'error' && card.carrier === 'side'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onSendToMain }, t('sendToMain'))
@@ -1893,9 +2240,14 @@ window.__ModuleLoader__.load({
      * (the layer is the only surface that can cover the conversation). A host
      * tab that embeds the same card passes no callback and gets no buttons.
      */
-    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onClose, onCancel, onSendToMain, onFloatMode }) {
+    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain, onFloatMode }) {
       const [followOpen, setFollowOpen] = React.useState(false)
       const [draft, setDraft] = React.useState('')
+      // Edit-&-retry editor: prefilled with the card's CURRENT question and
+      // kept separate from the follow-up draft (follow-up appends a turn;
+      // edit-retry regenerates THIS turn, keeping the card's earlier turns).
+      const [editOpen, setEditOpen] = React.useState(false)
+      const [editDraft, setEditDraft] = React.useState('')
       const answerRef = React.useRef(null)
       const config = store.state.config
       // Icon-only, so the header row keeps one line: the full labels
@@ -1947,12 +2299,60 @@ window.__ModuleLoader__.load({
               },
             }))
           : null,
+        editOpen
+          ? h('div', { className: 'dsa-field' },
+            h('textarea', {
+              className: 'dsa-textarea',
+              value: editDraft,
+              placeholder: t('editQuestionPlaceholder'),
+              autoFocus: true,
+              onChange: event => setEditDraft(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+                  event.preventDefault()
+                  const text = editDraft.trim()
+                  if (text === '') return
+                  setEditDraft('')
+                  setEditOpen(false)
+                  onRetryEdit(text)
+                }
+                if (event.key === 'Escape') {
+                  event.stopPropagation()
+                  setEditOpen(false)
+                }
+              },
+            }),
+            h('div', { className: 'dsa-row', style: { justifyContent: 'flex-end' } },
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn',
+                onClick: () => setEditOpen(false),
+              }, t('askCancel')),
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn dsa-btn-primary',
+                disabled: editDraft.trim() === '',
+                onClick: () => {
+                  const text = editDraft.trim()
+                  if (text === '') return
+                  setEditDraft('')
+                  setEditOpen(false)
+                  onRetryEdit(text)
+                },
+              }, t('retryAskSubmit'))))
+          : null,
         h(CardActions, {
           card,
           onCopy: () => onCopy(answerRef.current),
           onRetry,
           onCancel,
           onSendToMain,
+          onRetryEdit: () => {
+            // Open with the live question, so reopening after an earlier edit
+            // re-edits the question actually asked, not the card's first one.
+            setEditDraft(card.question)
+            setEditOpen(open => !open)
+          },
           onFollowUp: () => setFollowOpen(open => !open),
           onClose,
         }),
@@ -2084,6 +2484,7 @@ window.__ModuleLoader__.load({
           onCopy: element => actions.copy(card, element),
           onFollowUp: text => actions.followUp(card, text),
           onRetry: () => actions.retry(card),
+          onRetryEdit: text => actions.retryEdit(card, text),
           onCancel: () => actions.cancel(card),
           onSendToMain: () => actions.sendToMain(card),
           onClose: () => actions.close(card),
@@ -2109,7 +2510,12 @@ window.__ModuleLoader__.load({
       },
         h(Styles, null),
         candidate !== null && popover === null && config.trigger !== 'shortcut'
-          ? h(TriggerButton, { candidate, onOpen: () => actions.openPopover(candidate) })
+          ? h(TriggerBar, {
+            candidate,
+            config,
+            onOpen: () => actions.openPopover(candidate),
+            onQuick: action => actions.quickAsk(candidate, action),
+          })
           : null,
         popover !== null
           ? h(AskPopover, {
@@ -2117,6 +2523,7 @@ window.__ModuleLoader__.load({
             config,
             onClose: () => actions.closePopover(),
             onSubmit: payload => actions.submit(popover.candidate, payload),
+            onQuick: action => actions.quickAsk(popover.candidate, action),
           })
           : null,
         h(FloatingLayer, { cards: state.cards, actions }),
@@ -2172,9 +2579,93 @@ window.__ModuleLoader__.load({
         }, options.map(name => h('option', { key: name, value: name }, name)))
       }
 
+      // ── quick-action list editor ───────────────────────────────────────
+      // The draft always carries the FULL list (the user layer replaces
+      // defaults wholesale): built-in rows are editable only in
+      // enabled/shortcut, custom rows also in label/question.
+      const qaList = () => (Array.isArray(draft.quickActions) ? draft.quickActions : [])
+      const patchAction = (index, patch) => {
+        const quickActions = qaList().map((entry, i) => (i === index ? { ...entry, ...patch } : entry))
+        setDraft({ ...draft, quickActions })
+      }
+      const addAction = () => {
+        const list = qaList()
+        // Host cap is enforced on save; do not even append beyond it.
+        if (list.length >= QUICK_ACTION_LIMITS.maxEntries) return
+        const id = `custom:${Date.now().toString(36)}-${list.length + 1}`
+        setDraft({ ...draft, quickActions: [...list, { id, label: '', question: '', enabled: true, shortcut: '' }] })
+      }
+      const removeAction = (index) => {
+        setDraft({ ...draft, quickActions: qaList().filter((_, i) => i !== index) })
+      }
+      const quickActionsEditor = h('div', { className: 'dsa-field' },
+        h('label', null, t('setQuickActions')),
+        h('div', { className: 'dsa-qa' },
+          qaList().map((entry, index) => {
+            const meta = QUICK_ACTION_BUILTINS[String(entry.id)]
+            const isBuiltin = meta !== undefined
+            return h('div', { key: `${entry.id}-${index}`, className: 'dsa-qa-row' },
+              h('label', { className: 'dsa-check', title: t('qaEnabled') },
+                h('input', {
+                  type: 'checkbox',
+                  checked: entry.enabled !== false,
+                  onChange: event => patchAction(index, { enabled: event.target.checked }),
+                }),
+                t('qaEnabled')),
+              isBuiltin ? h('span', { className: 'dsa-badge' }, t('qaBuiltinBadge')) : null,
+              isBuiltin
+                ? h('span', { className: 'dsa-title' }, t(meta.labelKey))
+                : h('input', {
+                  className: 'dsa-input',
+                  value: String(entry.label ?? ''),
+                  maxLength: QUICK_ACTION_LIMITS.labelLength,
+                  placeholder: t('qaLabelPlaceholder'),
+                  onChange: event => patchAction(index, { label: event.target.value }),
+                }),
+              h('input', {
+                className: 'dsa-input',
+                style: { maxWidth: '150px' },
+                value: String(entry.shortcut ?? ''),
+                maxLength: QUICK_ACTION_LIMITS.shortcutLength,
+                placeholder: t('qaShortcutPlaceholder'),
+                onChange: event => patchAction(index, { shortcut: event.target.value }),
+              }),
+              isBuiltin
+                ? null
+                : h('button', {
+                  type: 'button',
+                  className: 'dsa-btn',
+                  onClick: () => removeAction(index),
+                }, t('qaDelete')),
+              isBuiltin
+                ? h('div', { className: 'dsa-muted dsa-qa-question' }, t(meta.questionKey))
+                : h('input', {
+                  className: 'dsa-input dsa-qa-question',
+                  value: String(entry.question ?? ''),
+                  maxLength: QUICK_ACTION_LIMITS.questionLength,
+                  placeholder: t('qaQuestionPlaceholder'),
+                  onChange: event => patchAction(index, { question: event.target.value }),
+                }))
+          }),
+          h('div', null, h('button', {
+            type: 'button',
+            className: 'dsa-btn',
+            disabled: qaList().length >= QUICK_ACTION_LIMITS.maxEntries,
+            onClick: addAction,
+          }, t('qaAdd')))),
+        h('span', { className: 'dsa-muted' }, t('setQuickActionsHint')))
+
       const save = async () => {
         if (parseShortcut(draft.shortcut) === null) {
           setStatus(`error:${t('unsupportedTrigger')}`)
+          return
+        }
+        // Pre-flight the quick-action list: the Host would all-or-nothing
+        // refuse it anyway, but a local check names the offending row instead
+        // of surfacing a wire error after the save.
+        const qaResult = validateQuickActionsDraft(draft.quickActions, draft.shortcut)
+        if (qaResult.ok === false) {
+          setStatus(`error:${t(qaResult.key, qaResult.vars)}`)
           return
         }
         setStatus('saving')
@@ -2242,6 +2733,7 @@ window.__ModuleLoader__.load({
           ])),
           field(t('setSideTimeout'), number('sideTimeoutMs', 5000, 3600000), t('setSideTimeoutHint')),
           field(t('setSideProvider'), providerSelect(), t('setSideProviderHint'))),
+        quickActionsEditor,
         h('label', { className: 'dsa-check' },
           h('input', {
             type: 'checkbox',
@@ -2582,6 +3074,18 @@ window.__ModuleLoader__.load({
             }
             void runSideCard(card.id)
           },
+          /**
+           * One quick-action chip: resolve the template ({selection} is the
+           * only placeholder), then take the SAME path as a popover submit
+           * fixed to the side card — surface picking, render proof and the
+           * stream loop all live in submit(), so this stays a thin adapter.
+           */
+          quickAsk(candidate, action) {
+            const config = store.state.config
+            const question = renderActionQuestion(action, candidate.text, config.maxChars)
+            if (question.trim() === '') return
+            void actions.submit(candidate, { question, carrier: 'side' })
+          },
           copy(card, element) {
             void copyText(card.text, element).then((result) => {
               toast(result === 'copied' ? t('copied') : result === 'selected' ? t('copySelectedHint') : t('copyFailed'))
@@ -2621,6 +3125,25 @@ window.__ModuleLoader__.load({
           retry(card) {
             patchCard(card.id, { status: 'pending', text: '', reasoning: '', error: null, streaming: null })
             if (card.carrier === 'side') void runSideCard(card.id)
+          },
+          /**
+           * Regenerate the CURRENT turn with an edited question. Unlike
+           * followUp, this does NOT push the old Q/A into `history`: the
+           * earlier turns on the card stay, the question text is replaced,
+           * and the answer streams again from scratch.
+           */
+          retryEdit(card, question) {
+            const trimmed = String(question ?? '').trim()
+            if (trimmed === '' || card.carrier !== 'side') return
+            patchCard(card.id, {
+              question: trimmed,
+              status: 'pending',
+              text: '',
+              reasoning: '',
+              error: null,
+              streaming: null,
+            })
+            void runSideCard(card.id)
           },
           cancel(card) {
             const controller = controllers.get(card.id)
@@ -2863,6 +3386,14 @@ window.__ModuleLoader__.load({
           // §4.5 only the leader answers the shortcut; otherwise two copies
           // would each preventDefault and each open their own popover.
           if (store.state.familyLeader === false) return
+          // Never steal keys while the user is typing in our own popover or
+          // card editors (Enter/Escape there are handled by the components).
+          const target = elementOf(event.target)
+          if (target !== null && target.closest('[data-dsa-root]') !== null
+            && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+              || target.closest('[contenteditable=""],[contenteditable="true"]') !== null)) {
+            return
+          }
           const config = store.state.config
           const facts = parseShortcut(config.shortcut)
           if (matchesShortcut(event, facts)) {
@@ -2870,6 +3401,18 @@ window.__ModuleLoader__.load({
             if (candidate !== null) {
               event.preventDefault()
               actions.openPopover(candidate)
+              return
+            }
+          }
+          // Per-action shortcuts: the main shortcut wins on a collision, and
+          // the candidate falls back to the last raised trigger, exactly like
+          // the main shortcut. A chip then submits straight to a side card.
+          for (const action of quickActionsOf(config)) {
+            if (action.shortcut === '' || !matchesShortcut(event, parseShortcut(action.shortcut))) continue
+            const candidate = readSelection() ?? store.state.trigger
+            if (candidate !== null) {
+              event.preventDefault()
+              actions.quickAsk(candidate, action)
               return
             }
           }
@@ -3288,6 +3831,7 @@ window.__ModuleLoader__.load({
               onCopy: element => actions.copy(card, element),
               onFollowUp: text => actions.followUp(card, text),
               onRetry: () => actions.retry(card),
+              onRetryEdit: text => actions.retryEdit(card, text),
               onCancel: () => actions.cancel(card),
               onSendToMain: () => { void actions.sendToMain(card) },
               onClose: () => actions.close(card),
@@ -3423,6 +3967,12 @@ window.__ModuleLoader__.load({
           truncateSelection,
           parseShortcut,
           matchesShortcut,
+          quickActionsOf,
+          renderActionQuestion,
+          validateQuickActionsDraft,
+          shortcutFingerprint,
+          QUICK_ACTION_BUILTINS,
+          QUICK_ACTION_LIMITS,
           classifyZone,
           slotPathOf,
           shouldOffer,
