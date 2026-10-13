@@ -300,6 +300,32 @@ report.equal(invalid.json().error.code, 'invalid-config', 'the refusal carries t
 const saved = await callRoute(d.harness, '/config', { body: { maxChars: 900, trigger: 'both' } })
 report.equal(saved.status, 200, 'a valid patch is accepted')
 report.equal(saved.json().value.config.maxChars, 900, 'the accepted value is effective')
+
+// 1.8.0 config keys: two booleans and a bounded history cap.
+const p1Saved = await callRoute(d.harness, '/config', {
+  body: { notifyOnDone: true, contextMenu: false, historyMaxCards: 25 },
+})
+report.equal(p1Saved.status, 200, 'the P1 config patch is accepted')
+report.equal(p1Saved.json().value.config.notifyOnDone, true, 'notifyOnDone takes effect')
+report.equal(p1Saved.json().value.config.contextMenu, false, 'contextMenu takes effect')
+report.equal(p1Saved.json().value.config.historyMaxCards, 25, 'historyMaxCards takes effect')
+for (const [label, body] of [
+  ['notifyOnDone non-boolean', { notifyOnDone: 'yes' }],
+  ['contextMenu non-boolean', { contextMenu: 1 }],
+]) {
+  const res = await callRoute(d.harness, '/config', { body })
+  report.equal(res.status, 400, `a bad value is refused: ${label}`)
+}
+for (const [label, value] of [['historyMaxCards below range', -1], ['historyMaxCards above range', 51]]) {
+  const res = await callRoute(d.harness, '/config', { body: { historyMaxCards: value } })
+  report.equal(res.status, 200, `an out-of-range cap is clamped, not refused (${label})`)
+  const effective = res.json().value.config.historyMaxCards
+  report.ok(effective >= 0 && effective <= 50, `the clamped cap stays within 0–50 (${label}, got ${effective})`)
+}
+const capZero = await callRoute(d.harness, '/config', { body: { historyMaxCards: 0 } })
+report.equal(capZero.json().value.config.historyMaxCards, 0, 'historyMaxCards accepts 0 (persistence off)')
+// Restore defaults for the restart assertions that follow.
+await callRoute(d.harness, '/config', { body: { notifyOnDone: false, contextMenu: true, historyMaxCards: 10, maxChars: 900, trigger: 'both' } })
 report.equal(saved.json().value.provenance.persisted, true, 'the save is marked as persisted')
 report.ok(existsSync(CONFIG_FILE), 'the user layer is written to <DSH_HOME>/sidecard-ask/config.json')
 report.equal(JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).maxChars, 900, 'the file holds the accepted value')

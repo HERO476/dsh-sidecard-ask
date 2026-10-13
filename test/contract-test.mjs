@@ -578,6 +578,60 @@ console.log('\nquick actions')
   }
 }
 
+console.log('\nP1 pure helpers')
+// #7 follow-up chips: four fixed refinements, resolved per language.
+{
+  const fu = pure.followUpChips()
+  report.equal(fu.length, 4, 'four post-answer follow-up chips exist')
+  report.equal(fu.map(chip => chip.label).join('/'), '更简短/更详细/举个例子/译成英文', 'follow-up chip labels resolve in zh')
+  report.ok(fu.every(chip => chip.question.length > 0), 'every follow-up chip carries a question')
+  const fuEnClient = loadClientModule({
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, value: {} }) }),
+    language: 'en',
+  })
+  const enFu = fuEnClient.module.api.pure.followUpChips()
+  report.equal(enFu.map(chip => chip.label).join('/'), 'Shorter/More detail/Give an example/In English', 'follow-up chip labels resolve in en')
+  report.equal(pure.FOLLOW_UP_CHIPS.length, 4, 'the follow-up set is the fixed four')
+}
+// #9 elapsed-time format.
+{
+  report.equal(pure.formatElapsed(0), '<1s', 'a sub-second run reads <1s')
+  report.equal(pure.formatElapsed(499), '<1s', '499ms rounds below one second')
+  report.equal(pure.formatElapsed(1000), '1s', '1000ms reads 1s')
+  report.equal(pure.formatElapsed(1499), '1s', '1499ms rounds to 1s')
+  report.equal(pure.formatElapsed(1501), '2s', '1501ms rounds to 2s')
+  report.equal(pure.formatElapsed(60_000), '1m', 'exactly a minute reads 1m')
+  report.equal(pure.formatElapsed(83_000), '1m23s', '83s reads 1m23s')
+  report.equal(pure.formatElapsed(Number.NaN), '', 'a non-finite elapsed renders empty')
+  report.equal(pure.formatElapsed(-5), '', 'a negative elapsed renders empty')
+}
+// History time format.
+{
+  report.equal(pure.formatHistoryTime(0), '', 'an absent timestamp (v1 entry) renders empty')
+  report.equal(pure.formatHistoryTime(Number.NaN), '', 'a bad timestamp renders empty')
+  const stamped = pure.formatHistoryTime(new Date(2024, 2, 5, 9, 7).getTime())
+  report.equal(stamped, '2024-03-05 09:07', 'a timestamp renders as YYYY-MM-DD HH:MM with padding')
+}
+// #5 finish-notification decision + body.
+{
+  report.equal(pure.CONTEXT_MENU_ACTION_LIMIT, 3, 'the context menu offers at most three quick actions')
+  const enabled = { notifyOnDone: true }
+  report.equal(pure.shouldNotifyFinish(enabled, true, 'granted', false), true, 'hidden + granted + first time notifies')
+  report.equal(pure.shouldNotifyFinish(enabled, false, 'granted', false), false, 'a visible page does not notify')
+  report.equal(pure.shouldNotifyFinish(enabled, true, 'default', false), false, 'a pending permission does not notify')
+  report.equal(pure.shouldNotifyFinish(enabled, true, 'denied', false), false, 'a denied permission does not notify')
+  report.equal(pure.shouldNotifyFinish(enabled, true, 'unsupported', false), false, 'an unsupported environment does not notify')
+  report.equal(pure.shouldNotifyFinish({ notifyOnDone: false }, true, 'granted', false), false, 'the toggle gates notifications')
+  report.equal(pure.shouldNotifyFinish(enabled, true, 'granted', true), false, 'a card is notified at most once')
+  const doneBody = pure.buildFinishNotification({ question: 'x'.repeat(120), status: 'done' })
+  report.equal(doneBody.title, '侧边追问已完成', 'a done card gets the done title')
+  report.equal(Array.from(doneBody.body).length, 80, 'the notification body is capped at 80 code points')
+  const errorBody = pure.buildFinishNotification({ question: 'q', status: 'error' })
+  report.equal(errorBody.title, '侧边追问失败', 'an error card gets the error title')
+  report.equal(pure.notificationSupported(), false, 'the test harness exposes no Notification API')
+  report.equal(pure.notificationPermission(), 'unsupported', 'an absent Notification API reports unsupported')
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // 5. client registrations and rendering
 // ────────────────────────────────────────────────────────────────────────────
@@ -632,7 +686,7 @@ const styleText = styleNode?.children?.join('') ?? ''
 report.ok(styleText.includes('-webkit-app-region:no-drag'), 'the stylesheet declares the window-drag guard')
 const guardRule = styleText.split('\n').find(line => line.includes('-webkit-app-region:no-drag') && line.includes('.dsa-')) ?? ''
 report.ok(guardRule !== '', 'the guard exists as a real rule, not only inside the comment')
-for (const root of ['dsa-layer', 'dsa-trigger', 'dsa-quickbar', 'dsa-pop', 'dsa-card', 'dsa-toast', 'dsa-settings']) {
+for (const root of ['dsa-layer', 'dsa-trigger', 'dsa-quickbar', 'dsa-pop', 'dsa-ctxmenu', 'dsa-card', 'dsa-toast', 'dsa-settings']) {
   report.ok(guardRule.includes(`.${root}`), `the drag guard covers .${root}`)
 }
 report.ok(styleText.includes('pointer-events:none'), 'the overlay layer itself stays click-through')
@@ -696,6 +750,18 @@ for (const row of qaRows) {
   qaChecks += byTag(row, 'input').filter(node => node.props.type === 'checkbox').length
 }
 report.equal(qaChecks, 5, 'each built-in row carries an enable checkbox')
+
+// P1 settings controls: background notification, context menu, history cap,
+// and the history-manager section shell.
+for (const label of ['完成后桌面通知', '选区右键菜单', '历史卡片保存数量', '历史追问卡片']) {
+  report.ok(settingsText.includes(label), `settings page renders the "${label}" control`)
+}
+report.ok(
+  byTag(settingsTree, 'input').some(node => node.props.type === 'number'
+    && Number(node.props.min) === 0 && Number(node.props.max) === 50),
+  'the history cap control uses the host-accepted 0–50 range',
+)
+report.ok(settingsText.includes('还没有历史卡片'), 'the history manager shows its empty state before any card')
 
 const probeTree = expandTree(loadedClient.shim.React.createElement(probe.component, { sessionId: 'session-beta' }))
 report.equal(probeTree, null, 'session probe renders nothing (no layout impact)')
@@ -774,6 +840,109 @@ report.equal(
   await new Promise(resolve => setTimeout(resolve, 170))
   const clearedTree = expandTree(overlay.component())
   report.equal(byClass(clearedTree, 'dsa-quickbar').length, 0, 'the bar disappears once the selection is cleared')
+
+  // #10: Alt+1 inside the open popover fires the first chip (explain)
+  // without a mouse; the question lands as a side card verbatim.
+  mainActions.openPopover(candidate)
+  let popTree = expandTree(overlay.component())
+  const popNode = byClass(popTree, 'dsa-pop')[0]
+  report.ok(typeof popNode?.props?.onKeyDown === 'function', 'the popover wires a keydown handler')
+  const cardsBeforeAlt = client.api.snapshot().cards.length
+  popNode.props.onKeyDown({
+    key: '1',
+    altKey: true,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    isComposing: false,
+    preventDefault() {},
+  })
+  await new Promise(resolve => setTimeout(resolve, 120))
+  const afterAlt = client.api.snapshot().cards
+  report.equal(afterAlt.length, cardsBeforeAlt + 1, 'Alt+1 creates one card')
+  report.equal(afterAlt[0].question, pure.dict.zh.qaExplainQ, 'Alt+1 fires the explain chip')
+  report.equal(afterAlt[0].carrier, 'side', 'the Alt-digit shortcut answers in a side card')
+  // Alt+0 / Alt+9 beyond the five builtins is a no-op (no throw, no card).
+  const cardsBeforeOutOfRange = client.api.snapshot().cards.length
+  mainActions.openPopover(candidate)
+  popTree = expandTree(overlay.component())
+  byClass(popTree, 'dsa-pop')[0].props.onKeyDown({
+    key: '9', altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, isComposing: false, preventDefault() {},
+  })
+  report.equal(client.api.snapshot().cards.length, cardsBeforeOutOfRange, 'Alt+9 with fewer than nine actions does nothing')
+  mainActions.closePopover()
+
+  // #8: contextmenu on a qualifying selection opens OUR menu; the event is
+  // preventDefaulted, the menu carries the main entry + three chips, and the
+  // same event with the feature toggled off leaves the native menu alone.
+  const ctxElement = {
+    nodeType: 1,
+    tagName: 'DIV',
+    parentElement: null,
+    getAttribute(name) { return name === 'data-slot' ? 'conversation.chat.node' : null },
+    closest() { return null },
+  }
+  const ctxTextNode = { nodeType: 3, parentElement: ctxElement }
+  loadedClient.window.getSelection = () => ({
+    rangeCount: 1,
+    isCollapsed: false,
+    toString: () => '右键菜单的选中文本',
+    anchorNode: ctxTextNode,
+    focusNode: ctxTextNode,
+    getRangeAt: () => ({
+      getBoundingClientRect: () => ({ left: 40, top: 40, right: 220, bottom: 60, width: 180, height: 20 }),
+      getClientRects: () => [],
+    }),
+  })
+  let prevented = false
+  const ctxListeners = loadedClient.listeners.get('contextmenu') ?? []
+  for (const listener of ctxListeners) {
+    listener({
+      target: ctxElement,
+      clientX: 120,
+      clientY: 120,
+      preventDefault() { prevented = true },
+      stopPropagation() {},
+    })
+  }
+  report.equal(prevented, true, 'a qualifying right-click suppresses the native menu')
+  const menuTree = expandTree(overlay.component())
+  const menu = byClass(menuTree, 'dsa-ctxmenu')
+  report.equal(menu.length, 1, 'the custom context menu renders')
+  report.equal(byClass(menuTree, 'dsa-ctx-item').length, 1 + 3, 'the menu lists Ask plus three quick actions')
+  report.ok(textOf(menu[0]).includes('追问选中内容'), 'the menu main entry opens the popover')
+  report.ok(textOf(menu[0]).includes('解释'), 'the menu carries the first quick action')
+  report.ok(textOf(menu[0]).includes('总结'), 'the menu carries the third quick action')
+  report.ok(!textOf(menu[0]).includes('润色'), 'the fourth quick action stays out of the 3-item menu')
+  report.ok(!textOf(menu[0]).includes('纠错'), 'the fifth quick action stays out of the 3-item menu')
+  // Clicking the main entry closes the menu and opens the popover.
+  const mainItem = byClass(menuTree, 'dsa-ctx-item')[0]
+  mainItem.props.onClick({ preventDefault() {}, stopPropagation() {} })
+  const afterMainItem = expandTree(overlay.component())
+  report.equal(byClass(afterMainItem, 'dsa-ctxmenu').length, 0, 'choosing an entry closes the menu')
+  report.equal(byClass(afterMainItem, 'dsa-pop').length, 1, 'the main menu entry opens the popover')
+  mainActions.closePopover()
+  // Toggle the feature OFF through the real config save path: the same event
+  // must then leave the native menu untouched (no preventDefault, no menu).
+  await mainActions.saveConfig({ ...client.api.snapshot().config, contextMenu: false })
+  prevented = false
+  for (const listener of (loadedClient.listeners.get('contextmenu') ?? [])) {
+    listener({
+      target: ctxElement,
+      clientX: 120,
+      clientY: 120,
+      preventDefault() { prevented = true },
+      stopPropagation() {},
+    })
+  }
+  report.equal(prevented, false, 'with the toggle off, the native menu is left untouched')
+  report.equal(
+    byClass(expandTree(overlay.component()), 'dsa-ctxmenu').length,
+    0,
+    'no custom menu renders with the toggle off',
+  )
+  await mainActions.saveConfig({ ...client.api.snapshot().config, contextMenu: true })
+  loadedClient.window.getSelection = previousGetSelection
 }
 
 console.log('\nreasoning reach')
@@ -855,6 +1024,29 @@ report.ok(
   'a card with no reasoning history still renders exactly one reasoning block',
 )
 
+// P1 #7: the finished answer offers the four fixed follow-up chips;
+// P1 #9: it shows provider + elapsed; P1 #10: the card is keyboard-focusable.
+const fuRow = byClass(reasoningTree, 'dsa-fu-chips')
+report.equal(fuRow.length, 1, 'the one finished answer renders one follow-up chip row')
+for (const label of ['更简短', '更详细', '举个例子', '译成英文']) {
+  report.ok(textOf(reasoningTree).includes(label), `the card offers the "${label}" follow-up chip`)
+}
+const fuChips = byClass(fuRow[0], 'dsa-chip')
+report.equal(fuChips.length, 4, 'each row renders exactly four follow-up chips')
+const longerChip = fuChips.find(node => textOf(node) === '更详细')
+report.ok(typeof longerChip?.props?.onClick === 'function', 'follow-up chips are clickable')
+report.ok(textOf(reasoningTree).includes('模型 spawn'), 'the card meta line shows the provider')
+report.ok(textOf(reasoningTree).includes('耗时'), 'the card meta line shows the elapsed label')
+const reasoningCardsNow = reasoningClient.module.api.snapshot().cards
+report.ok(
+  typeof reasoningCardsNow[0]?.elapsedMs === 'number' && reasoningCardsNow[0].elapsedMs >= 0,
+  'the finished card carries an elapsed measurement',
+)
+const cardSection = byClass(reasoningTree, 'dsa-card')[0]
+report.equal(cardSection?.props?.tabIndex, 0, 'the card is keyboard-focusable')
+report.equal(cardSection?.props?.title, '键盘：R 重试 · C 复制 · Esc 取消聚焦', 'the card advertises its key bindings')
+report.ok(typeof cardSection?.props?.onKeyDown === 'function', 'the card wires its key handler')
+
 console.log('\nquick-action end to end')
 // P0-1: a chip click goes straight to a side card with the builtin question,
 // no popover; a custom {selection} template embeds the source text.
@@ -927,6 +1119,26 @@ console.log('\nquick-action end to end')
   report.ok(buttons.includes('改问'), 'the finished card offers the edit-&-retry button')
   report.ok(buttons.includes('复制'), 'the finished card keeps its copy button')
   report.ok(buttons.includes('继续追问'), 'the finished card keeps follow-up')
+
+  // P1 #7: clicking "更详细" appends a follow-up TURN: the old Q/A enters
+  // history and the fixed chip question drives a new stream on the same card.
+  const cardForChip = reasoningClient.module.api.snapshot().cards.find(item => item.id === retried.id)
+  const historyBeforeChip = cardForChip.history.length
+  // The stack holds several cards; scope the chip lookup to the retried
+  // card's own section (identified by its current question text).
+  const retriedSection = byClass(retriedTree, 'dsa-card')
+    .find(section => byClass(section, 'dsa-quote').some(node => textOf(node) === '这是改后的问题吗？'))
+  report.ok(retriedSection !== undefined, 'the retried card section is found in the floating stack')
+  const chipNode = byClass(retriedSection, 'dsa-fu-chips')[0]
+  const detailChip = byClass(chipNode, 'dsa-chip').find(node => textOf(node) === '更详细')
+  detailChip.props.onClick({ preventDefault() {}, stopPropagation() {} })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  const afterChip = reasoningClient.module.api.snapshot().cards.find(item => item.id === retried.id)
+  report.equal(afterChip.question, pure.dict.zh.fuLongerQ, 'the follow-up chip replaces the active question')
+  report.equal(afterChip.history.length, historyBeforeChip + 1, 'the previous turn moved into history')
+  report.equal(afterChip.history.at(-1).question, '这是改后的问题吗？', 'history records the pre-chip question')
+  report.ok(afterChip.history.at(-1).answer.includes('答案文本'), 'history records the pre-chip answer')
+  report.equal(afterChip.status, 'done', 'the follow-up turn completed')
 }
 
 console.log('\nstream coalescing')
@@ -1141,7 +1353,8 @@ console.log('\ncard persistence')
 // now mirrored into localStorage and replayed on boot — deterministically,
 // bounded, and degrading to "no history" on quota/corruption instead of
 // breaking startup.
-const PERSIST_KEY = 'dsh-sidecard-ask:cards:v1'
+const PERSIST_KEY = 'dsh-sidecard-ask:cards:v2'
+const PERSIST_LEGACY_KEY = 'dsh-sidecard-ask:cards:v1'
 const sharedStorage = createLocalStorageStub()
 const persistCtx = makeClientCtx({})
 const persistClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
@@ -1162,13 +1375,20 @@ persistActions.submit(
 )
 await new Promise(resolve => setTimeout(resolve, 150))
 let stored = JSON.parse(sharedStorage.getItem(PERSIST_KEY))
+report.equal(stored.version, 2, 'history is written under the v2 schema')
 report.equal(stored.cards.length, 1, 'a finished card is mirrored into localStorage')
 report.equal(stored.cards[0]?.question, '会留下来吗？', 'the persisted card keeps its question')
 report.equal(stored.cards[0]?.text, '**Pro** contract answer', 'the persisted card keeps the full answer')
 report.equal(stored.cards[0]?.status, 'done', 'only terminal cards are persisted')
+report.ok(typeof stored.cards[0]?.createdAt === 'number' && stored.cards[0].createdAt > 0, 'v2 entries carry a createdAt timestamp')
+report.equal(
+  persistClient.module.api.snapshot().history.length,
+  1,
+  'the durable history is mirrored into the store for the settings manager',
+)
 persistActions.close(persistClient.module.api.snapshot().cards[0])
 stored = JSON.parse(sharedStorage.getItem(PERSIST_KEY))
-report.equal(stored.cards.length, 0, 'closing a card removes it from the durable set too')
+report.equal(stored.cards.length, 1, '#6: closing a card keeps its durable history (deletion is explicit in the manager)')
 
 // Simulate a reload: a fresh client module over the SAME storage replays the
 // history into the floating layer (a right-rail tab cannot survive a reload).
@@ -1199,14 +1419,131 @@ const reloadTree = expandTree(reloadOverlay.component())
 report.equal(byClass(reloadTree, 'dsa-card').length, 1, 'the replayed card is visible on the flow stack')
 report.ok(textOf(reloadTree).includes('刷新后还在吗？'), 'the replayed card shows its question')
 
-// Bounded replay: a tampered/oversized payload must never flood the store.
+// #6 manager actions: restore a closed card from history, then delete it
+// from both the durable set and the live store. These actions must run on the
+// RELOAD client's own store (separate module instance from persistClient).
+const managerActions = reloadOverlay.component().props.actions
+const restorableId = reloadClient.module.api.snapshot().history[0]?.id
+report.ok(typeof restorableId === 'string' && restorableId !== '', 'history holds the reloaded card id')
+// Close it first so restore actually re-creates a live card.
+const liveReloaded = reloadClient.module.api.snapshot().cards[0]
+if (liveReloaded !== undefined) managerActions.close(liveReloaded)
+report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'the live card is closed')
+report.equal(reloadClient.module.api.snapshot().history.length, 1, 'closing does not drop durable history')
+const restoreOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
+report.equal(managerActions.restoreHistoryCard(restorableId), true, 'restoreHistoryCard re-creates the card')
+report.equal(reloadClient.module.api.snapshot().cards.length, 1, 'the restored card is live again')
+report.equal(reloadClient.module.api.snapshot().cards[0]?.surface, 'flow', 'the restored card lands on the flow stack')
+const restoredTree = expandTree(restoreOverlay.component())
+report.ok(textOf(restoredTree).includes('刷新后还在吗？'), 'the restored card renders its question')
+managerActions.deleteHistoryCard(restorableId)
+report.equal(reloadClient.module.api.snapshot().history.length, 0, 'deleteHistoryCard empties durable history')
+report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'deleteHistoryCard also removes the live card')
+report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the deletion is persisted immediately')
+
+// clearHistory removes the durable key even without live cards.
 sharedStorage.setItem(PERSIST_KEY, JSON.stringify({
+  version: 2,
+  cards: [{ id: 'only-one', question: 'q', text: 'a', status: 'done', createdAt: 1 }],
+}))
+const clearCtx = makeClientCtx({})
+const clearClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
+clearClient.module.apply(clearCtx.ctx)
+await new Promise(resolve => setTimeout(resolve, 20))
+const clearActions = clearCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+report.equal(clearClient.module.api.snapshot().history.length, 1, 'the manager sees the seeded card')
+clearActions.clearHistory()
+report.equal(sharedStorage.getItem(PERSIST_KEY), null, 'clearHistory removes the v2 key')
+report.equal(clearClient.module.api.snapshot().history.length, 0, 'clearHistory empties the manager view')
+
+// v1 → v2 migration: with no v2 key, a legacy v1 payload is imported once,
+// replayed (createdAt 0 = unknown), and written out under v2; the v1 key is
+// left untouched for downgrades.
+const migrationStorage = createLocalStorageStub()
+migrationStorage.setItem(PERSIST_LEGACY_KEY, JSON.stringify({
   version: 1,
+  cards: [{ id: 'legacy-1', question: '旧版卡片', text: '旧版答案', status: 'done' }],
+}))
+const migrationClient = loadClientModule({ fetchImpl: hostFetch, storage: migrationStorage, language: 'zh-CN' })
+const migrationCtx = makeClientCtx({})
+migrationClient.module.apply(migrationCtx.ctx)
+await new Promise(resolve => setTimeout(resolve, 20))
+report.equal(migrationClient.module.api.snapshot().cards.length, 1, 'a v1 payload is replayed on boot')
+report.equal(migrationClient.module.api.snapshot().cards[0]?.question, '旧版卡片', 'the migrated card keeps its question')
+report.equal(migrationClient.module.api.snapshot().history[0]?.createdAt, 0, 'legacy entries carry createdAt 0 (unknown)')
+const migratedEnvelope = JSON.parse(migrationStorage.getItem(PERSIST_KEY))
+report.equal(migratedEnvelope.version, 2, 'the import is written under the v2 key')
+report.equal(migratedEnvelope.cards[0]?.id, 'legacy-1', 'the v2 write carries the legacy entry')
+report.ok(migrationStorage.getItem(PERSIST_LEGACY_KEY) !== null, 'the v1 key is left in place (non-destructive migration)')
+
+// historyMaxCards === 0 disables persistence: finishing a card neither writes
+// nor surfaces history, while existing on-disk data is left alone.
+const noSaveStorage = createLocalStorageStub()
+noSaveStorage.setItem(PERSIST_KEY, JSON.stringify({
+  version: 2,
+  cards: [{ id: 'kept', question: '磁盘上保留', text: 'x', status: 'done', createdAt: 1 }],
+}))
+// Isolate DSH_HOME: earlier saveConfig calls in this file persisted a user
+// layer (historyMaxCards:10) into the shared temp home, which would override
+// the patch-level 0 below. The host reads $DSH_HOME at request time, so the
+// swap must stay active for the whole subtest.
+const previousDshHome = process.env.DSH_HOME
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-nosave-'))
+const noSaveHost = makeHostCtx({})
+const noSaveEngine = makeSubagentEngine({
+  emit: (event, ...args) => noSaveHost.emit(event, ...args),
+  frames: ['答案'],
+})
+host.apply(noSaveHost.ctx, { historyMaxCards: 0 })
+noSaveHost.services.subagents = noSaveEngine.service
+noSaveHost.services.agents = harness.services.agents
+noSaveHost.services.tools = harness.services.tools
+const noSaveFetch = (url, init = {}) => {
+  const path = String(url).replace('/sidecard-ask/api/', '')
+  const body = init.body === undefined ? null : JSON.parse(init.body)
+  const method = init.method ?? 'POST'
+  return (async () => {
+    const res = await callRoute(noSaveHost, `/${path}`, { method, body })
+    if (path.startsWith('ask')) {
+      const text = res.text()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(text))
+          controller.close()
+        },
+      })
+      return { ok: true, status: 200, body: stream, json: async () => JSON.parse(text) }
+    }
+    return { ok: res.status < 400, status: res.status, json: async () => res.json() }
+  })()
+}
+const noSaveClient = loadClientModule({ fetchImpl: noSaveFetch, storage: noSaveStorage, language: 'zh-CN' })
+const noSaveCtx = makeClientCtx({})
+noSaveClient.module.apply(noSaveCtx.ctx)
+await new Promise(resolve => setTimeout(resolve, 100))
+const noSaveActions = noSaveCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+report.equal(noSaveClient.module.api.snapshot().config.historyMaxCards, 0, 'the zero cap is effective')
+noSaveActions.submit(
+  { text: '不持久化的文本', rect: { left: 1, top: 1, right: 100, bottom: 20, width: 99, height: 19 },
+    zone: 'chat', cross: false, slotPath: ['conversation.chat.node'], kind: 'text' },
+  { question: '还会写盘吗？', carrier: 'side' },
+)
+await new Promise(resolve => setTimeout(resolve, 150))
+const onDisk = JSON.parse(noSaveStorage.getItem(PERSIST_KEY))
+report.equal(onDisk.cards.length, 1, 'cap 0 leaves the pre-existing on-disk history untouched')
+report.equal(onDisk.cards[0]?.id, 'kept', 'the untouched entry is the pre-existing one')
+process.env.DSH_HOME = previousDshHome
+
+// Bounded replay: a tampered/oversized payload must never flood the store.
+sharedStorage.removeItem(PERSIST_KEY)
+sharedStorage.setItem(PERSIST_KEY, JSON.stringify({
+  version: 2,
   cards: Array.from({ length: 12 }, (_, index) => ({
     id: `fake-${index}`,
     question: `问题 ${index}`,
     text: '答案',
     status: 'done',
+    createdAt: 1,
   })),
 }))
 const floodCtx = makeClientCtx({})

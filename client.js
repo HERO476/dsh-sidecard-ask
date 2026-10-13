@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.7.0'
+    const CLIENT_VERSION = '1.7.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -108,6 +108,9 @@ window.__ModuleLoader__.load({
         { id: 'builtin:polish', enabled: true, shortcut: '' },
         { id: 'builtin:fix', enabled: true, shortcut: '' },
       ],
+      notifyOnDone: false,
+      contextMenu: true,
+      historyMaxCards: 10,
     }
 
     /**
@@ -134,6 +137,58 @@ window.__ModuleLoader__.load({
       'builtin:summarize': { labelKey: 'qaSummarize', questionKey: 'qaSummarizeQ' },
       'builtin:polish': { labelKey: 'qaPolish', questionKey: 'qaPolishQ' },
       'builtin:fix': { labelKey: 'qaFix', questionKey: 'qaFixQ' },
+    }
+
+    /**
+     * Fixed follow-up chips offered under a finished answer. They submit a
+     * follow-up TURN (the answer stays in history), so the questions refer to
+     * "the answer above" rather than restating the selection. Not user
+     * configurable in P1: they are four fixed, universally useful refinements.
+     */
+    const FOLLOW_UP_CHIPS = [
+      { labelKey: 'fuShorter', questionKey: 'fuShorterQ' },
+      { labelKey: 'fuLonger', questionKey: 'fuLongerQ' },
+      { labelKey: 'fuExample', questionKey: 'fuExampleQ' },
+      { labelKey: 'fuToEnglish', questionKey: 'fuToEnglishQ' },
+    ]
+
+    /** Resolve the fixed follow-up chips for the active language. */
+    function followUpChips() {
+      return FOLLOW_UP_CHIPS.map(meta => ({ label: t(meta.labelKey), question: t(meta.questionKey) }))
+    }
+
+    /**
+     * Format a side-answer elapsed time for the card meta line. Sub-second
+     * runs show as "<1s"; everything else rounds to whole seconds (and whole
+     * minutes past 60s). Pure so both the UI and the tests share one format.
+     * @param {number} ms - elapsed milliseconds.
+     * @returns {string}
+     */
+    function formatElapsed(ms) {
+      const value = Number(ms)
+      if (!Number.isFinite(value) || value < 0) return ''
+      if (value < 1000) return '<1s'
+      const seconds = Math.round(value / 1000)
+      if (seconds < 60) return `${seconds}s`
+      const minutes = Math.floor(seconds / 60)
+      const rest = seconds % 60
+      return rest === 0 ? `${minutes}m` : `${minutes}m${rest}s`
+    }
+
+    /**
+     * Deterministic local timestamp for the history manager: `YYYY-MM-DD
+     * HH:MM`. Returns '' for an absent/legacy entry (v1 entries had no
+     * createdAt) instead of showing 1970.
+     * @param {number} ts - epoch milliseconds.
+     * @returns {string}
+     */
+    function formatHistoryTime(ts) {
+      const value = Number(ts)
+      if (!Number.isFinite(value) || value <= 0) return ''
+      const date = new Date(value)
+      const pad = n => String(n).padStart(2, '0')
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+        + `${pad(date.getHours())}:${pad(date.getMinutes())}`
     }
 
     /** Zone classification: slot-key patterns the harness itself renders. */
@@ -365,6 +420,40 @@ window.__ModuleLoader__.load({
         qaBadQuestion: '问题指令必填，且不超过 {n} 个字符',
         qaBadShortcut: '“{label}”的快捷键格式不正确，请用 Alt+Q 这样的写法',
         qaDuplicateShortcut: '“{label}”的快捷键与“{other}”冲突',
+        fuShorter: '更简短',
+        fuShorterQ: '请用更简短的方式重新回答上面的问题，保留关键信息。',
+        fuLonger: '更详细',
+        fuLongerQ: '请更详细地展开回答上面的问题，补充必要的细节。',
+        fuExample: '举个例子',
+        fuExampleQ: '请结合一个具体的例子来说明上面的回答。',
+        fuToEnglish: '译成英文',
+        fuToEnglishQ: 'Please give the same answer in English.',
+        metaElapsed: '耗时',
+        metaProvider: '模型',
+        setNotifyOnDone: '完成后桌面通知',
+        setNotifyOnDoneHint: '仅当页面切到后台（其它标签页或窗口）时，作答结束才弹系统通知；首次启用需要浏览器通知权限',
+        notifyGranted: '已获得通知权限',
+        notifyDenied: '通知权限被拒绝，可在浏览器站点设置中开启',
+        notifyUnsupported: '当前环境不支持系统通知',
+        notifyDoneTitle: '侧边追问已完成',
+        notifyErrorTitle: '侧边追问失败',
+        setContextMenu: '选区右键菜单',
+        setContextMenuHint: '在可触发区域右键选中文字时，菜单顶部显示追问与快捷动作；若与宿主自身右键菜单冲突可关闭',
+        setHistoryMax: '历史卡片保存数量',
+        setHistoryMaxHint: '0 = 不保存；上限 50 张，单卡文本最多 64K',
+        historyTitle: '历史追问卡片',
+        historyDesc: '已完成的侧边卡片保存在本浏览器中，可搜索、恢复到浮层或删除；清空浏览器数据会一并删除。',
+        historySearch: '搜索问题或答案…',
+        historyEmpty: '还没有历史卡片',
+        historyRestore: '恢复',
+        historyDelete: '删除',
+        historyClear: '清空全部',
+        historyClearConfirm: '确定清空全部历史卡片吗？此操作不可撤销。',
+        historyClearDone: '历史已清空',
+        historyRestored: '已恢复到浮层',
+        historyCount: '{n} 条',
+        historyDeleted: '已删除',
+        cardKeysHint: '键盘：R 重试 · C 复制 · Esc 取消聚焦',
         familyLegacyDiag: '旧版共载',
         familyPeers: '同页实例',
       },
@@ -538,6 +627,40 @@ window.__ModuleLoader__.load({
         qaBadQuestion: 'Questions are required and at most {n} characters',
         qaBadShortcut: 'The shortcut for "{label}" is invalid; use a form like Alt+Q',
         qaDuplicateShortcut: 'The shortcut for "{label}" conflicts with "{other}"',
+        fuShorter: 'Shorter',
+        fuShorterQ: 'Answer the question above again, more briefly, keeping the key points.',
+        fuLonger: 'More detail',
+        fuLongerQ: 'Expand the answer above with more detail where it helps.',
+        fuExample: 'Give an example',
+        fuExampleQ: 'Illustrate the answer above with one concrete example.',
+        fuToEnglish: 'In English',
+        fuToEnglishQ: 'Please give the same answer in English.',
+        metaElapsed: 'Elapsed',
+        metaProvider: 'Model',
+        setNotifyOnDone: 'Notify when done',
+        setNotifyOnDoneHint: 'Only fires a system notification when the page is in the background (another tab or window) and the answer finishes; enabling asks for the browser notification permission once',
+        notifyGranted: 'Notification permission granted',
+        notifyDenied: 'Notification permission denied; enable it in the browser site settings',
+        notifyUnsupported: 'This environment does not support system notifications',
+        notifyDoneTitle: 'Side answer done',
+        notifyErrorTitle: 'Side answer failed',
+        setContextMenu: 'Selection context menu',
+        setContextMenuHint: 'Right-clicking a qualifying selection shows Ask plus quick actions at the top of the menu; turn off if it conflicts with the host own menu',
+        setHistoryMax: 'Saved history cards',
+        setHistoryMaxHint: '0 = do not save; up to 50 cards, at most 64K text each',
+        historyTitle: 'History cards',
+        historyDesc: 'Finished side cards are kept in this browser; search, restore to the floating layer, or delete them. Clearing browser data removes them too.',
+        historySearch: 'Search questions or answers…',
+        historyEmpty: 'No history cards yet',
+        historyRestore: 'Restore',
+        historyDelete: 'Delete',
+        historyClear: 'Clear all',
+        historyClearConfirm: 'Clear every history card? This cannot be undone.',
+        historyClearDone: 'History cleared',
+        historyRestored: 'Restored to the floating layer',
+        historyCount: '{n} cards',
+        historyDeleted: 'Deleted',
+        cardKeysHint: 'Keys: R retry · C copy · Esc unfocus',
       },
     }
 
@@ -761,7 +884,14 @@ window.__ModuleLoader__.load({
         sessionId: null,
         trigger: null,
         popover: null,
+        /** The custom selection context menu: {candidate, x, y} or null. */
+        contextMenu: null,
         cards: [],
+        /**
+         * The durable card history (localStorage v2), mirrored into the store
+         * so the settings-page manager can render/search it without IO.
+         */
+        history: [],
         toast: null,
         /** Whether the harness renders the `data-slot` zone anchors (null = unknown yet). */
         zoneAnchors: null,
@@ -1195,6 +1325,84 @@ window.__ModuleLoader__.load({
       return `${facts.ctrl ? 1 : 0}|${facts.alt ? 1 : 0}|${facts.shift ? 1 : 0}|${facts.meta ? 1 : 0}|${facts.key}`
     }
 
+    /** Whether this browser exposes the Notification API at all. */
+    function notificationSupported() {
+      return typeof window !== 'undefined' && typeof window.Notification === 'function'
+    }
+
+    /** The Notification permission flag, or 'unsupported' in a bare WebView. */
+    function notificationPermission() {
+      if (!notificationSupported()) return 'unsupported'
+      const permission = window.Notification.permission
+      return typeof permission === 'string' ? permission : 'default'
+    }
+
+    /**
+     * Whether a finished run should raise a desktop notification right now.
+     * All four conditions must hold: the feature is enabled, the page is in
+     * the BACKGROUND (notifying a visible page is just noise), the browser
+     * granted permission, and this card has not been notified yet.
+     * @param {object} config - effective config.
+     * @param {boolean} hidden - document.hidden at the terminal moment.
+     * @param {string} permission - notificationPermission() result.
+     * @param {boolean} alreadyNotified - guard against duplicate notices.
+     */
+    function shouldNotifyFinish(config, hidden, permission, alreadyNotified) {
+      return config?.notifyOnDone === true
+        && hidden === true
+        && permission === 'granted'
+        && alreadyNotified !== true
+    }
+
+    /** Title/body for one card's finish notification (error vs done). */
+    function buildFinishNotification(card) {
+      const title = card?.status === 'error' ? t('notifyErrorTitle') : t('notifyDoneTitle')
+      const question = String(card?.question ?? '').trim()
+      return { title, body: Array.from(question).slice(0, 80).join('') }
+    }
+
+    /**
+     * Request the Notification permission once. Resolves to the resulting
+     * permission string; a rejecting/absent API degrades to 'denied' so the
+     * caller can render the toggle honestly without throwing.
+     */
+    async function requestNotificationPermission() {
+      if (!notificationSupported()) return 'unsupported'
+      try {
+        const result = await window.Notification.requestPermission()
+        return typeof result === 'string' ? result : notificationPermission()
+      } catch {
+        // Older Safari used a callback-only API; treat a thrown promise as a
+        // refusal rather than breaking the settings page.
+        return notificationPermission() === 'granted' ? 'granted' : 'denied'
+      }
+    }
+
+    /**
+     * Fire one notification for a finished card. Returns false when the
+     * feature/permission/hidden guard fails, so the caller can stay silent.
+     * Clicking the notification brings the tab forward.
+     */
+    function notifyCardFinish(card) {
+      const hidden = typeof document !== 'undefined' && document.hidden === true
+      if (!shouldNotifyFinish(store.state.config, hidden, notificationPermission(), card.notified === true)) {
+        return false
+      }
+      try {
+        const { title, body } = buildFinishNotification(card)
+        const notification = new window.Notification(title, { body, tag: `dsh-sidecard-ask:${card.id}` })
+        notification.onclick = () => {
+          try { window.focus() } catch { /* the WebView may refuse focus */ }
+          try { notification.close() } catch { /* already closed */ }
+        }
+        patchCard(card.id, { notified: true })
+        return true
+      } catch (error) {
+        console.warn(`[${PLUGIN_ID}] notification failed:`, error)
+        return false
+      }
+    }
+
     /**
      * Validate a settings-page quick-action draft BEFORE posting it, so the
      * Host's all-or-nothing refusal never comes back as a surprise. Also
@@ -1591,7 +1799,7 @@ window.__ModuleLoader__.load({
    (\`html[data-platform] body>[data-dsh-better-sidebar]{-webkit-app-region:initial}\`
    plus \`[data-dsh-panel-host]>*{-webkit-app-region:no-drag}\`).
    Every surface we draw declares it. The property is inert in a browser. */
-.dsa-layer,.dsa-trigger,.dsa-quickbar,.dsa-pop,.dsa-float,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
+.dsa-layer,.dsa-trigger,.dsa-quickbar,.dsa-pop,.dsa-ctxmenu,.dsa-float,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
 .dsa-layer{pointer-events:none;position:relative;z-index:60}
 .dsa-trigger{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:4px;
   padding:4px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
@@ -1616,6 +1824,21 @@ window.__ModuleLoader__.load({
 /* Chips rendered INSIDE the popover need no floating shadow. */
 .dsa-pop-chips{display:flex;gap:6px;flex-wrap:wrap}
 .dsa-pop-chips .dsa-chip{box-shadow:none}
+/* Post-answer follow-up chips live inside a card: quiet, pill-shaped, no
+   floating shadow; the row is shown only for a terminal answer with text. */
+.dsa-fu-chips{display:flex;gap:6px;flex-wrap:wrap}
+.dsa-fu-chips .dsa-chip{box-shadow:none;padding:2px 9px;font-size:11px;line-height:15px}
+/* The selection context menu: a compact vertical list at the cursor. */
+.dsa-ctxmenu{pointer-events:auto;position:fixed;z-index:65;display:flex;flex-direction:column;
+  min-width:168px;padding:4px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
+  box-shadow:0 10px 30px rgba(0,0,0,.24);font-size:13px}
+.dsa-ctx-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:6px 10px;
+  border:none;border-radius:7px;background:transparent;color:inherit;font:inherit;font-size:12px;
+  line-height:17px;cursor:pointer;white-space:nowrap}
+.dsa-ctx-item:hover,.dsa-ctx-item:focus-visible{background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14));outline:none}
+.dsa-ctx-sep{height:1px;margin:4px 6px;background:var(--dsw-alias-border-l1, rgba(127,127,127,.25))}
+.dsa-ctx-badge{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-secondary, #888)}
 /* Inside the trigger bar the main button and chips are one flex row: the
    trigger drops its own fixed positioning, chips join the row directly. */
 .dsa-trigger-embedded{position:static;box-shadow:0 2px 10px rgba(0,0,0,.18)}
@@ -1735,6 +1958,14 @@ window.__ModuleLoader__.load({
 .dsa-qa-question{flex-basis:100%!important;min-width:0!important}
 .dsa-qa-head{display:flex;align-items:center;gap:8px;font-size:12px;
   color:var(--dsw-alias-label-secondary, #555)}
+/* History-card manager (settings page). */
+.dsa-hist{display:flex;flex-direction:column;gap:8px}
+.dsa-hist-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:8px;border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));border-radius:8px}
+.dsa-hist-main{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
+.dsa-hist-q{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  color:var(--dsw-alias-label-primary, #111)}
+.dsa-hist-meta{font-size:11px;color:var(--dsw-alias-label-secondary, #777)}
 .dsa-diag{display:flex;flex-direction:column;gap:2px;font-size:12px;
   color:var(--dsw-alias-label-secondary, #555)}
 /* §4.5 legacy coexistence: an unmarked dsa-layer can only be the old
@@ -2018,10 +2249,28 @@ window.__ModuleLoader__.load({
      * popover. The trigger bar lays chips out directly (`display:contents`);
      * the popover wraps them in its own borderless chip row.
      */
-    function QuickChips({ actions, onPick, inline = false }) {
+    function QuickChips({ actions, onPick, inline = false, wrapClassName }) {
       if (!Array.isArray(actions) || actions.length === 0) return null
-      return h('div', { className: inline ? 'dsa-quickbar-chips' : 'dsa-pop-chips' },
-        actions.map(action => h('button', {
+      // Roving focus with the arrow keys: chip rows sit beside the trigger
+      // button and inside the popover, and keyboard users must be able to walk
+      // them without Tabbing through the whole page.
+      const onChipKeyDown = (event, index) => {
+        if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft'
+          && event.key !== 'Home' && event.key !== 'End') return
+        const siblings = typeof event.currentTarget?.parentElement?.querySelectorAll === 'function'
+          ? [...event.currentTarget.parentElement.querySelectorAll('.dsa-chip')]
+          : []
+        if (siblings.length === 0) return
+        event.preventDefault()
+        let next = index
+        if (event.key === 'ArrowRight') next = (index + 1) % siblings.length
+        else if (event.key === 'ArrowLeft') next = (index - 1 + siblings.length) % siblings.length
+        else if (event.key === 'Home') next = 0
+        else next = siblings.length - 1
+        siblings[next]?.focus?.()
+      }
+      return h('div', { className: wrapClassName ?? (inline ? 'dsa-quickbar-chips' : 'dsa-pop-chips') },
+        actions.map((action, index) => h('button', {
           key: action.id,
           type: 'button',
           className: 'dsa-chip',
@@ -2030,6 +2279,7 @@ window.__ModuleLoader__.load({
             : action.question,
           'aria-label': `${action.label}：${action.question}`,
           onMouseDown: (event) => { event.preventDefault() },
+          onKeyDown: event => onChipKeyDown(event, index),
           onClick: (event) => {
             event.preventDefault()
             event.stopPropagation()
@@ -2060,6 +2310,64 @@ window.__ModuleLoader__.load({
       },
         h(TriggerButton, { candidate, onOpen, embedded: true }),
         h(QuickChips, { actions, onPick: onQuick, inline: true }))
+    }
+
+    /**
+     * The selection context menu (#8). Opens at the cursor with the main Ask
+     * entry plus the FIRST THREE enabled quick actions (kept short so it
+     * never grows past a normal context menu). This is a capability-gated
+     * overlay: the listener only suppresses the native menu when config
+     * allows it AND the candidate passes the same shouldOffer() gate as the
+     * trigger button.
+     */
+    const CONTEXT_MENU_ACTION_LIMIT = 3
+    function SelectionContextMenu({ candidate, position, config, onClose, onOpen, onQuick }) {
+      const actions = quickActionsOf(config).slice(0, CONTEXT_MENU_ACTION_LIMIT)
+      // Cursor rect: clampBox reads left/top/right/bottom.
+      const point = {
+        left: position?.x ?? 0,
+        top: position?.y ?? 0,
+        right: position?.x ?? 0,
+        bottom: position?.y ?? 0,
+        width: 0,
+        height: 0,
+      }
+      const box = clampBox(point, 200, 40 + actions.length * 31, 'below')
+      const item = (glyph, label, onClick, badge) => h('button', {
+        type: 'button',
+        className: 'dsa-ctx-item',
+        onMouseDown: event => event.preventDefault(),
+        onClick: (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          onClose()
+          onClick()
+        },
+      }, h('span', { 'aria-hidden': true }, glyph), h('span', null, label),
+        badge !== undefined ? h('span', { className: 'dsa-ctx-badge' }, badge) : null)
+      return h('div', {
+        className: 'dsa-ctxmenu',
+        role: 'menu',
+        'aria-label': t('askTitle'),
+        style: { left: `${box.left}px`, top: `${box.top}px` },
+        onMouseDown: event => event.stopPropagation(),
+        onKeyDown: (event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } },
+      },
+        item('💬', t('triggerLabel'), () => onOpen(candidate), zoneLabel(candidate)),
+        actions.length > 0 ? h('div', { className: 'dsa-ctx-sep', 'aria-hidden': true }) : null,
+        actions.map(action => h('button', {
+          key: action.id,
+          type: 'button',
+          role: 'menuitem',
+          className: 'dsa-ctx-item',
+          onMouseDown: event => event.preventDefault(),
+          onClick: (event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onClose()
+            onQuick(action)
+          },
+        }, h('span', null, action.label))))
     }
 
     /** The question popover. */
@@ -2098,6 +2406,19 @@ window.__ModuleLoader__.load({
           if (event.key === 'Escape') {
             event.stopPropagation()
             onClose()
+            return
+          }
+          // Alt+1..9 fires the Nth chip without leaving the keyboard. The alt
+          // modifier keeps it from colliding with ordinary digit input, and a
+          // composing IME sequence must pass through untouched.
+          if (event.altKey && !event.ctrlKey && !event.metaKey && !event.isComposing
+            && /^[1-9]$/.test(event.key)) {
+            const index = Number(event.key) - 1
+            const action = quickActions[index]
+            if (action !== undefined) {
+              event.preventDefault()
+              onQuick(action)
+            }
             return
           }
           if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -2260,7 +2581,46 @@ window.__ModuleLoader__.load({
         'aria-label': t(labelKey),
         onClick: () => onFloatMode(mode),
       }, glyph)
-      return h('section', { className: 'dsa-card', 'aria-label': t('answerTitle') },
+      // #10: the card is keyboard-focusable; R retries a failed/stopped run,
+      // C copies the answer, Esc releases focus. Plain keys are accepted only
+      // without modifiers and never while composing or inside an editor.
+      const onCardKeyDown = (event) => {
+        if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return
+        const tag = String(event.target?.tagName ?? '')
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON'
+          || event.target?.closest?.('[contenteditable=""],[contenteditable="true"]') !== null) {
+          if (event.key === 'Escape' && tag !== 'INPUT' && tag !== 'TEXTAREA') {
+            event.currentTarget?.blur?.()
+          }
+          return
+        }
+        const key = String(event.key ?? '').toLowerCase()
+        if (key === 'r' && (card.status === 'error' || card.status === 'stopped')) {
+          event.preventDefault()
+          onRetry()
+        } else if (key === 'c' && card.text !== '') {
+          event.preventDefault()
+          onCopy(answerRef.current)
+        } else if (event.key === 'Escape') {
+          event.currentTarget?.blur?.()
+        }
+      }
+      const terminalWithAnswer = (card.status === 'done' || card.status === 'stopped')
+        && card.carrier === 'side' && card.text !== ''
+      // #9: which model answered and how long it took. provider arrives on the
+      // start event; elapsed is measured client-side across the stream.
+      const metaBits = []
+      if (typeof card.provider === 'string' && card.provider !== '') metaBits.push(`${t('metaProvider')} ${card.provider}`)
+      if (typeof card.elapsedMs === 'number' && Number.isFinite(card.elapsedMs) && formatElapsed(card.elapsedMs) !== '') {
+        metaBits.push(`${t('metaElapsed')} ${formatElapsed(card.elapsedMs)}`)
+      }
+      return h('section', {
+        className: 'dsa-card',
+        'aria-label': t('answerTitle'),
+        tabIndex: 0,
+        title: t('cardKeysHint'),
+        onKeyDown: onCardKeyDown,
+      },
         h('div', { className: 'dsa-row' },
           h('span', { className: 'dsa-title' }, t('answerTitle')),
           h('span', { className: 'dsa-badge' }, zoneLabel(card)),
@@ -2272,6 +2632,7 @@ window.__ModuleLoader__.load({
               floatControl('off', 'floatHide', '×'))
             : null),
         h('pre', { className: 'dsa-quote' }, card.question),
+        metaBits.length > 0 ? h('div', { className: 'dsa-muted' }, metaBits.join(' · ')) : null,
         h(AnswerBody, { card, containerRef: answerRef }),
         card.toolFilter === 'unsupported'
           ? h('div', { className: 'dsa-muted' }, t('toolGuardUnavailable'))
@@ -2340,6 +2701,16 @@ window.__ModuleLoader__.load({
                   onRetryEdit(text)
                 },
               }, t('retryAskSubmit'))))
+          : null,
+        // #7: one-tap refinements of a finished answer. They submit follow-up
+        // TURNS through the same handler as the textarea, so the answer stays
+        // in history and each chip costs one ordinary request.
+        terminalWithAnswer
+          ? h(QuickChips, {
+            wrapClassName: 'dsa-fu-chips',
+            actions: followUpChips(),
+            onPick: chip => onFollowUp(chip.question),
+          })
           : null,
         h(CardActions, {
           card,
@@ -2526,6 +2897,16 @@ window.__ModuleLoader__.load({
             onQuick: action => actions.quickAsk(popover.candidate, action),
           })
           : null,
+        state.contextMenu !== null
+          ? h(SelectionContextMenu, {
+            candidate: state.contextMenu.candidate,
+            position: state.contextMenu.position,
+            config,
+            onClose: () => actions.closeContextMenu(),
+            onOpen: (candidate) => actions.openPopover(candidate),
+            onQuick: action => actions.quickAsk(state.contextMenu.candidate, action),
+          })
+          : null,
         h(FloatingLayer, { cards: state.cards, actions }),
         state.toast !== null ? h('div', { className: 'dsa-toast' }, state.toast) : null)
     }
@@ -2536,9 +2917,25 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = React.useState(state.config)
       const [status, setStatus] = React.useState('idle')
       const [diag, setDiag] = React.useState(null)
+      const [historyQuery, setHistoryQuery] = React.useState('')
+      const [notifyPerm, setNotifyPerm] = React.useState(
+        typeof notificationPermission === 'function' ? notificationPermission() : 'unsupported')
       const config = state.config
 
       React.useEffect(() => { setDraft(config) }, [config])
+
+      // #5: enabling the toggle asks for the Notification permission
+      // immediately, and the resulting verdict is shown beside the checkbox
+      // so a denied toggle never looks silently broken.
+      const onNotifyToggle = async (enabled) => {
+        setDraft({ ...draft, notifyOnDone: enabled })
+        if (enabled !== true) return
+        if (notifyPerm === 'granted') return
+        const result = await requestNotificationPermission()
+        setNotifyPerm(result)
+        if (result !== 'granted') toast(result === 'unsupported' ? t('notifyUnsupported') : t('notifyDenied'))
+        else toast(t('notifyGranted'))
+      }
 
       const field = (label, control, hint) => h('div', { className: 'dsa-field' },
         h('label', null, label),
@@ -2677,6 +3074,73 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // ── history manager (#6) ─────────────────────────────────────────
+      const zoneLabelOf = zone => (zone === 'chat' ? t('zoneChat') : zone === 'task' ? t('zoneTask') : t('zoneOther'))
+      const query = historyQuery.trim().toLowerCase()
+      const filteredHistory = query === ''
+        ? state.history
+        : state.history.filter(entry =>
+          String(entry.question ?? '').toLowerCase().includes(query)
+          || String(entry.text ?? '').toLowerCase().includes(query))
+      const historySection = h('div', { className: 'dsa-field' },
+        h('label', null, `${t('historyTitle')}（${t('historyCount', { n: state.history.length })}）`),
+        h('span', { className: 'dsa-muted' }, t('historyDesc')),
+        h('input', {
+          className: 'dsa-input',
+          value: historyQuery,
+          placeholder: t('historySearch'),
+          onChange: event => setHistoryQuery(event.target.value),
+        }),
+        state.history.length === 0
+          ? h('div', { className: 'dsa-muted' }, t('historyEmpty'))
+          : h('div', { className: 'dsa-hist' },
+            filteredHistory.length === 0 && query !== ''
+              ? h('div', { className: 'dsa-muted' }, t('historyEmpty'))
+              : null,
+            filteredHistory.map(entry => h('div', { key: entry.id, className: 'dsa-hist-row' },
+              h('div', { className: 'dsa-hist-main' },
+                h('div', { className: 'dsa-hist-q', title: entry.question }, entry.question),
+                h('div', { className: 'dsa-hist-meta' },
+                  [
+                    zoneLabelOf(entry.zone),
+                    formatHistoryTime(entry.createdAt),
+                    typeof entry.provider === 'string' && entry.provider !== ''
+                      ? `${t('metaProvider')} ${entry.provider}`
+                      : '',
+                    Number.isFinite(entry.elapsedMs) ? `${t('metaElapsed')} ${formatElapsed(entry.elapsedMs)}` : '',
+                  ].filter(part => part !== '').join(' · '))),
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn',
+                onClick: () => actions.restoreHistoryCard(entry.id),
+              }, t('historyRestore')),
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn',
+                onClick: () => {
+                  void copyText(String(entry.text ?? '')).then((result) => {
+                    toast(result === 'copied' ? t('copied') : result === 'selected' ? t('copySelectedHint') : t('copyFailed'))
+                  })
+                },
+              }, t('copy')),
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn',
+                onClick: () => actions.deleteHistoryCard(entry.id),
+              }, t('historyDelete')))),
+            state.history.length > 0
+              ? h('div', null, h('button', {
+                type: 'button',
+                className: 'dsa-btn',
+                onClick: () => {
+                  // confirm() is optional in embedded WebViews; when absent,
+                  // clear immediately (the manager is explicitly user-driven).
+                  if (typeof window.confirm === 'function' && !window.confirm(t('historyClearConfirm'))) return
+                  actions.clearHistory()
+                },
+              }, t('historyClear')))
+              : null))
+
       // §4.5 a non-leader copy explains why its interaction surface is gone.
       const familyBanner = state.familyLeader === false
         ? h('div', { className: 'dsa-family-notice', role: 'status' },
@@ -2732,7 +3196,8 @@ window.__ModuleLoader__.load({
             ['inherit', t('setSideToolsInherit')],
           ])),
           field(t('setSideTimeout'), number('sideTimeoutMs', 5000, 3600000), t('setSideTimeoutHint')),
-          field(t('setSideProvider'), providerSelect(), t('setSideProviderHint'))),
+          field(t('setSideProvider'), providerSelect(), t('setSideProviderHint')),
+          field(t('setHistoryMax'), number('historyMaxCards', 0, 50), t('setHistoryMaxHint'))),
         quickActionsEditor,
         h('label', { className: 'dsa-check' },
           h('input', {
@@ -2741,6 +3206,29 @@ window.__ModuleLoader__.load({
             onChange: event => setDraft({ ...draft, showInUnclassified: event.target.checked }),
           }),
           t('setUnclassified')),
+        h('label', { className: 'dsa-check' },
+          h('input', {
+            type: 'checkbox',
+            checked: draft.contextMenu === true,
+            onChange: event => setDraft({ ...draft, contextMenu: event.target.checked }),
+          }),
+          t('setContextMenu')),
+        h('span', { className: 'dsa-muted' }, t('setContextMenuHint')),
+        h('label', { className: 'dsa-check' },
+          h('input', {
+            type: 'checkbox',
+            checked: draft.notifyOnDone === true,
+            disabled: notifyPerm === 'unsupported',
+            onChange: event => { void onNotifyToggle(event.target.checked) },
+          }),
+          t('setNotifyOnDone')),
+        h('span', { className: 'dsa-muted' },
+          notifyPerm === 'unsupported'
+            ? t('notifyUnsupported')
+            : notifyPerm === 'denied'
+              ? t('notifyDenied')
+              : t('setNotifyOnDoneHint')),
+        historySection,
         h('div', { className: 'dsa-row' },
           h('button', {
             type: 'button',
@@ -2895,28 +3383,52 @@ window.__ModuleLoader__.load({
         // server round-trip) and replayed on boot. Everything here is optional
         // by design — a private-mode window (throws on setItem), a full quota,
         // or a tampered payload must degrade to "no history", never break boot.
-        const PERSIST_KEY = 'dsh-sidecard-ask:cards:v1'
-        const PERSIST_MAX_CARDS = 10
+        // v2 (1.8.0): adds `createdAt`, a configurable cap
+        // (`historyMaxCards`, 0–50) and per-entry manager actions. The v1
+        // payload is read once and imported into v2 on boot; the v1 key is
+        // left untouched (no destructive migration), so a downgrade still
+        // finds it.
+        const PERSIST_KEY = 'dsh-sidecard-ask:cards:v2'
+        const PERSIST_LEGACY_KEY = 'dsh-sidecard-ask:cards:v1'
+        const PERSIST_FALLBACK_CARDS = 10
         const PERSIST_TEXT_LIMIT = 65536
+
+        /** Configured durable cap, clamped to the Host's 0–50 range. */
+        const historyCap = () => {
+          const value = Number(store.state.config.historyMaxCards)
+          if (!Number.isFinite(value)) return PERSIST_FALLBACK_CARDS
+          return Math.max(0, Math.min(50, Math.round(value)))
+        }
+
+        /** Parse one localStorage envelope of a given schema version. */
+        const parseEnvelope = (raw, version) => {
+          if (raw === null || raw === undefined) return []
+          try {
+            const value = JSON.parse(raw)
+            if (value?.version !== version || !Array.isArray(value.cards)) return []
+            return value.cards
+              .filter(entry => typeof entry?.id === 'string' && entry.id !== '' && typeof entry.question === 'string')
+          } catch { return [] }
+        }
 
         function readPersisted() {
           let raw = null
           try {
             raw = window.localStorage?.getItem(PERSIST_KEY)
           } catch { return [] }
-          if (raw === null || raw === undefined) return []
+          const v2 = parseEnvelope(raw, 2).slice(0, 50)
+          if (v2.length > 0 || (raw !== null && raw !== undefined)) return v2
+          // One-time v1 import: v1 entries carry no createdAt (0 = unknown).
+          let legacy = null
           try {
-            const value = JSON.parse(raw)
-            if (value?.version !== 1 || !Array.isArray(value.cards)) return []
-            return value.cards
-              .filter(entry => typeof entry?.id === 'string' && entry.id !== '' && typeof entry.question === 'string')
-              .slice(0, PERSIST_MAX_CARDS)
+            legacy = window.localStorage?.getItem(PERSIST_LEGACY_KEY)
           } catch { return [] }
+          return parseEnvelope(legacy, 1).slice(0, 50).map(entry => ({ ...entry, createdAt: 0 }))
         }
 
         function writePersisted(cards) {
           try {
-            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 1, cards }))
+            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 2, cards }))
           } catch (error) {
             // Quota or privacy mode — the cards stay on screen, just not durable.
             console.warn(`[${PLUGIN_ID}] card history not persisted:`, error)
@@ -2925,11 +3437,12 @@ window.__ModuleLoader__.load({
 
         /** Recompute the durable set from the live store and write it. */
         const syncPersisted = () => {
+          const cap = historyCap()
           const finished = store.state.cards
             .filter(card => card.carrier === 'side'
               && (card.status === 'done' || card.status === 'stopped')
               && card.text !== '')
-            .slice(0, PERSIST_MAX_CARDS)
+            .slice(0, cap)
             .map(card => ({
               id: card.id,
               question: card.question,
@@ -2942,15 +3455,38 @@ window.__ModuleLoader__.load({
               zone: card.zone,
               truncated: card.truncated === true,
               droppedChars: Number(card.droppedChars ?? 0),
+              createdAt: Number.isFinite(card.createdAt) ? card.createdAt : Date.now(),
+              provider: typeof card.provider === 'string' ? card.provider : '',
+              elapsedMs: Number.isFinite(card.elapsedMs) ? card.elapsedMs : null,
               history: Array.isArray(card.history) ? card.history.slice(-12) : [],
             }))
+          // cap === 0 disables persistence: do not touch the existing key
+          // (documented as "kept until an explicit clear"), just mirror the
+          // in-memory state (empty manager view).
+          if (cap === 0) {
+            store.set({ history: [] })
+            return
+          }
           writePersisted(finished)
+          store.set({ history: finished })
         }
 
         /** Replay finished cards from a previous page load into the store. */
         const restorePersisted = () => {
-          const saved = readPersisted()
+          // Detect the v1→v2 migration BEFORE reading: when the v2 key is
+          // absent but a legacy payload exists, the imported set is written
+          // out under v2 once (non-destructively; v1 is kept).
+          let v2Raw
+          try {
+            v2Raw = window.localStorage?.getItem(PERSIST_KEY)
+          } catch { v2Raw = null }
+          const cap = historyCap()
+          const saved = readPersisted().slice(0, cap)
+          store.set({ history: saved })
           if (saved.length === 0) return
+          if (cap > 0 && (v2Raw === null || v2Raw === undefined)) {
+            writePersisted(saved)
+          }
           const replayed = saved.map(entry => ({
             id: entry.id,
             question: entry.question,
@@ -2965,6 +3501,9 @@ window.__ModuleLoader__.load({
             droppedChars: Number(entry.droppedChars ?? 0),
             streaming: null,
             error: null,
+            provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
+            elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
+            createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
             // A native/better tab cannot survive a reload, so history always
             // comes back on the flow stack where it is visible immediately.
             surface: 'flow',
@@ -2978,12 +3517,83 @@ window.__ModuleLoader__.load({
           store.set({ cards: [...replayed, ...store.state.cards] })
         }
 
+        /** Map one durable history entry back to a live flow card. */
+        const historyEntryToCard = (entry) => ({
+          id: entry.id,
+          question: entry.question,
+          selected: String(entry.selected ?? ''),
+          selection: String(entry.selection ?? ''),
+          text: String(entry.text ?? ''),
+          reasoning: String(entry.reasoning ?? ''),
+          status: entry.status === 'stopped' ? 'stopped' : 'done',
+          carrier: 'side',
+          zone: entry.zone,
+          truncated: entry.truncated === true,
+          droppedChars: Number(entry.droppedChars ?? 0),
+          streaming: null,
+          error: null,
+          provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
+          elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
+          createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
+          notified: true,
+          surface: 'flow',
+          open: true,
+          history: Array.isArray(entry.history)
+            ? entry.history
+                .filter(turn => turn !== null && typeof turn === 'object')
+                .map(turn => ({ question: String(turn.question ?? ''), answer: String(turn.answer ?? '') }))
+            : [],
+        })
+
         const actions = {
           openPopover(candidate) {
             store.set({ popover: { candidate } })
           },
           closePopover() {
             store.set({ popover: null })
+          },
+          openContextMenu(candidate, position) {
+            store.set({ contextMenu: { candidate, position } })
+          },
+          closeContextMenu() {
+            if (store.state.contextMenu !== null) store.set({ contextMenu: null })
+          },
+          /** Bring one durable card back onto the floating stack. */
+          restoreHistoryCard(id) {
+            const entry = store.state.history.find(item => item.id === id)
+            if (entry === undefined) return false
+            if (store.state.cards.some(card => card.id === id)) {
+              patchCard(id, { surface: 'flow', open: true })
+            } else {
+              store.set({ cards: [historyEntryToCard(entry), ...store.state.cards] })
+            }
+            // A hidden (off/capsule) layer would swallow the restored card;
+            // this is a session-only override, exactly like clicking expand.
+            setFloatMode('full')
+            toast(t('historyRestored'))
+            return true
+          },
+          /** Delete one entry from durable history (and its live card). */
+          deleteHistoryCard(id) {
+            const next = store.state.history
+              .filter(item => item.id !== id)
+              .slice(0, historyCap())
+            writePersisted(next)
+            store.set({
+              history: next,
+              cards: store.state.cards.filter(card => card.id !== id),
+            })
+            toast(t('historyDeleted'))
+          },
+          /** Empty the durable history without touching running cards. */
+          clearHistory() {
+            try {
+              window.localStorage?.removeItem(PERSIST_KEY)
+            } catch (error) {
+              console.warn(`[${PLUGIN_ID}] history clear failed:`, error)
+            }
+            store.set({ history: [] })
+            toast(t('historyClearDone'))
           },
           async submit(candidate, payload) {
             store.set({ popover: null, trigger: null })
@@ -3006,6 +3616,13 @@ window.__ModuleLoader__.load({
               surface: 'flow',
               open: true,
               history: [],
+              // #9 transparency: provider from the start event, elapsed
+              // measured across the stream; createdAt feeds history v2.
+              provider: null,
+              elapsedMs: null,
+              createdAt: Date.now(),
+              // #5 guard: at most one notification per card.
+              notified: false,
             }
             if (payload.carrier === 'main') {
               store.set({ cards: [card, ...store.state.cards] })
@@ -3210,7 +3827,9 @@ window.__ModuleLoader__.load({
               } catch { /* the right rail owns its lifecycle */ }
             }
             store.set({ cards: store.state.cards.filter(item => item.id !== card.id) })
-            syncPersisted()
+            // #6: closing a card only removes it from the live surface; the
+            // durable history (written when the answer finished) is retained
+            // and managed explicitly in the settings-page history manager.
           },
           async saveConfig(patch) {
             const value = await postJson('config', patch)
@@ -3279,7 +3898,19 @@ window.__ModuleLoader__.load({
           if (card === undefined) return
           const controller = new AbortController()
           controllers.set(cardId, controller)
-          patchCard(cardId, { status: 'streaming', text: '', reasoning: '', error: null })
+          // #9: wall time from the (re)start of THIS attempt to its terminal
+          // frame. retry/retryEdit both run this function again, so the timer
+          // naturally measures the fresh attempt only.
+          const startedAt = Date.now()
+          patchCard(cardId, {
+            status: 'streaming',
+            text: '',
+            reasoning: '',
+            error: null,
+            provider: null,
+            elapsedMs: null,
+            notified: false,
+          })
           await streamAsk({
             id: cardId,
             question: card.question,
@@ -3297,6 +3928,7 @@ window.__ModuleLoader__.load({
                 // Reported by the host so the card can be honest about the
                 // read-only guard when the provider cannot take a tool filter.
                 toolFilter: typeof data?.toolFilter === 'string' ? data.toolFilter : null,
+                provider: typeof data?.provider === 'string' ? data.provider : (card.provider ?? null),
               })
             },
             onDelta: data => bufferStreamDelta(cardId, String(data?.text ?? '')),
@@ -3308,20 +3940,27 @@ window.__ModuleLoader__.load({
               if (controller.signal.aborted) return
               flushStreamBuffers()
               const current = store.state.cards.find(item => item.id === cardId)
+              const status = data?.aborted === true ? 'stopped' : 'done'
               patchCard(cardId, {
-                status: data?.aborted === true ? 'stopped' : 'done',
+                status,
                 streaming: data?.streaming === true,
                 text: typeof data?.text === 'string' && data.text !== '' ? data.text : (current?.text ?? ''),
                 reasoning: typeof data?.reasoning === 'string' ? data.reasoning : (current?.reasoning ?? ''),
+                elapsedMs: Date.now() - startedAt,
               })
               controllers.delete(cardId)
               syncPersisted()
+              // #5: background finish notification (guarded inside).
+              const finished = store.state.cards.find(item => item.id === cardId)
+              if (finished !== undefined) notifyCardFinish(finished)
             },
             onError: (error) => {
               if (controller.signal.aborted) return
               flushStreamBuffers()
-              patchCard(cardId, { status: 'error', error })
+              patchCard(cardId, { status: 'error', error, elapsedMs: Date.now() - startedAt })
               controllers.delete(cardId)
+              const failed = store.state.cards.find(item => item.id === cardId)
+              if (failed !== undefined) notifyCardFinish(failed)
             },
           })
         }
@@ -3380,6 +4019,27 @@ window.__ModuleLoader__.load({
           const element = elementOf(event.target)
           if (element !== null && element.closest('[data-dsa-root]') !== null) return
           if (store.state.popover !== null) store.set({ popover: null })
+          if (store.state.contextMenu !== null) store.set({ contextMenu: null })
+        }
+
+        // #8: right-click on a qualifying selection raises OUR menu instead
+        // of the native one. The same gates as the trigger button apply —
+        // leader, config toggle, editable-field exclusion, zone filter — and
+        // when any gate fails we do NOT preventDefault, so the host's native
+        // menu opens untouched (that is the documented conflict fallback).
+        const onContextMenu = (event) => {
+          if (store.state.familyLeader === false) return
+          const config = store.state.config
+          if (config.contextMenu !== true) return
+          const candidate = readSelection()
+          const decision = shouldOffer(candidate, config, { anchors: store.state.zoneAnchors !== false })
+          if (!decision.ok) {
+            if (store.state.contextMenu !== null) store.set({ contextMenu: null })
+            return
+          }
+          event.preventDefault()
+          event.stopPropagation()
+          actions.openContextMenu(candidate, { x: event.clientX, y: event.clientY })
         }
 
         const onKeyDown = (event) => {
@@ -3418,11 +4078,13 @@ window.__ModuleLoader__.load({
           }
           if (event.key === 'Escape') {
             if (store.state.popover !== null) store.set({ popover: null })
+            if (store.state.contextMenu !== null) store.set({ contextMenu: null })
           }
         }
 
         const onScroll = () => {
           if (store.state.popover === null && store.state.trigger !== null) store.set({ trigger: null })
+          if (store.state.contextMenu !== null) store.set({ contextMenu: null })
         }
 
         if (typeof document !== 'undefined') {
@@ -3430,6 +4092,7 @@ window.__ModuleLoader__.load({
           document.addEventListener('pointerup', schedule, true)
           document.addEventListener('keyup', schedule, true)
           document.addEventListener('mousedown', onDocumentDown, true)
+          document.addEventListener('contextmenu', onContextMenu, true)
           document.addEventListener('keydown', onKeyDown, true)
           window.addEventListener('scroll', onScroll, true)
           window.addEventListener('resize', onScroll, true)
@@ -3438,6 +4101,7 @@ window.__ModuleLoader__.load({
             document.removeEventListener('pointerup', schedule, true)
             document.removeEventListener('keyup', schedule, true)
             document.removeEventListener('mousedown', onDocumentDown, true)
+            document.removeEventListener('contextmenu', onContextMenu, true)
             document.removeEventListener('keydown', onKeyDown, true)
             window.removeEventListener('scroll', onScroll, true)
             window.removeEventListener('resize', onScroll, true)
@@ -3929,7 +4593,9 @@ window.__ModuleLoader__.load({
           store.set({
             trigger: null,
             popover: null,
+            contextMenu: null,
             cards: [],
+            history: [],
             toast: null,
             sessionId: null,
             surface: 'flow',
@@ -3971,8 +4637,18 @@ window.__ModuleLoader__.load({
           renderActionQuestion,
           validateQuickActionsDraft,
           shortcutFingerprint,
+          followUpChips,
+          formatElapsed,
+          formatHistoryTime,
+          notificationSupported,
+          notificationPermission,
+          shouldNotifyFinish,
+          buildFinishNotification,
+          requestNotificationPermission,
           QUICK_ACTION_BUILTINS,
           QUICK_ACTION_LIMITS,
+          FOLLOW_UP_CHIPS,
+          CONTEXT_MENU_ACTION_LIMIT,
           classifyZone,
           slotPathOf,
           shouldOffer,

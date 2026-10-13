@@ -42,7 +42,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.7.0'
+export const PLUGIN_VERSION = '1.7.1'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -100,6 +100,25 @@ export const DEFAULT_CONFIG = {
     { id: 'builtin:polish', enabled: true, shortcut: '' },
     { id: 'builtin:fix', enabled: true, shortcut: '' },
   ],
+  /**
+   * Fire a desktop Notification when a side answer finishes while the page
+   * is hidden (another tab/window). Off by default: enabling it also requires
+   * the browser's Notification permission, requested lazily on first use.
+   */
+  notifyOnDone: false,
+  /**
+   * Offer the plugin's own context menu on a qualifying selection (main
+   * "ask" entry plus the first quick actions). The page's native menu is
+   * suppressed only inside that menu; the feature can be turned off when a
+   * host composition ships a conflicting selection menu.
+   */
+  contextMenu: true,
+  /**
+   * How many finished cards the Client mirrors into localStorage. `0`
+   * disables persistence entirely (no write, existing history is left on
+   * disk until the next explicit clear).
+   */
+  historyMaxCards: 10,
 }
 
 /** Bounds for the `quickActions` user layer (defense in depth). */
@@ -135,6 +154,7 @@ const NUMBERS = {
   maxConcurrentAsks: [1, 12],
   sideTimeoutMs: [5_000, 3_600_000],
   floatMaxWidth: [240, 560],
+  historyMaxCards: [0, 50],
 }
 
 /**
@@ -301,9 +321,10 @@ export function sanitizeLayer(raw, problems = []) {
     if (typeof raw.sideProvider === 'string' && raw.sideProvider.length <= 80) out.sideProvider = raw.sideProvider
     else problems.push('sideProvider: 必须是字符串，已忽略')
   }
-  if (raw.showInUnclassified !== undefined) {
-    if (typeof raw.showInUnclassified === 'boolean') out.showInUnclassified = raw.showInUnclassified
-    else problems.push('showInUnclassified: 必须是布尔值，已忽略')
+  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu']) {
+    if (raw[boolKey] === undefined) continue
+    if (typeof raw[boolKey] === 'boolean') out[boolKey] = raw[boolKey]
+    else problems.push(`${boolKey}: 必须是布尔值，已忽略`)
   }
   if (raw.quickActions !== undefined) {
     const list = sanitizeQuickActions(raw.quickActions, problems)
