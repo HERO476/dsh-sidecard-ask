@@ -1,0 +1,61 @@
+## A. alpha.3 vs alpha.4 per-file SHA256 diff (13 packages)
+  @deepseek-ai/dsh-client-modules: package/lib/client.js 40638B->46292B | package/lib/index.js 41776B->42376B | package/package.json 1647B->1647B | package/README.md 15221B->17324B | package/README.zh.md 14019B->15968B | package/lib/types/client/entries.d.ts 3528B->4391B | package/lib/types/client/index.d.ts 2381B->2461B | package/lib/types/index.d.ts 9393B->9651B | package/lib/types/client/manifest.d.ts 15870B->16775B | package/README.i18n.yaml 2743B->2860B | package/lib/types/client/notify.d.ts ABSENT->421B | package/lib/types/client/release-change.d.ts ABSENT->2335B
+  @deepseek-ai/dsh-client-ui-layout: package/package.json 1952B->1952B   [only package.json]
+  @deepseek-ai/dsh-client-ui-conversation: package/lib/client.js 765058B->774080B | package/package.json 3803B->3803B | package/README.md 31689B->32325B | package/README.zh.md 29032B->29578B | package/lib/types/client/input/editor/claim-decor.d.ts 1064B->ABSENT | package/lib/types/client/contract/draft-editor.d.ts 5417B->5893B | package/lib/types/client/draft.d.ts 1072B->1182B | package/lib/types/client/input/facade.d.ts 16820B->17696B | package/lib/types/client/contract/input.d.ts 16836B->17346B | package/lib/types/client/input/machine.d.ts 2005B->2174B | package/lib/types/client/input/editor/projection.d.ts 4506B->4697B | package/lib/types/client/input/editor/runtime.d.ts 6075B->6612B | package/lib/types/client/input/editor/text-ref.d.ts 2403B->2000B | package/README.i18n.yaml 1593B->1593B | package/lib/types/client/input/editor/command-chip-node.d.ts ABSENT->3956B | package/lib/types/client/input/editor/command-chip-selection.d.ts ABSENT->1105B | package/lib/types/client/input/editor/CommandChip.d.ts ABSENT->449B
+  @deepseek-ai/dsh-client-ui-renderer: package/package.json 1503B->1503B   [only package.json]
+  @deepseek-ai/dsh-client-ui-settings-general: package/lib/client.js 52330B->59393B | package/package.json 2615B->2817B | package/README.md 12333B->13547B | package/README.zh.md 11057B->12226B | package/lib/types/client/index.d.ts 1818B->1859B | package/lib/types/client/locales.d.ts 2948B->3430B | package/README.i18n.yaml 2475B->2617B | package/lib/types/client/HostReleasePrompt.d.ts ABSENT->1535B
+  @deepseek-ai/dsh-client-ui-sidebar-right: package/package.json 2688B->2688B   [only package.json]
+  @deepseek-ai/dsh-api-session-controller: package/lib/typert.host.js 364538B->365047B | package/package.json 6490B->6490B
+  @deepseek-ai/dsh-agent-loop: package/package.json 2076B->2076B   [only package.json]
+  @deepseek-ai/dsh-session: package/package.json 1616B->1616B   [only package.json]
+  @deepseek-ai/dsh-subagent: package/package.json 4911B->4911B   [only package.json]
+  @deepseek-ai/dsh-host-webserver: package/package.json 1240B->1240B   [only package.json]
+  @deepseek-ai/dsh-tools: package/package.json 2482B->2482B   [only package.json]
+  @deepseek-ai/dsh-workspace: package/package.json 1779B->1779B   [only package.json]
+
+## B. subagent: alpha.2 -> alpha.3 change + alpha.3 vs alpha.4 identity
+  lib/index.js: alpha.2 141093B / alpha.3 141871B / alpha.4 141871B
+  alpha.3 == alpha.4 byte-identical: true
+  count startActivation: a2=1 a3=1 a4=1
+  count delivery: a2=51 a3=51 a4=51
+  count toolFilter: a2=27 a3=18 a4=18
+  count persona: a2=25 a3=14 a4=14
+  count agentPreset: a2=5 a3=25 a4=25
+  count assertCapabilities: a2=2 a3=2 a4=2
+  count startLocal: a2=2 a3=2 a4=2
+  count startExternal: a2=4 a3=4 a4=4
+  count localAgent: a2=0 a3=0 a4=0
+  count NO_START_CAPABILITIES: a2=2 a3=2 a4=2
+  a2 assertCapabilities ctx: assertCapabilities(provider, {
+  a3 assertCapabilities ctx: assertCapabilities(provider, {
+  a2 composition ctx: composition helpers can read it
+  a3 composition ctx: composition helpers can read it
+
+## C. sidebar-right client.js size + consumed-surface counts
+  0.2.1-alpha.2: client.js 333167B | sidebarRightTabs=1 sidebarRight=30 pane.tab=13 pane.tab.title=7 openTab=23 revealIfOpened=13 preferNewPane=8 guide=75
+  0.2.1-alpha.3: client.js 190119B | sidebarRightTabs=1 sidebarRight=30 pane.tab=13 pane.tab.title=7 openTab=23 revealIfOpened=13 preferNewPane=8 guide=75
+  0.2.1-alpha.4: client.js 190119B | sidebarRightTabs=1 sidebarRight=30 pane.tab=13 pane.tab.title=7 openTab=23 revealIfOpened=13 preferNewPane=8 guide=75
+
+## D. conversation / renderer / layout counts
+  conversation 0.2.1-alpha.2: input.right=2 input.left=2 composer.dock=2 inputActions=11 setDraft=13
+  conversation 0.2.1-alpha.3: input.right=2 input.left=2 composer.dock=2 inputActions=11 setDraft=13
+  conversation 0.2.1-alpha.4: input.right=2 input.left=2 composer.dock=2 inputActions=11 setDraft=13
+  renderer data-slot: a3=6 a4=6
+  layout shell.overlay=6
+
+## E. alpha.4 client-side increments
+  @deepseek-ai/dsh-client-modules: release-change a3=0 a4=6 | ReleaseChangeGate a3=0 a4=3 | decodeRelease a3=0 a4=3 | notify a3=6 a4=12
+  @deepseek-ai/dsh-client-ui-settings-general: HostReleasePrompt a3=0 a4=24
+  @deepseek-ai/dsh-client-ui-conversation: CommandChip a3=0 a4=44 | claim-decor a3=2 a4=0
+
+## F. api-session-controller typert.host.js line diff alpha.3 -> alpha.4
+  typert.host files: package/lib/typert.host.js, package/lib/typert.host.d.ts
+  package/lib/typert.host.js: 4054 vs 4054 lines, 1 differing line(s)
+    L2687
+      a3:             "declaration": "export interface RemoteErrorDetailsMap {\n    'gateway/bad-request': { readonly issues?: readonly object[]; };\n    'gateway/cancelled': {};\n    'gateway/internal': {};\n    'llm/model-discov
+      a4:             "declaration": "export interface RemoteErrorDetailsMap {\n    'gateway/bad-request': { readonly issues?: readonly object[]; };\n    'gateway/cancelled': {};\n    'gateway/internal': {};\n    'llm/model-discov
+  plugin-market occurrences: a3=0 a4=6
+  package/lib/typert.host.d.ts: 4 vs 4 lines, 0 differing line(s)
+  plugin-market occurrences: a3=0 a4=0
+
+DONE

@@ -396,7 +396,7 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 | 没有 `data-slot` 锚点 | 检测到选区但槽位路径为空 → 判定"区域锚点不可用"，**停用区域过滤**（否则 `captureZones:chat` 会静默失效）并在设置页自检里标明 | `contract-test`：`shouldOffer(..., {anchors:false})` 断言放宽且返回 `zoneFiltering:'unavailable'` |
 | 路由 kind 不被接受 | `prefix` 注册失败 → 退化为**逐方法精确路由**（`state/ask/cancel/config/reset`），处理器不变 | 前缀路由由 smoke 全流程覆盖；退化分支为纯 fallback（未在真机触发过） |
 
-### 7.3 真机验证记录（1.6.0，2026-10-11）
+### 7.3 真机验证记录（1.6.0，2026-10-11；1.7.1 复核，2026-10-16）
 
 1.6.0 把 §7.1/§7.2 的产物层证据升级为**真机证据**：最近 10 个发布版（0.1.5-rc.3 → 0.2.1-alpha.2，
 按 npm 发布时间）全部在隔离 `DSH_HOME` 中真实安装、启动并读取运行时能力面；
@@ -412,10 +412,23 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
   patch id / 配置目录 / Alt+Q 零硬冲突；旧名包 `dsh-selection-followup@1.0.1` 共载时的双重触发由
   1.6.0 的页面内家族单例选举解决。完整矩阵、复现脚本与截图见 `.compat-report/`。
 
+**1.7.1 复核（2026-10-16）：0.2.1-alpha.3 / 0.2.1-alpha.4——两版均无需任何代码改动**（基线 = 1.6.0 已适配的 alpha.2）。
+
+- alpha.3（2026-10-14 发布）与 alpha.4（2026-10-15 发布，`alpha` 通道当前指向）在隔离 `DSH_HOME` 中
+  从零安装（官方 CLI 装入 `npm pack` 产物）、启动并做无头 Edge 断言：**28/28 × 两版全过**——
+  含 `subagents.startActivation` 实调出真实 childId、三个槽位落点、选区恰 1 个触发按钮、`Alt+Q` 恰 1 个弹层、
+  0 启动告警、0 未捕获页面错误。
+- 产物层复核：16 项能力矩阵在 alpha.2/3/4 上逐项一致；13 个相关包的逐文件 SHA256 diff 证实
+  alpha.3 → alpha.4 宿主侧零变化（`dsh-subagent` 的 `lib/index.js` 逐字节一致），alpha.4 的增量全在
+  客户端侧且为纯增量；alpha.2 → alpha.3 的子代理能力模型重排（`persona`/`toolFilter` 退出协商、
+  `agentPreset` 进入）不命中插件消费面——1.6.0 的字段门控原样覆盖。
+- 插件四套自测重跑 **1004 项全过**；完整证据（脚本 / 原始输出 / 截图，`wb-*` 前缀为本轮独立复核产物）
+  见 `.compat-report/`，过程细节（含两处探针口径修正的如实记录）见该目录 `COMPATIBILITY-REPORT-alpha3-alpha4.md` §8。
+
 ### 7.4 更早版本仍未做真机验证的部分（如实标注）
 
 - 上表所有 ✅/❌ 都是**包内容层面的证据**（字符串/签名存在于该版本的发布产物），不等于"插件在该版本上跑起来过"。
-  真机覆盖为 0.1.5-rc.3 → 0.2.1-alpha.2（1.6.0 实测）与 0.1.7-rc.2（§10.1 的历史实测）。
+  真机覆盖为 0.1.5-rc.3 → 0.2.1-alpha.4（1.6.0 与 1.7.1 两轮实测）与 0.1.7-rc.2（§10.1 的历史实测）。
 - 在 0.1.2-rc.1 … 0.1.4 这几个版本上，只验证了"所需 API 是否存在 + 插件有为缺失准备的分支"，
   **没有**在那些版本上安装并启动过插件。
 - `inputActions` 作为会话槽位标准 prop：13 个版本的 `dsh-client-ui-conversation` 产物里都有该名字，
@@ -668,7 +681,7 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
    本机实测能识别：`conversation.*`（聊天）、`rightbar` / `sidebar.right.*` / 名字含 task·todo·schedule·team·job·plan 的面板（任务）。
 2. **浏览器内的视觉与交互**：1.6.0 起用无头 Edge（Playwright，系统浏览器 `channel:'msedge'`）做真机验证，
    脚本见 `.compat-report/scripts/`，截图见 `.compat-report/shots/`——选区浮按钮、Alt+Q 弹层、共载单实例、
-   引擎自检均已在 0.2.0-rc.2 与 0.2.1-alpha.2 上自动核对。桌面 Electron 的视觉观感仍只有 2026-09-30 的人工实测（§5.3）。
+   引擎自检均已在 0.2.0-rc.2 与 0.2.1-alpha.2 上自动核对；0.2.1-alpha.3 / alpha.4 的复核见 §7.3。桌面 Electron 的视觉观感仍只有 2026-09-30 的人工实测（§5.3）。
    已做的保障是：只使用 `--dsw-alias-*` 主题令牌、只在槽位内渲染（`shell.overlay` / `settings.section` / `conversation.input.right`）、不写 `document.body`、不 import harness 客户端包。
 2b. **1.5.0 的浮层改动：四个测试脚本已在本机实跑通过（各 exit 0），但页面里的观感仍未验证**：
    写这个版本的前半段，本工作区的 shell 工具整体不可用（任何命令都返回
@@ -691,6 +704,6 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
 5. **宿主半代码更新必须重启 DSH**：本机实测 `set_plugin` 关开与 `remove_bundle` + `install_bundle` 都不会让已加载的模块重新读盘。
    本仓库当前文件比运行中的宿主模块新（1.0.1 的「归档父会话不再一刀切 / 持久化 chunk 流式源 / 能力门控 / 路由降级」），
    **重启后**这些改动才生效；`/state` 的 `version` 与 `capabilities.parent` 字段可以直接确认是否已加载新版。
-6. **除 0.1.7-rc.2 外，其余版本只做了产物层验证**：见 §7.3——插件在 0.1.2-rc.1 … 0.1.6-alpha.2 上安装启动过**没有**得到验证，
-   验证到的是"这些版本缺哪些 API + 插件对每个缺失都有分支"，分支本身由 289 项自测覆盖。
+6. **"安装启动"真机验证从 0.1.5-rc.3 起**：1.6.0 实测 0.1.5-rc.3 → 0.2.1-alpha.2，1.7.1 复核 0.2.1-alpha.3 / alpha.4（见 §7.3）；
+   更早版本只有产物层证据——验证到的是"这些版本缺哪些 API + 插件对每个缺失都有分支"，分支本身由 1004 项自测覆盖。
 

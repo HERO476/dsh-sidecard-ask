@@ -1,0 +1,493 @@
+{
+  "versions": [
+    "0.2.1-alpha.2",
+    "0.2.1-alpha.3",
+    "0.2.1-alpha.4"
+  ],
+  "matrix": {
+    "0.2.1-alpha.2": {
+      "@deepseek-ai/dsh-client-modules": {
+        "available": true,
+        "markers": {
+          "moduleLoader": true,
+          "clientManifest": true,
+          "externalList": true
+        },
+        "bytes": 83864,
+        "files": 3
+      },
+      "@deepseek-ai/dsh-client-ui-layout": {
+        "available": true,
+        "markers": {
+          "slot_shell_overlay": true,
+          "slot_root": true,
+          "slot_rightbar": true
+        },
+        "bytes": 34897,
+        "files": 3
+      },
+      "@deepseek-ai/dsh-client-ui-conversation": {
+        "available": true,
+        "markers": {
+          "slot_input_right": true,
+          "slot_composer_dock": true,
+          "slot_input_left": true,
+          "dataPhase": true
+        },
+        "bytes": 879727,
+        "files": 3
+      },
+      "@deepseek-ai/dsh-client-ui-renderer": {
+        "available": true,
+        "markers": {
+          "dataSlotAnchor": true,
+          "slotInject": true
+        },
+        "bytes": 79073,
+        "files": 3
+      },
+      "@deepseek-ai/dsh-client-ui-settings-general": {
+        "available": true,
+        "markers": {
+          "slot_settings_section": true
+        },
+        "bytes": 54780,
+        "files": 3
+      },
+      "@deepseek-ai/dsh-client-ui-sidebar-right": {
+        "available": true,
+        "markers": {
+          "slot_pane_tab": true,
+          "service_sidebarRightTabs": true,
+          "mountedObservation": true
+        },
+        "bytes": 335618,
+        "files": 3
+      },
+      "@deepseek-ai/dsh-api-session-controller": {
+        "available": true,
+        "markers": {
+          "clientSessions": true,
+          "sessionsUsing": true,
+          "sessionsRetain": true,
+          "sessionsScope": true,
+          "archivedSessionIds": true,
+          "preStepGate": true
+        },
+        "bytes": 877094,
+        "files": 39
+      },
+      "@deepseek-ai/dsh-agent-loop": {
+        "available": true,
+        "markers": {
+          "assistantStream": true,
+          "preStepWaterfall": true
+        },
+        "bytes": 76612,
+        "files": 2
+      },
+      "@deepseek-ai/dsh-session": {
+        "available": true,
+        "markers": {
+          "durableChunk": false,
+          "assistantMessage": true,
+          "assistantAttempt": true,
+          "sessionEvent": true
+        },
+        "bytes": 210738,
+        "files": 12
+      },
+      "@deepseek-ai/dsh-subagent": {
+        "available": true,
+        "markers": {
+          "subagentsService": true,
+          "startMethod": true,
+          "localAgent": false,
+          "toolFilter": true,
+          "persona": true,
+          "continuable": false
+        },
+        "bytes": 396077,
+        "files": 26
+      },
+      "@deepseek-ai/dsh-host-webserver": {
+        "available": true,
+        "markers": {
+          "registerRoute": true,
+          "prefixKind": true,
+          "routeHandler": true
+        },
+        "bytes": 21008,
+        "files": 2
+      },
+      "@deepseek-ai/dsh-tools": {
+        "available": true,
+        "markers": {
+          "schemas": true,
+          "restrict": true
+        },
+        "bytes": 369105,
+        "files": 11
+      },
+      "@deepseek-ai/dsh-workspace": {
+        "available": true,
+        "markers": {
+          "archivedSessionIds": true,
+          "archiveSession": true
+        },
+        "bytes": 88702,
+        "files": 7
+      }
+    },
+    "0.2.1-alpha.3": {
+      "@deepseek-ai/dsh-client-modules": {
+        "available": true,
+        "markers": {
+          "moduleLoader": true,
+          "clientManifest": true,
+          "externalList": true
+        },
+        "bytes": 84126,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-layout": {
+        "available": true,
+        "markers": {
+          "slot_shell_overlay": true,
+          "slot_root": true,
+          "slot_rightbar": true
+        },
+        "bytes": 35062,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-conversation": {
+        "available": true,
+        "markers": {
+          "slot_input_right": true,
+          "slot_composer_dock": true,
+          "slot_input_left": true,
+          "dataPhase": true
+        },
+        "bytes": 766558,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-renderer": {
+        "available": true,
+        "markers": {
+          "dataSlotAnchor": true,
+          "slotInject": true
+        },
+        "bytes": 80066,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-settings-general": {
+        "available": true,
+        "markers": {
+          "slot_settings_section": true
+        },
+        "bytes": 54923,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-sidebar-right": {
+        "available": true,
+        "markers": {
+          "slot_pane_tab": true,
+          "service_sidebarRightTabs": true,
+          "mountedObservation": true
+        },
+        "bytes": 192701,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-api-session-controller": {
+        "available": true,
+        "markers": {
+          "clientSessions": true,
+          "sessionsUsing": true,
+          "sessionsRetain": true,
+          "sessionsScope": true,
+          "archivedSessionIds": true,
+          "preStepGate": true
+        },
+        "bytes": 1199140,
+        "files": 41
+      },
+      "@deepseek-ai/dsh-agent-loop": {
+        "available": true,
+        "markers": {
+          "assistantStream": true,
+          "preStepWaterfall": true
+        },
+        "bytes": 76813,
+        "files": 4
+      },
+      "@deepseek-ai/dsh-session": {
+        "available": true,
+        "markers": {
+          "durableChunk": false,
+          "assistantMessage": true,
+          "assistantAttempt": true,
+          "sessionEvent": true
+        },
+        "bytes": 211066,
+        "files": 14
+      },
+      "@deepseek-ai/dsh-subagent": {
+        "available": true,
+        "markers": {
+          "subagentsService": true,
+          "startMethod": true,
+          "localAgent": false,
+          "toolFilter": true,
+          "persona": true,
+          "continuable": false
+        },
+        "bytes": 420834,
+        "files": 28
+      },
+      "@deepseek-ai/dsh-host-webserver": {
+        "available": true,
+        "markers": {
+          "registerRoute": true,
+          "prefixKind": true,
+          "routeHandler": true
+        },
+        "bytes": 22790,
+        "files": 4
+      },
+      "@deepseek-ai/dsh-tools": {
+        "available": true,
+        "markers": {
+          "schemas": true,
+          "restrict": true
+        },
+        "bytes": 376197,
+        "files": 14
+      },
+      "@deepseek-ai/dsh-workspace": {
+        "available": true,
+        "markers": {
+          "archivedSessionIds": true,
+          "archiveSession": true
+        },
+        "bytes": 89801,
+        "files": 9
+      }
+    },
+    "0.2.1-alpha.4": {
+      "@deepseek-ai/dsh-client-modules": {
+        "available": true,
+        "markers": {
+          "moduleLoader": true,
+          "clientManifest": true,
+          "externalList": true
+        },
+        "bytes": 90380,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-layout": {
+        "available": true,
+        "markers": {
+          "slot_shell_overlay": true,
+          "slot_root": true,
+          "slot_rightbar": true
+        },
+        "bytes": 35062,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-conversation": {
+        "available": true,
+        "markers": {
+          "slot_input_right": true,
+          "slot_composer_dock": true,
+          "slot_input_left": true,
+          "dataPhase": true
+        },
+        "bytes": 775580,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-renderer": {
+        "available": true,
+        "markers": {
+          "dataSlotAnchor": true,
+          "slotInject": true
+        },
+        "bytes": 80066,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-settings-general": {
+        "available": true,
+        "markers": {
+          "slot_settings_section": true
+        },
+        "bytes": 62084,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-client-ui-sidebar-right": {
+        "available": true,
+        "markers": {
+          "slot_pane_tab": true,
+          "service_sidebarRightTabs": true,
+          "mountedObservation": true
+        },
+        "bytes": 192701,
+        "files": 5
+      },
+      "@deepseek-ai/dsh-api-session-controller": {
+        "available": true,
+        "markers": {
+          "clientSessions": true,
+          "sessionsUsing": true,
+          "sessionsRetain": true,
+          "sessionsScope": true,
+          "archivedSessionIds": true,
+          "preStepGate": true
+        },
+        "bytes": 1199649,
+        "files": 41
+      },
+      "@deepseek-ai/dsh-agent-loop": {
+        "available": true,
+        "markers": {
+          "assistantStream": true,
+          "preStepWaterfall": true
+        },
+        "bytes": 76813,
+        "files": 4
+      },
+      "@deepseek-ai/dsh-session": {
+        "available": true,
+        "markers": {
+          "durableChunk": false,
+          "assistantMessage": true,
+          "assistantAttempt": true,
+          "sessionEvent": true
+        },
+        "bytes": 211066,
+        "files": 14
+      },
+      "@deepseek-ai/dsh-subagent": {
+        "available": true,
+        "markers": {
+          "subagentsService": true,
+          "startMethod": true,
+          "localAgent": false,
+          "toolFilter": true,
+          "persona": true,
+          "continuable": false
+        },
+        "bytes": 420834,
+        "files": 28
+      },
+      "@deepseek-ai/dsh-host-webserver": {
+        "available": true,
+        "markers": {
+          "registerRoute": true,
+          "prefixKind": true,
+          "routeHandler": true
+        },
+        "bytes": 22790,
+        "files": 4
+      },
+      "@deepseek-ai/dsh-tools": {
+        "available": true,
+        "markers": {
+          "schemas": true,
+          "restrict": true
+        },
+        "bytes": 376197,
+        "files": 14
+      },
+      "@deepseek-ai/dsh-workspace": {
+        "available": true,
+        "markers": {
+          "archivedSessionIds": true,
+          "archiveSession": true
+        },
+        "bytes": 89801,
+        "files": 9
+      }
+    }
+  },
+  "capabilities": {
+    "clientBundle": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "overlaySlot": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "composerSlot": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "settingsPage": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "zoneAnchor": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "nativeRightbar": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "submitUsing": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "submitRetain": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "archiveGate": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "streamFrames": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "durableChunks": {
+      "0.2.1-alpha.2": false,
+      "0.2.1-alpha.3": false,
+      "0.2.1-alpha.4": false
+    },
+    "sideEngine": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "liveChild": {
+      "0.2.1-alpha.2": false,
+      "0.2.1-alpha.3": false,
+      "0.2.1-alpha.4": false
+    },
+    "providerCaps": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "toolRegistry": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    },
+    "pluginRoutes": {
+      "0.2.1-alpha.2": true,
+      "0.2.1-alpha.3": true,
+      "0.2.1-alpha.4": true
+    }
+  }
+}

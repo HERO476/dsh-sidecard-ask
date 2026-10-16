@@ -1,0 +1,458 @@
+[
+  {
+    "id": "alpha3",
+    "version": "0.2.1-alpha.3",
+    "port": 18421,
+    "checks": [
+      {
+        "name": "plugin files present in profile node_modules (carried over)",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "plugin in dsh.profile.bundles (carried over, verified in run 1)",
+        "pass": true,
+        "got": "bundles ensured"
+      },
+      {
+        "name": "boot token found",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "no activation/import errors in boot log",
+        "pass": true,
+        "got": 0
+      },
+      {
+        "name": "GET /state -> 200",
+        "pass": true,
+        "got": 200
+      },
+      {
+        "name": "host half reports v1.7.1",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "sideEngine === true",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "providers include spawn+fork",
+        "pass": true,
+        "got": [
+          "spawn",
+          "fork"
+        ]
+      },
+      {
+        "name": "parent capability object present",
+        "pass": true,
+        "got": "{\"id\":null,\"archived\":false,\"candidates\":[]}"
+      },
+      {
+        "name": "out-of-range number clamps to 560 (200)",
+        "pass": true,
+        "got": "200/560"
+      },
+      {
+        "name": "malformed quickActions -> 400 invalid-config",
+        "pass": true,
+        "got": "400/invalid-config"
+      },
+      {
+        "name": "ask without session -> structured no-parent envelope",
+        "pass": true,
+        "got": "{\"id\":\"recheck-alpha3-pre\",\"code\":\"no-parent\",\"message\":\"当前没有活动的会话代理，无法发起独立作答\",\"retryable\":false,\"fallback\":\"main\"}"
+      },
+      {
+        "name": "client half loaded (self-report v1.7.1)",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "overlay slot landed = shell.overlay",
+        "pass": true,
+        "got": "shell.overlay"
+      },
+      {
+        "name": "settings slot landed = settings.section",
+        "pass": true,
+        "got": "settings.section"
+      },
+      {
+        "name": "session probe slot landed = conversation.input.right",
+        "pass": true,
+        "got": "conversation.input.right"
+      },
+      {
+        "name": "family leader (single install, no legacy)",
+        "pass": true,
+        "got": "{\"leader\":true,\"legacy\":false,\"peers\":[]}"
+      },
+      {
+        "name": "native rightbar adapter available",
+        "pass": true,
+        "got": "{\"available\":true}"
+      },
+      {
+        "name": "zoneAnchors pre-selection is unknown (client sends null; host whitelist keeps booleans only -> absent)",
+        "pass": true,
+        "got": "__absent__"
+      },
+      {
+        "name": "zoneAnchors pre-selection is not false (no early negative verdict)",
+        "pass": true,
+        "got": "undefined"
+      },
+      {
+        "name": "exactly one visible trigger after selection",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "Alt+Q opens exactly one popover",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "composer message created a live agent",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "ask envelope contains start event (startActivation returned child)",
+        "pass": true,
+        "got": "start,status,error"
+      },
+      {
+        "name": "start event carries provider + real childId",
+        "pass": true,
+        "got": "{\"id\":\"recheck-alpha3\",\"provider\":\"spawn\",\"childId\":\"d12e7e2c-180f-4036-8638-5ee85ace54f0\",\"maxChars\":4000,\"truncated\":false,\"droppedChars\":0,\"toolFilter\":\"unsupported\",\"persona\":\"prompt\",\"parentArchi"
+      },
+      {
+        "name": "toolFilter/persona fields report expected gating",
+        "pass": true,
+        "got": "unsupported/prompt"
+      },
+      {
+        "name": "zoneAnchors === true after first real selection",
+        "pass": true,
+        "got": "true"
+      },
+      {
+        "name": "no uncaught page errors",
+        "pass": true,
+        "got": 0
+      }
+    ],
+    "boot": {
+      "suspiciousLogLines": [],
+      "tokenFound": true
+    },
+    "probes": {
+      "install": {
+        "installed": true,
+        "carriedOver": true
+      },
+      "stateCaps": {
+        "sideEngine": true,
+        "sideProviders": [
+          "spawn",
+          "fork"
+        ],
+        "liveAgents": 0,
+        "activeRuns": 0,
+        "parent": {
+          "id": null,
+          "archived": false,
+          "candidates": []
+        },
+        "streamSource": "agent/assistant-stream"
+      },
+      "askNoSession": {
+        "events": [
+          "error"
+        ],
+        "data": [
+          "{\"id\":\"recheck-alpha3-pre\",\"code\":\"no-parent\",\"message\":\"当前没有活动的会话代理，无法发起独立作答\",\"retryable\":false,\"fallback\":\"main\"}"
+        ]
+      },
+      "clientInitial": {
+        "version": "1.7.1",
+        "slots": {
+          "overlay": "shell.overlay",
+          "settings": "settings.section",
+          "sessionProbe": "conversation.input.right"
+        },
+        "family": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        },
+        "native": {
+          "available": true
+        },
+        "zoneAnchorsRaw": "__absent__"
+      },
+      "popoverClosedByEscape": true,
+      "liveAgentsAfterComposer": 1,
+      "askEnvelope": {
+        "events": [
+          "start",
+          "status",
+          "error"
+        ],
+        "data": [
+          "{\"id\":\"recheck-alpha3\",\"provider\":\"spawn\",\"childId\":\"d12e7e2c-180f-4036-8638-5ee85ace54f0\",\"maxChars\":4000,\"truncated\":false,\"droppedChars\":0,\"toolFilter\":\"unsupported\",\"persona\":\"prompt\",\"parentArchived\":false}",
+          "{\"id\":\"recheck-alpha3\"}",
+          "{\"id\":\"recheck-alpha3\",\"code\":\"engine-error\",\"message\":\"作答失败（error）\",\"retryable\":false,\"fallback\":\"main\",\"stopReason\":\"error\",\"parentId\":\"session-4b551472-f512-4e64-9521-c83358b7fc4c\"}"
+        ]
+      },
+      "clientAfterSelection": {
+        "zoneAnchors": true,
+        "slots": {
+          "overlay": "shell.overlay",
+          "settings": "settings.section",
+          "sessionProbe": "conversation.input.right"
+        },
+        "family": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        }
+      }
+    },
+    "pageErrors": []
+  },
+  {
+    "id": "alpha4",
+    "version": "0.2.1-alpha.4",
+    "port": 18422,
+    "checks": [
+      {
+        "name": "plugin files present in profile node_modules (carried over)",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "plugin in dsh.profile.bundles (carried over, verified in run 1)",
+        "pass": true,
+        "got": "bundles ensured"
+      },
+      {
+        "name": "boot token found",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "no activation/import errors in boot log",
+        "pass": true,
+        "got": 0
+      },
+      {
+        "name": "GET /state -> 200",
+        "pass": true,
+        "got": 200
+      },
+      {
+        "name": "host half reports v1.7.1",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "sideEngine === true",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "providers include spawn+fork",
+        "pass": true,
+        "got": [
+          "spawn",
+          "fork"
+        ]
+      },
+      {
+        "name": "parent capability object present",
+        "pass": true,
+        "got": "{\"id\":null,\"archived\":false,\"candidates\":[]}"
+      },
+      {
+        "name": "out-of-range number clamps to 560 (200)",
+        "pass": true,
+        "got": "200/560"
+      },
+      {
+        "name": "malformed quickActions -> 400 invalid-config",
+        "pass": true,
+        "got": "400/invalid-config"
+      },
+      {
+        "name": "ask without session -> structured no-parent envelope",
+        "pass": true,
+        "got": "{\"id\":\"recheck-alpha4-pre\",\"code\":\"no-parent\",\"message\":\"当前没有活动的会话代理，无法发起独立作答\",\"retryable\":false,\"fallback\":\"main\"}"
+      },
+      {
+        "name": "client half loaded (self-report v1.7.1)",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "overlay slot landed = shell.overlay",
+        "pass": true,
+        "got": "shell.overlay"
+      },
+      {
+        "name": "settings slot landed = settings.section",
+        "pass": true,
+        "got": "settings.section"
+      },
+      {
+        "name": "session probe slot landed = conversation.input.right",
+        "pass": true,
+        "got": "conversation.input.right"
+      },
+      {
+        "name": "family leader (single install, no legacy)",
+        "pass": true,
+        "got": "{\"leader\":true,\"legacy\":false,\"peers\":[]}"
+      },
+      {
+        "name": "native rightbar adapter available",
+        "pass": true,
+        "got": "{\"available\":true}"
+      },
+      {
+        "name": "zoneAnchors pre-selection is unknown (client sends null; host whitelist keeps booleans only -> absent)",
+        "pass": true,
+        "got": "__absent__"
+      },
+      {
+        "name": "zoneAnchors pre-selection is not false (no early negative verdict)",
+        "pass": true,
+        "got": "undefined"
+      },
+      {
+        "name": "exactly one visible trigger after selection",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "Alt+Q opens exactly one popover",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "composer message created a live agent",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "ask envelope contains start event (startActivation returned child)",
+        "pass": true,
+        "got": "start,status,error"
+      },
+      {
+        "name": "start event carries provider + real childId",
+        "pass": true,
+        "got": "{\"id\":\"recheck-alpha4\",\"provider\":\"spawn\",\"childId\":\"40a074a7-24cc-48e0-9ce0-7193b5a62ce8\",\"maxChars\":4000,\"truncated\":false,\"droppedChars\":0,\"toolFilter\":\"unsupported\",\"persona\":\"prompt\",\"parentArchi"
+      },
+      {
+        "name": "toolFilter/persona fields report expected gating",
+        "pass": true,
+        "got": "unsupported/prompt"
+      },
+      {
+        "name": "zoneAnchors === true after first real selection",
+        "pass": true,
+        "got": "true"
+      },
+      {
+        "name": "no uncaught page errors",
+        "pass": true,
+        "got": 0
+      }
+    ],
+    "boot": {
+      "suspiciousLogLines": [],
+      "tokenFound": true
+    },
+    "probes": {
+      "install": {
+        "installed": true,
+        "carriedOver": true
+      },
+      "stateCaps": {
+        "sideEngine": true,
+        "sideProviders": [
+          "spawn",
+          "fork"
+        ],
+        "liveAgents": 0,
+        "activeRuns": 0,
+        "parent": {
+          "id": null,
+          "archived": false,
+          "candidates": []
+        },
+        "streamSource": "agent/assistant-stream"
+      },
+      "askNoSession": {
+        "events": [
+          "error"
+        ],
+        "data": [
+          "{\"id\":\"recheck-alpha4-pre\",\"code\":\"no-parent\",\"message\":\"当前没有活动的会话代理，无法发起独立作答\",\"retryable\":false,\"fallback\":\"main\"}"
+        ]
+      },
+      "clientInitial": {
+        "version": "1.7.1",
+        "slots": {
+          "overlay": "shell.overlay",
+          "settings": "settings.section",
+          "sessionProbe": "conversation.input.right"
+        },
+        "family": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        },
+        "native": {
+          "available": true
+        },
+        "zoneAnchorsRaw": "__absent__"
+      },
+      "popoverClosedByEscape": true,
+      "liveAgentsAfterComposer": 1,
+      "askEnvelope": {
+        "events": [
+          "start",
+          "status",
+          "error"
+        ],
+        "data": [
+          "{\"id\":\"recheck-alpha4\",\"provider\":\"spawn\",\"childId\":\"40a074a7-24cc-48e0-9ce0-7193b5a62ce8\",\"maxChars\":4000,\"truncated\":false,\"droppedChars\":0,\"toolFilter\":\"unsupported\",\"persona\":\"prompt\",\"parentArchived\":false}",
+          "{\"id\":\"recheck-alpha4\"}",
+          "{\"id\":\"recheck-alpha4\",\"code\":\"engine-error\",\"message\":\"作答失败（error）\",\"retryable\":false,\"fallback\":\"main\",\"stopReason\":\"error\",\"parentId\":\"session-917aaf2d-c4fd-4ac8-aa57-998b7ef41644\"}"
+        ]
+      },
+      "clientAfterSelection": {
+        "zoneAnchors": true,
+        "slots": {
+          "overlay": "shell.overlay",
+          "settings": "settings.section",
+          "sessionProbe": "conversation.input.right"
+        },
+        "family": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        }
+      }
+    },
+    "pageErrors": []
+  }
+]

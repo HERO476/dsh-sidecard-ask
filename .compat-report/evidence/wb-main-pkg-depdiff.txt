@@ -1,0 +1,4 @@
+main package @deepseek-ai/dsh dependency diff (alpha.3 -> alpha.4)
+added deps: @deepseek-ai/dsh-experimental-plugin-market-bundle @ 0.2.1-alpha.4
+removed deps: (none)
+version-string bumps: 77

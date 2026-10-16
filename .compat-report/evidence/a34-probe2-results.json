@@ -1,0 +1,124 @@
+[
+  {
+    "id": "alpha3",
+    "version": "0.2.1-alpha.3",
+    "checks": [
+      {
+        "name": "out-of-range number clamps to 560 (200)",
+        "pass": true,
+        "got": "200/560"
+      },
+      {
+        "name": "malformed quickActions table → 400 invalid-config",
+        "pass": true,
+        "got": "400/[object Object]"
+      },
+      {
+        "name": "composer message created a live agent (typed)",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "ask envelope contains a start event (startActivation returned a child)",
+        "pass": true,
+        "got": "start,status,error"
+      },
+      {
+        "name": "zoneAnchors = true after first real selection",
+        "pass": true,
+        "got": true
+      }
+    ],
+    "probes": {
+      "liveAgentsAfterComposer": 1,
+      "askEvents": [
+        "start",
+        "status",
+        "error"
+      ],
+      "askData": [
+        "{\"id\":\"probe2-alpha3\",\"provider\":\"spawn\",\"childId\":\"4b70f44d-8c25-4f34-9f52-887030ad89af\",\"maxChars\":4000,\"truncated\":false,\"droppedChars\":0,\"toolFilter\":\"unsupported\",\"persona\":\"prompt\",\"parentArchived\":false}",
+        "{\"id\":\"probe2-alpha3\"}",
+        "{\"id\":\"probe2-alpha3\",\"code\":\"engine-error\",\"message\":\"作答失败（error）\",\"retryable\":false,\"fallback\":\"main\",\"stopReason\":\"error\",\"parentId\":\"session-f536b62c-769d-4056-a1c6-0309f6354c1e\"}"
+      ],
+      "clientAfterSelection": {
+        "zoneAnchors": true,
+        "family": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        },
+        "slots": {
+          "overlay": "shell.overlay",
+          "settings": "settings.section",
+          "sessionProbe": "conversation.input.right"
+        },
+        "native": {
+          "available": true
+        }
+      }
+    },
+    "pageErrors": []
+  },
+  {
+    "id": "alpha4",
+    "version": "0.2.1-alpha.4",
+    "checks": [
+      {
+        "name": "out-of-range number clamps to 560 (200)",
+        "pass": true,
+        "got": "200/560"
+      },
+      {
+        "name": "malformed quickActions table → 400 invalid-config",
+        "pass": true,
+        "got": "400/[object Object]"
+      },
+      {
+        "name": "composer message created a live agent (typed)",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "ask envelope contains a start event (startActivation returned a child)",
+        "pass": true,
+        "got": "start,status,error"
+      },
+      {
+        "name": "zoneAnchors = true after first real selection",
+        "pass": true,
+        "got": true
+      }
+    ],
+    "probes": {
+      "liveAgentsAfterComposer": 1,
+      "askEvents": [
+        "start",
+        "status",
+        "error"
+      ],
+      "askData": [
+        "{\"id\":\"probe2-alpha4\",\"provider\":\"spawn\",\"childId\":\"cfb0fcac-e240-4ec2-a5fc-026460a25be5\",\"maxChars\":4000,\"truncated\":false,\"droppedChars\":0,\"toolFilter\":\"unsupported\",\"persona\":\"prompt\",\"parentArchived\":false}",
+        "{\"id\":\"probe2-alpha4\"}",
+        "{\"id\":\"probe2-alpha4\",\"code\":\"engine-error\",\"message\":\"作答失败（error）\",\"retryable\":false,\"fallback\":\"main\",\"stopReason\":\"error\",\"parentId\":\"session-a120bb41-c9bb-45e9-a0f1-bb2173630649\"}"
+      ],
+      "clientAfterSelection": {
+        "zoneAnchors": true,
+        "family": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        },
+        "slots": {
+          "overlay": "shell.overlay",
+          "settings": "settings.section",
+          "sessionProbe": "conversation.input.right"
+        },
+        "native": {
+          "available": true
+        }
+      }
+    },
+    "pageErrors": []
+  }
+]

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.7.2
+
+**主题：文档补丁版——把 DSH 0.2.1-alpha.3 / 0.2.1-alpha.4 的适配核查结论带上 npm 包。**
+
+功能与 1.7.1 **完全一致，没有任何行为改动**（`index.js` 与 `client.js` 只有版本号字符串不同，
+可用 `git diff` 逐字节核对）。这个补丁版存在的理由是发布两项文档更新：
+
+- **README §7.3** 新增「1.7.1 复核（2026-10-16）」真机验证记录——**0.2.1-alpha.3 / 0.2.1-alpha.4
+  两版均无需任何代码改动**：产物层（16 项能力矩阵在 alpha.2/3/4 上逐项一致；13 个相关包的逐文件
+  SHA256 diff 证明 alpha.3 → alpha.4 宿主侧零变化，`dsh-subagent` 的 `lib/index.js` 两版逐字节一致；
+  主包唯一新增依赖 `dsh-experimental-plugin-market-bundle`）、真机层（隔离 `DSH_HOME` 从零安装、
+  官方 CLI 装入 `npm pack` 产物、无头 Edge：**28/28 断言 × 两版全过**，含
+  `subagents.startActivation` 实调出真实 childId）、插件四套自测 **1004 项全过**。核查针对 v1.7.1
+  完成；本版除版本号外与之逐字节相同，结论原样适用。
+- **README §7.4 / §14**：真机覆盖范围更新至 0.2.1-alpha.4（1.6.0 与 1.7.1 两轮实测）；§14 第 6 条
+  修正 1.6.0 轮次遗留的过期表述（「除 0.1.7-rc.2 外只做过产物层验证 / 289 项」→「安装启动验证从
+  0.1.5-rc.3 起 / 1004 项」），第 2 条补 §7.3 指向。
+- 版本号三处同步到 1.7.2：`package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`、
+  `client.js` 的 `CLIENT_VERSION`（`test/verify.mjs` 会同时断言三处一致）。
+- 核查的完整证据（复现脚本 / 原始输出 / 截图）随本版提交进 `.compat-report/`——`wb-*` 前缀为
+  2026-10-16 的独立复核产物，报告见 `COMPATIBILITY-REPORT-alpha3-alpha4.md`。
+
+本机实测（四项均 exit 0）：verify 53 / contract 721 / float-placement 38 / smoke 192 = **1004 项全部通过**。
+
+> 未验证（如实记录）：真实模型流式作答（本机无凭据，验证到 spawn + childId 深度，完整
+> `start→delta×N→done` 由 smoke 按真实事件形状覆盖）；桌面 Electron 与 better-sidebar 共载本轮未复测。
+
 ## 1.7.1
 
 **主题：P1 体验补齐——后台通知、历史卡片管理、答后追问芯片、右键菜单、作答透明信息、键盘操作。**

@@ -1,0 +1,460 @@
+[
+  {
+    "id": "alpha3",
+    "version": "0.2.1-alpha.3",
+    "port": 18321,
+    "checks": [
+      {
+        "name": "boot token found",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "no activation/import errors in boot log",
+        "pass": true,
+        "got": 0
+      },
+      {
+        "name": "GET /state 鈫?200",
+        "pass": true,
+        "got": 200
+      },
+      {
+        "name": "host half reports v1.7.1",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "side engine available",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "providers include spawn+fork",
+        "pass": true,
+        "got": [
+          "spawn",
+          "fork"
+        ]
+      },
+      {
+        "name": "parent agent capability",
+        "pass": true,
+        "got": "{\"sideEngine\":true,\"sideProviders\":[\"spawn\",\"fork\"],\"liveAgents\":0,\"activeRuns\":0,\"parent\":{\"id\":null,\"archived\":false,\"candidates\":[]},\"streamSource\":\"agent/assistant-stream\"}"
+      },
+      {
+        "name": "POST /config accepts bounded value",
+        "pass": true,
+        "got": 351
+      },
+      {
+        "name": "POST /config rejects out-of-range (invalid-config)",
+        "pass": false,
+        "got": 200
+      },
+      {
+        "name": "POST /ask streams an SSE envelope",
+        "pass": true,
+        "got": "200 error"
+      },
+      {
+        "name": "client half loaded (self-report version 1.7.1)",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "overlay slot landed (shell.overlay family)",
+        "pass": true,
+        "got": "shell.overlay"
+      },
+      {
+        "name": "settings slot landed",
+        "pass": true,
+        "got": "settings.section"
+      },
+      {
+        "name": "session probe slot landed",
+        "pass": true,
+        "got": "conversation.input.right"
+      },
+      {
+        "name": "zone anchors available",
+        "pass": false
+      },
+      {
+        "name": "family leader (single install)",
+        "pass": true,
+        "got": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        }
+      },
+      {
+        "name": "native rightbar adapter usable",
+        "pass": true,
+        "got": {
+          "available": true
+        }
+      },
+      {
+        "name": "exactly one visible trigger button",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "Alt+Q opens exactly one popover",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "anchor verdict stable after body-attached selection",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "no uncaught page errors",
+        "pass": true,
+        "got": 0
+      }
+    ],
+    "boot": {
+      "firstOutputHead": "dsh web: http://127.0.0.1:18321/?token=iNNdaGJgzYnafzC0-_iimXGljsDI_1CcxurzDo6oIh4",
+      "tokenFound": true,
+      "suspiciousLogLines": []
+    },
+    "probes": {
+      "stateStatus": 200,
+      "configSet": {
+        "status": 200,
+        "json": {
+          "ok": true,
+          "value": {
+            "plugin": "dsh-sidecard-ask",
+            "version": "1.7.1",
+            "config": {
+              "trigger": "selection",
+              "defaultCarrier": "side",
+              "sideSurface": "auto",
+              "maxChars": 4000,
+              "shortcut": "Alt+Q",
+              "captureZones": "auto",
+              "showInUnclassified": true,
+              "minChars": 2,
+              "maxConcurrentAsks": 3,
+              "sideTools": "readonly",
+              "sideTimeoutMs": 180000,
+              "sideProvider": "auto",
+              "floatMode": "capsule",
+              "floatMaxWidth": 351,
+              "quickActions": [
+                {
+                  "id": "builtin:explain",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:translate",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:summarize",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:polish",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:fix",
+                  "enabled": true,
+                  "shortcut": ""
+                }
+              ],
+              "notifyOnDone": false,
+              "contextMenu": true,
+              "historyMaxCards": 10
+            },
+            "problems": [],
+            "provenance": {
+              "persisted": true,
+              "persistedAtBoot": true,
+              "persistedPath": "D:\\Users\\34332\\AI\\dsh-sidecard-ask\\.tmp\\rm\\home\\a3\\sidecard-ask\\config.json",
+              "patchKeys": [
+                "trigger",
+                "defaultCarrier",
+                "sideSurface",
+                "captureZones",
+                "sideTools",
+                "maxChars",
+                "minChars",
+                "maxConcurrentAsks",
+                "sideTimeoutMs",
+                "shortcut",
+                "sideProvider",
+                "showInUnclassified"
+              ]
+            },
+            "capabilities": {
+              "sideEngine": true,
+              "sideProviders": [
+                "spawn",
+                "fork"
+              ],
+              "liveAgents": 0,
+              "activeRuns": 0,
+              "parent": {
+                "id": null,
+                "archived": false,
+                "candidates": []
+              },
+              "streamSource": "agent/assistant-stream"
+            },
+            "client": null
+          }
+        }
+      },
+      "ask": {
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "text": "event: error\ndata: {\"id\":\"probe-alpha3\",\"code\":\"no-parent\",\"message\":\"当前没有活动的会话代理，无法发起独立作答\",\"retryable\":false,\"fallback\":\"main\"}\n\n"
+      },
+      "askEvents": [
+        "error"
+      ]
+    },
+    "pageErrors": []
+  },
+  {
+    "id": "alpha4",
+    "version": "0.2.1-alpha.4",
+    "port": 18322,
+    "checks": [
+      {
+        "name": "boot token found",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "no activation/import errors in boot log",
+        "pass": true,
+        "got": 0
+      },
+      {
+        "name": "GET /state 鈫?200",
+        "pass": true,
+        "got": 200
+      },
+      {
+        "name": "host half reports v1.7.1",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "side engine available",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "providers include spawn+fork",
+        "pass": true,
+        "got": [
+          "spawn",
+          "fork"
+        ]
+      },
+      {
+        "name": "parent agent capability",
+        "pass": true,
+        "got": "{\"sideEngine\":true,\"sideProviders\":[\"spawn\",\"fork\"],\"liveAgents\":0,\"activeRuns\":0,\"parent\":{\"id\":null,\"archived\":false,\"candidates\":[]},\"streamSource\":\"agent/assistant-stream\"}"
+      },
+      {
+        "name": "POST /config accepts bounded value",
+        "pass": true,
+        "got": 351
+      },
+      {
+        "name": "POST /config rejects out-of-range (invalid-config)",
+        "pass": false,
+        "got": 200
+      },
+      {
+        "name": "POST /ask streams an SSE envelope",
+        "pass": true,
+        "got": "200 error"
+      },
+      {
+        "name": "client half loaded (self-report version 1.7.1)",
+        "pass": true,
+        "got": "1.7.1"
+      },
+      {
+        "name": "overlay slot landed (shell.overlay family)",
+        "pass": true,
+        "got": "shell.overlay"
+      },
+      {
+        "name": "settings slot landed",
+        "pass": true,
+        "got": "settings.section"
+      },
+      {
+        "name": "session probe slot landed",
+        "pass": true,
+        "got": "conversation.input.right"
+      },
+      {
+        "name": "zone anchors available",
+        "pass": false
+      },
+      {
+        "name": "family leader (single install)",
+        "pass": true,
+        "got": {
+          "leader": true,
+          "legacy": false,
+          "peers": []
+        }
+      },
+      {
+        "name": "native rightbar adapter usable",
+        "pass": true,
+        "got": {
+          "available": true
+        }
+      },
+      {
+        "name": "exactly one visible trigger button",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "Alt+Q opens exactly one popover",
+        "pass": true,
+        "got": 1
+      },
+      {
+        "name": "anchor verdict stable after body-attached selection",
+        "pass": true,
+        "got": true
+      },
+      {
+        "name": "no uncaught page errors",
+        "pass": true,
+        "got": 0
+      }
+    ],
+    "boot": {
+      "firstOutputHead": "dsh web: http://127.0.0.1:18322/?token=0u-gvDSHf2lnhkGNLV4LofZplWtOj7kHcnPxaCgf66c",
+      "tokenFound": true,
+      "suspiciousLogLines": []
+    },
+    "probes": {
+      "stateStatus": 200,
+      "configSet": {
+        "status": 200,
+        "json": {
+          "ok": true,
+          "value": {
+            "plugin": "dsh-sidecard-ask",
+            "version": "1.7.1",
+            "config": {
+              "trigger": "selection",
+              "defaultCarrier": "side",
+              "sideSurface": "auto",
+              "maxChars": 4000,
+              "shortcut": "Alt+Q",
+              "captureZones": "auto",
+              "showInUnclassified": true,
+              "minChars": 2,
+              "maxConcurrentAsks": 3,
+              "sideTools": "readonly",
+              "sideTimeoutMs": 180000,
+              "sideProvider": "auto",
+              "floatMode": "capsule",
+              "floatMaxWidth": 351,
+              "quickActions": [
+                {
+                  "id": "builtin:explain",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:translate",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:summarize",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:polish",
+                  "enabled": true,
+                  "shortcut": ""
+                },
+                {
+                  "id": "builtin:fix",
+                  "enabled": true,
+                  "shortcut": ""
+                }
+              ],
+              "notifyOnDone": false,
+              "contextMenu": true,
+              "historyMaxCards": 10
+            },
+            "problems": [],
+            "provenance": {
+              "persisted": true,
+              "persistedAtBoot": true,
+              "persistedPath": "D:\\Users\\34332\\AI\\dsh-sidecard-ask\\.tmp\\rm\\home\\a4\\sidecard-ask\\config.json",
+              "patchKeys": [
+                "trigger",
+                "defaultCarrier",
+                "sideSurface",
+                "captureZones",
+                "sideTools",
+                "maxChars",
+                "minChars",
+                "maxConcurrentAsks",
+                "sideTimeoutMs",
+                "shortcut",
+                "sideProvider",
+                "showInUnclassified"
+              ]
+            },
+            "capabilities": {
+              "sideEngine": true,
+              "sideProviders": [
+                "spawn",
+                "fork"
+              ],
+              "liveAgents": 0,
+              "activeRuns": 0,
+              "parent": {
+                "id": null,
+                "archived": false,
+                "candidates": []
+              },
+              "streamSource": "agent/assistant-stream"
+            },
+            "client": null
+          }
+        }
+      },
+      "ask": {
+        "status": 200,
+        "contentType": "text/event-stream; charset=utf-8",
+        "text": "event: error\ndata: {\"id\":\"probe-alpha4\",\"code\":\"no-parent\",\"message\":\"当前没有活动的会话代理，无法发起独立作答\",\"retryable\":false,\"fallback\":\"main\"}\n\n"
+      },
+      "askEvents": [
+        "error"
+      ]
+    },
+    "pageErrors": []
+  }
+]
