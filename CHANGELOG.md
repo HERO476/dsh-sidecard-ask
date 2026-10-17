@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.8.1
+
+**主题：对 1.8.0 交付做实证复核后的三项修正——1 个已复现的真实缺陷、1 处开关失效、1 条缺证据的声明。**
+
+复核方式：不采信文档，独立跑四套测试、读全部新增代码、对可疑点写最小复现脚本并落盘证据。
+
+- **P0（真实缺陷，已复现）「清空全部历史」刷新后复活**：`clearHistory()` 只删了当前的
+  `:cards:v3` 键，而 `readPersisted()` 在 v3 缺席时会回落到 `:cards:v2` → `:cards:v1`
+  （这条回落正是"非破坏式迁移"的实现方式）。于是**从 1.7.x 升级上来的用户**点「清空全部历史」
+  后刷新页面，旧卡片会从遗留的 v2 键整份读回来——2026-10-17 用独立脚本复现
+  （清空前 history=1 → 清空后=0、v3 键为 null、v2 键仍在 → 重载后 history=1，卡片 id 为旧数据）。
+  修法：`clearHistory` 同时删除 v3/v2/v1 三代键（显式清空本就是破坏性操作，它是唯一允许丢弃旧键的动作）。
+  测试为什么原先没拦住：旧用例只断言"v3 键被删掉"，且只播种 v3 键、清空后**不重载客户端**——
+  钉的是实现细节而非用户可见结果。新增用例覆盖"遗留 v2 + 清空 + 重载仍为空"。
+- **P2（开关失效）建议追问芯片未跟随 `followUpSuggestions`**：只要答案里存在 `<followups>` 块，
+  芯片就渲染，与默认关闭的 opt-in 语义不符。现在渲染跟随开关；**块剥离保持无条件**
+  （模型乱写标记时，正文仍不会被污染成散文）。旧用例正是"开关关闭却断言芯片出现"，已改为开启态，
+  并补关闭态回归守卫。
+- **P1（证据链 + 勘误）`inputActions` 写入面**：1.8.0 把"官方写入面存在
+  `captureInsertion()` / `insertText()` / `setDraft()`"写成探针的第④条结论，但
+  `.compat-report/scripts/composer-probe.mjs` 的正文**从未探测 `inputActions`**（只有脚本头注释
+  承诺过），仓库内也没有任何证据文件出现过这两个标识符。经复核，**声明本身成立**，现补产物层证据：
+  `npm pack @deepseek-ai/dsh-client-ui-conversation@0.2.0-rc.2` 与 `@0.2.1-rc.2` 解包后，
+  `lib/types/client/contract/input.d.ts` 含 `captureInsertion(): TokenSpan` 与
+  `insertText(text: string, span: TokenSpan): boolean`，`lib/client.js` 含 `var SessionInputShell = class`。
+  逐条命中、行号与官方契约原文见 `.compat-report/evidence/p2-inputactions-contract-2026-10-17.json`；
+  README §6.3 与 1.8.0 条目已就地勘误，探针脚本头也改成了它真正做的事。
+- 版本号三处同步到 1.8.1。
+
+本机实测（四项均 exit 0）：verify **57** / contract **956** / float-placement **38** / smoke **226**
+= **1277 项全部通过**（较 1.8.0 的 1267 新增 10 项）。
+
+> 未验证（如实记录）：本次修的是逻辑与测试，**没有在真实页面上点过任何按钮**。
+> 1.8.0 未验证栏的 ①–⑤ 全部继续有效（写回按钮的真实点击与手感、原文高亮的观感与虚拟列表命中率、
+> 导出的真实落盘、真实模型对风格与 `<followups>` 的遵循度、Electron 外壳表现）。
+> 另外：`inputActions` 的证据核到 0.2.0-rc.2 与 0.2.1-rc.2 两个版本，未逐版遍历。
+
 ## 1.8.0
 
 **主题：P2 能力补齐——回答风格档位、答案写回输入框、原文回看定位、模型生成的追问建议、导出与多版本答案。**
@@ -21,9 +58,13 @@
   contenteditable**（`[data-composer-input][data-lexical-editor="true"]`），不是
   textarea；② `document.execCommand('insertText')` 返回 `false` 且**完全不生效**；
   ③ 合成 `beforeinput`（`inputType:'insertText'`）会被 Lexical 接受——文本落地、
-  发送按钮由禁用转可用；④ DSH 的槽位标准 prop `inputActions` 暴露官方写入面
-  `captureInsertion()` + `insertText(text, span)` + `setDraft(text)`
-  （源码：`dsh-client-ui-conversation` 的 `SessionInputShell.actions`）。
+  发送按钮由禁用转可用。另有一条**不在探针内**的结论：DSH 的槽位标准 prop `inputActions`
+  暴露官方写入面 `captureInsertion()` + `insertText(text, span)` + `setDraft(text)`。
+  > **1.8.1 勘误**：本条原先被写成"探针的第④条结论"，但探针脚本的正文从未实现该探测
+  > （只有脚本头注释承诺过），当时没有可核验的证据。经产物层复核，声明本身**成立**：
+  > `@deepseek-ai/dsh-client-ui-conversation@0.2.0-rc.2 / 0.2.1-rc.2` 的
+  > `lib/types/client/contract/input.d.ts` 含该契约，逐条命中见
+  > `.compat-report/evidence/p2-inputactions-contract-2026-10-17.json`。
   据此实现三级写入阶梯：**官方 `insertText`**（重新 `captureInsertion` 后可重试一次）
   → **DOM `beforeinput`**（contenteditable 追加 / textarea 用原生 value setter + input
   事件）→ 明确失败。改写类动作（`builtin:polish` / `builtin:fix`）的已完成答案上出现

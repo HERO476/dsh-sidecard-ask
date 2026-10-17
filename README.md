@@ -362,13 +362,24 @@ ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
 ### 3. `client.js` §8c —— 答案写回输入框（1.8.0，已做真机探针）
 
 2026-10-17 用**隔离 `DSH_HOME` + 无头 Edge**（插件不参与）对真实 DSH 页面做了探针，
-脚本见 `.compat-report/scripts/composer-probe.mjs`，三条硬结论：
+脚本见 `.compat-report/scripts/composer-probe.mjs`，证据见
+`.compat-report/evidence/p2-probe-2026-10-17.json`，三条硬结论：
 
-| 问题 | 结论 |
-|---|---|
-| composer 的真实 DOM | **Lexical contenteditable**：`<div contenteditable="true" role="textbox" data-composer-input="true" data-lexical-editor="true">`，槽位 `conversation.composer` |
-| 有没有官方写入面 | **有**。槽位标准 prop `inputActions` 暴露 `captureInsertion()` / `insertText(text, span)` / `setDraft(text)` / `submit()`（源码 `dsh-client-ui-conversation` 的 `SessionInputShell.actions`）。`sessions.using(...).binding.session.prompt` 只负责**提交**，不能写草稿 |
-| native setter + input 事件能否同步 | **N/A 且无效**：不是 textarea，没有 value setter；`document.execCommand('insertText')` 返回 `false`、文本不变。**有效的是**合成 `beforeinput`（`inputType:'insertText'`）：文本落地、发送按钮由禁用转可用 |
+| 问题 | 结论 | 证据来源 |
+|---|---|---|
+| composer 的真实 DOM | **Lexical contenteditable**：`<div contenteditable="true" role="textbox" data-composer-input="true" data-lexical-editor="true">`，槽位 `conversation.composer` | 页面探针 |
+| native setter + input 事件能否同步 | **N/A 且无效**：不是 textarea，没有 value setter；`document.execCommand('insertText')` 返回 `false`、文本不变。**有效的是**合成 `beforeinput`（`inputType:'insertText'`）：文本落地、发送按钮由禁用转可用 | 页面探针 |
+| 有没有官方写入面 | **有**。槽位标准 prop `inputActions` 暴露 `captureInsertion()` / `insertText(text, span)` / `setDraft(text)` / `submit()`。`sessions.using(...).binding.session.prompt` 只负责**提交**，不能写草稿 | **产物层核验**（见下），**不是**页面探针 |
+
+> **1.8.1 勘误**：上面第三行原先被写成"探针的第④条结论"，但 `composer-probe.mjs` 的正文
+> 从未探测 `inputActions`（只有脚本头的注释承诺过）——这条声明当时**没有可核验的证据**。
+> 经复核，声明本身**成立**，现改由产物层证据背书：`npm pack
+> @deepseek-ai/dsh-client-ui-conversation@0.2.0-rc.2` 与 `@0.2.1-rc.2` 解包后，
+> `lib/types/client/contract/input.d.ts` 含 `captureInsertion(): TokenSpan` 与
+> `insertText(text: string, span: TokenSpan): boolean`（且文档明确 *"returns false when the
+> draft changed"*，与实现"拒绝先于写入、故可安全回落 DOM 路径"的假设一致），
+> `lib/client.js` 含 `var SessionInputShell = class`。逐条命中与行号见
+> `.compat-report/evidence/p2-inputactions-contract-2026-10-17.json`。
 
 因此实现是三级阶梯：`inputActions.insertText`（重新 `captureInsertion` 后可重试一次）→
 DOM `beforeinput`（追加到末尾）→ 失败时 toast。**脚本设定的 Range 不被 Lexical 采纳**，
@@ -588,15 +599,16 @@ node test/smoke-test.mjs        # 端到端：流式/截断/取消/持久化/失
 ```
 
 四个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模（1.8.0 本机实测，四项均 exit 0）：verify **57** 项 + contract **946** 项 + float-placement **38** 项 +
-smoke **226** 项 = **1267 项全部通过**（1.7.2 为 1004 项；新增 263 项覆盖 P2-1 风格档位、
-P2-2 写回决策表与两级写入、P2-3 签名/遍历/失败分支、P2-4 宽容解析与芯片渲染、
-P2-5 导出内容与 v1/v2→v3 迁移）。
+当前规模（1.8.1 本机实测，四项均 exit 0）：verify **57** 项 + contract **956** 项 + float-placement **38** 项 +
+smoke **226** 项 = **1277 项全部通过**（1.8.0 为 1267 项，其中 contract 由 946 → 956：
+新增"清空历史后重载仍为空"与"建议芯片跟随开关"两组回归用例）。
 
 **真机探针（不属于四套自测）**：`.compat-report/scripts/composer-probe.mjs` 需要
-`playwright-core` 与本机 Edge，对**真实 DSH 页面**回答 composer DOM / 官方写入面 /
-`beforeinput` 是否生效 / `CSS.highlights` 是否可用四个问题。它是 P2-2 的落地依据，
-**不能**被四套自测替代，也不替代人工观感确认。
+`playwright-core` 与本机 Edge，对**真实 DSH 页面**回答 composer DOM / 哪条写入路径真能改变
+编辑器状态 / `CSS.highlights` 是否可用三个问题（证据 `.compat-report/evidence/p2-probe-2026-10-17.json`）。
+它**不**探测 `inputActions`——那是通过槽位 prop 交给插件的面，页面侧脚本读不到；该写入面的存在性
+改由**产物层证据**背书（`.compat-report/evidence/p2-inputactions-contract-2026-10-17.json`）。
+探针是 P2-2 的落地依据，**不能**被四套自测替代，也不替代人工观感确认。
 
 > 1.5.0 之前这里还放过 `tools/balance-check.mjs` 与 `tools/i18n-check.mjs` 两个「替代检查」。
 > 它们已被**删除**：前者用「正则字面量 vs 除号」的启发式判断，把 8 个源文件全部误报为残损；
@@ -778,5 +790,8 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
 10. **建议追问（1.8.0）依赖模型遵循格式**：模型不写 `<followups>`、写半个、或写得过长时，
     客户端只会"少几个芯片"，答案正文照常显示；这是设计内的降级，不是错误。该功能不额外发请求。
 11. **多版本（1.8.0）只在「重试 / 改问」时产生**：普通「继续追问」把旧问答存进 `history`（作为上下文），
-    不进 `versions`；每卡上限 5 条，超出丢最旧。v3 持久化保留 v2/v1 旧键，回退旧版本仍可读自己的数据。
+    不进 `versions`；每卡上限 5 条，超出丢最旧。v3 持久化**默认保留** v2/v1 旧键（回退旧版本仍可读
+    自己的数据）；**唯一的例外是「清空全部历史」**——显式清空会同时删除 v3/v2/v1 三代键（1.8.1）。
+    这条例外是必需的：只删当前键会让 `readPersisted()` 的 v3→v2→v1 回落把刚清掉的历史从旧键读回来，
+    刷新一次就复活（1.8.1 复现并修复）。
 

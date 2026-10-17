@@ -1,11 +1,23 @@
 /**
  * composer-probe.mjs — P2-2 technical probe (NOT part of the shipped package).
  *
- * Answers three questions against a REAL running DSH page (headless Edge):
+ * Answers, against a REAL running DSH page (headless Edge):
  *   ① what the composer's DOM actually is (textarea / contenteditable / custom)
- *   ② whether an official write surface exists (inputActions.setDraft,
- *      sessions.using(...).binding.session.*, conversation.input.for)
- *   ③ whether a native value setter + an `input` event makes React state move
+ *   ② which write path actually moves the editor's OWN state — a native value
+ *      setter + `input` (textarea), `execCommand('insertText')`, or a synthetic
+ *      `beforeinput` (contenteditable); "the send button enables" is the proof
+ *   ③ whether the page exposes CSS Custom Highlight (the preferred paint path
+ *      for the locate feature, because it never mutates the DOM)
+ *
+ * It deliberately does NOT probe `inputActions`: that face is handed to a
+ * plugin through slot props, which a page-side script cannot read. The
+ * existence of `captureInsertion()/insertText(text, span)/setDraft()` was
+ * therefore verified at the ARTIFACT level instead — unpack the published
+ * `@deepseek-ai/dsh-client-ui-conversation` and read
+ * `lib/types/client/contract/input.d.ts`. Marker hits, versions and line
+ * numbers: ../evidence/p2-inputactions-contract-2026-10-17.json.
+ * (1.8.1: this header used to promise a question ② that the body never
+ * implemented, which let an unevidenced claim ride along as a "probe result".)
  *
  * Usage (needs `playwright-core` + an installed Edge):
  *   node .compat-report/scripts/composer-probe.mjs [url]

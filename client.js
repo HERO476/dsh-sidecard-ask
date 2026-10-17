@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.8.0'
+    const CLIENT_VERSION = '1.8.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -3688,7 +3688,13 @@ window.__ModuleLoader__.load({
         // P2-4: chips the MODEL proposed for this answer. The block has
         // already been stripped from the body; a missing/half/oversized block
         // simply yields none. Clicking one submits an ordinary follow-up turn.
-        terminalWithAnswer && viewingVersion === null && parsedFollowUps.followups.length > 0
+        //
+        // The ROW follows `followUpSuggestions`, while the STRIP above stays
+        // unconditional: the toggle owns "do we offer the feature", and a
+        // stray block from a model must never render as raw prose even when
+        // the user never asked for chips.
+        terminalWithAnswer && viewingVersion === null && config.followUpSuggestions === true
+          && parsedFollowUps.followups.length > 0
           ? h('div', { className: 'dsa-sug' },
             h('span', { className: 'dsa-muted' }, t('suggestionsLabel')),
             h(QuickChips, {
@@ -4682,10 +4688,22 @@ window.__ModuleLoader__.load({
             })
             toast(t('historyDeleted'))
           },
-          /** Empty the durable history without touching running cards. */
+          /**
+           * Empty the durable history without touching running cards.
+           *
+           * Removes EVERY generation key, not just the current one:
+           * {@link readPersisted} falls back to v2 → v1 whenever the current
+           * key is absent (that fallback is exactly what makes the
+           * non-destructive migration work), so deleting only v3 let a legacy
+           * payload resurrect the "cleared" history on the next page load —
+           * reproduced live, 2026-10-17. An explicit user clear is destructive
+           * by definition: it is the one action allowed to drop the old keys.
+           */
           clearHistory() {
             try {
-              window.localStorage?.removeItem(PERSIST_KEY)
+              for (const key of [PERSIST_KEY, PERSIST_V2_KEY, PERSIST_LEGACY_KEY]) {
+                window.localStorage?.removeItem(key)
+              }
             } catch (error) {
               console.warn(`[${PLUGIN_ID}] history clear failed:`, error)
             }

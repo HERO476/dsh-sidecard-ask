@@ -1246,8 +1246,15 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
 }
 
 // P2-4 end to end: one dedicated host whose child emits a block, so the card
-// can be rendered and the chip clicked.
+// can be rendered and the chip clicked. `followUpSuggestions: true` is REQUIRED
+// here — 1.8.1 gated the row on that toggle, and this case pins the ON state.
 {
+  // Isolate DSH_HOME for BOTH cases below: an earlier test in this file
+  // persisted a user-layer config (whose followUpSuggestions is false), and the
+  // persisted layer BEATS the patch layer — without this swap the ON case would
+  // be silently overridden and the toggle would look broken.
+  const previousSugHome = process.env.DSH_HOME
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-sug-'))
   const sugHost = makeHostCtx({})
   const sugEngine = makeSubagentEngine({
     emit: (event, ...args) => sugHost.emit(event, ...args),
@@ -1259,7 +1266,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     roots: () => [{ id: 'session-alpha' }],
     list: () => [{ id: 'session-alpha' }],
   }
-  host.apply(sugHost.ctx, { floatMode: 'full', sideSurface: 'flow' })
+  host.apply(sugHost.ctx, { floatMode: 'full', sideSurface: 'flow', followUpSuggestions: true })
   const sugFetch = (url, init = {}) => {
     const path = String(url).replace('/sidecard-ask/api/', '')
     const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -1308,6 +1315,61 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
   const afterChip = sugClient.module.api.snapshot().cards[0]
   report.equal(afterChip.question, '下一步问什么？', 'a clicked suggestion becomes the next question')
   report.equal(afterChip.history.length, 1, 'the previous turn moved into the card history')
+
+  // OFF control (1.8.1 regression guard): the SAME stub answer still carries a
+  // <followups> block, but with the toggle off the row must not render — while
+  // the block is STILL stripped, because the strip is unconditional.
+  const offHost = makeHostCtx({})
+  const offEngine = makeSubagentEngine({
+    emit: (event, ...args) => offHost.emit(event, ...args),
+    frames: ['答案正文。\n', '<followups>', '下一步问什么？ | 还能怎么用？', '</followups>'],
+  })
+  offHost.services.subagents = offEngine.service
+  offHost.services.agents = {
+    get: id => (id === 'session-alpha' ? { id: 'session-alpha' } : undefined),
+    roots: () => [{ id: 'session-alpha' }],
+    list: () => [{ id: 'session-alpha' }],
+  }
+  host.apply(offHost.ctx, { floatMode: 'full', sideSurface: 'flow' })
+  const offFetch = (url, init = {}) => {
+    const path = String(url).replace('/sidecard-ask/api/', '')
+    const body = init.body === undefined ? null : JSON.parse(init.body)
+    const method = init.method ?? 'POST'
+    return (async () => {
+      const res = await callRoute(offHost, `/${path}`, { method, body })
+      if (path.startsWith('ask')) {
+        const text = res.text()
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(text))
+            controller.close()
+          },
+        })
+        return { ok: true, status: 200, body: stream, json: async () => JSON.parse(text) }
+      }
+      return { ok: res.status < 400, status: res.status, json: async () => res.json() }
+    })()
+  }
+  const offClient = loadClientModule({ fetchImpl: offFetch, language: 'zh-CN' })
+  const offCtx = makeClientCtx()
+  offClient.module.apply(offCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 40))
+  report.equal(offClient.module.api.snapshot().config.followUpSuggestions, false, 'the toggle defaults to off')
+  const offOverlay = offCtx.find('shell.overlay', pure.IDS.overlay)
+  offOverlay.component().props.actions.submit(
+    { text: '建议追问的选中文本', rect: { left: 4, top: 4, right: 200, bottom: 24, width: 196, height: 20 },
+      zone: 'chat', cross: false, slotPath: ['conversation.chat.node'], kind: 'text' },
+    { question: 'P2-4 关闭用例', carrier: 'side' },
+  )
+  await new Promise(resolve => setTimeout(resolve, 200))
+  const offTree = expandTree(offOverlay.component())
+  report.equal(byClass(offTree, 'dsa-sug').length, 0, 'with the toggle OFF no suggestion chips render')
+  const offBody = byClass(offTree, 'dsa-answer')[0]
+  report.ok(!textOf(offBody).includes('<followups>'), 'the block is still stripped with the toggle OFF')
+  report.ok(!textOf(offBody).includes('下一步问什么？'), 'the block is not duplicated as prose either')
+  report.ok(textOf(offBody).includes('答案正文。'), 'the answer itself is unaffected by the toggle')
+
+  process.env.DSH_HOME = previousSugHome
 }
 
 console.log('\nP2 answer versions (1.8.0)')
@@ -1986,6 +2048,35 @@ report.equal(clearClient.module.api.snapshot().history.length, 1, 'the manager s
 clearActions.clearHistory()
 report.equal(sharedStorage.getItem(PERSIST_KEY), null, 'clearHistory removes the current (v3) key')
 report.equal(clearClient.module.api.snapshot().history.length, 0, 'clearHistory empties the manager view')
+
+// P0 (1.8.1): a clear must SURVIVE A RELOAD even when a legacy payload is still
+// on disk. `readPersisted` falls back v3 → v2 → v1 (that is how the
+// non-destructive migration works), so removing only the current key let a
+// 1.7.x payload resurrect the "cleared" history on the next page load —
+// reproduced on 2026-10-17 and fixed by clearing every generation key.
+{
+  const legacyStorage = createLocalStorageStub()
+  legacyStorage.setItem(PERSIST_V2_KEY, JSON.stringify({
+    version: 2,
+    cards: [{ id: 'legacy-v2', question: '旧版遗留卡片', text: '旧答案', status: 'done', createdAt: 1 }],
+  }))
+  const legacyClearCtx = makeClientCtx({})
+  const legacyClearClient = loadClientModule({ fetchImpl: hostFetch, storage: legacyStorage, language: 'zh-CN' })
+  legacyClearClient.module.apply(legacyClearCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  report.equal(legacyClearClient.module.api.snapshot().history.length, 1, 'a legacy v2 payload is imported on boot')
+  const legacyClearActions = legacyClearCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+  legacyClearActions.clearHistory()
+  report.equal(legacyStorage.getItem(PERSIST_V2_KEY), null, 'clearHistory also drops the legacy v2 key')
+  report.equal(legacyStorage.getItem(PERSIST_KEY), null, 'and the current v3 key')
+  // Reload over the SAME storage: nothing may come back.
+  const reloadedClearCtx = makeClientCtx({})
+  const reloadedClearClient = loadClientModule({ fetchImpl: hostFetch, storage: legacyStorage, language: 'zh-CN' })
+  reloadedClearClient.module.apply(reloadedClearCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  report.equal(reloadedClearClient.module.api.snapshot().history.length, 0, 'history stays cleared after a page reload')
+  report.equal(reloadedClearClient.module.api.snapshot().cards.length, 0, 'no card is replayed after a clear + reload')
+}
 
 // v1 → v3 migration: with no v3 (or v2) key, a legacy v1 payload is imported
 // once, replayed (createdAt 0 = unknown), and written out under v3; the v1 key

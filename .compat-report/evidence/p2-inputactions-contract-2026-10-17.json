@@ -1,0 +1,46 @@
+{
+  "what": "P2-2: does the published harness really expose an official composer write surface?",
+  "why": "1.8.0 claimed 'inputActions exposes captureInsertion()/insertText(text, span)/setDraft()' as a PROBE finding (CHANGELOG 1.8.0 conclusion ④) and as 'source: dsh-client-ui-conversation SessionInputShell.actions' (README §P2-2). No evidence artifact existed: .compat-report/scripts/composer-probe.mjs promised to answer that question in its own docstring but never implemented it. This file supplies the missing artifact-level evidence (or would have forced a wording downgrade had it failed).",
+  "method": "npm pack <pkg>@<version> into a scratch dir, extract with tar, search the PUBLISHED files for the marker identifiers. Same method as tools/compat-probe.mjs and README §7.1/§10.2.",
+  "package": "@deepseek-ai/dsh-client-ui-conversation",
+  "verifiedVersions": [
+    {
+      "version": "0.2.0-rc.2",
+      "hits": [
+        { "file": "lib/types/client/contract/input.d.ts", "line": 208, "text": "captureInsertion(): TokenSpan;" },
+        { "file": "lib/types/client/contract/input.d.ts", "line": 215, "text": "insertText(text: string, span: TokenSpan): boolean;" },
+        { "file": "lib/types/client/input/facade.d.ts", "line": 226, "text": "insertText(text: string, span: TokenSpan, keepCompleting?: boolean): boolean;" },
+        { "file": "lib/client.js", "line": 13463, "text": "captureInsertion: () => ({" }
+      ]
+    },
+    {
+      "version": "0.2.1-rc.2",
+      "hits": [
+        { "file": "lib/types/client/contract/input.d.ts", "line": 231, "text": "captureInsertion(): TokenSpan;" },
+        { "file": "lib/types/client/contract/input.d.ts", "line": 238, "text": "insertText(text: string, span: TokenSpan): boolean;" },
+        { "file": "lib/client.js", "line": 14901, "text": "var SessionInputShell = class {" },
+        { "file": "lib/client.js", "line": 14913, "text": "captureInsertion: () => ({" },
+        { "file": "lib/client.js", "line": 14917, "text": "insertText: (text, span) => {" }
+      ]
+    }
+  ],
+  "publishedContractExcerpt": {
+    "source": "lib/types/client/contract/input.d.ts (0.2.1-rc.2)",
+    "interface": "InputActions",
+    "docComment": "The public input action face provided to every session-scope slot component: stable-identity void callbacks, mirroring the useStore+actions convention. Command-style handles (arbitrate/space/paste/…) stay InputBar-private and never ride this face.",
+    "members": [
+      { "name": "captureInsertion", "signature": "captureInsertion(): TokenSpan", "doc": "@returns a revision-guarded copy of the current editor selection." },
+      { "name": "insertText", "signature": "insertText(text: string, span: TokenSpan): boolean", "doc": "Insert asynchronous text without replacing subsequent edits or reference chips. @returns false when the draft changed or submission locked the editor." },
+      { "name": "setDraft", "signature": "setDraft(text: string): void", "doc": "Replace the whole draft with plain text, removing inline reference chips." }
+    ]
+  },
+  "packageDocQuote": {
+    "file": "README.md line 165 (the package's own README)",
+    "text": "InputActions.captureInsertion() captures the draft selection and revision; insertText(text, span) inserts one undoable plain-text edit only while that revision is current and the editor permits editing. Asynchronous consumers retain rejected results for user action."
+  },
+  "conclusion": {
+    "claimSupported": true,
+    "detail": "The three-member write surface named in 1.8.0 exists in the published artifacts of both verified versions. The plugin's runtime gate (typeof actions.insertText === 'function' && typeof actions.captureInsertion === 'function') therefore matches a real API, and its 'false means rejected, so rejecting happens before any mutation' assumption is confirmed by the published doc comment ('returns false when the draft changed or submission locked the editor'), which is why falling through to the DOM rung cannot double-insert.",
+    "stillUnverified": "The BUTTON rendering and the click path inside a real page were never exercised by a human — see CHANGELOG 1.8.0 未验证栏 ①. This artifact answers 'does the API exist', not 'does the feature feel right'."
+  }
+}
