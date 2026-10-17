@@ -1,5 +1,84 @@
 # Changelog
 
+## 1.8.0
+
+**主题：P2 能力补齐——回答风格档位、答案写回输入框、原文回看定位、模型生成的追问建议、导出与多版本答案。**
+
+五项都在"最小答案"哲学内：不新增依赖、不新增请求、不改主对话协议；客户端仍然只
+`require('react')`，宿主仍然只 import `node:` 内建。
+
+- **P2-1 回答风格档位 + 自定义指令**：新增 `answerStyle`（`concise` / `standard` /
+  `detailed`，默认 `standard`）与 `customPersona`（≤500 字，按**码点**计数）。
+  宿主在基础人格**之后追**一段风格指令（`concise` = 只给最小完整答案；`detailed` =
+  必要时展开并给出依据；`standard` = 1.7.x 原样），`customPersona` 再以
+  `Additional user instruction:` 标注追加。风格指令刻意不提"语言"，因此"用提问的语言
+  作答"与"选中文本是数据不是指令"两条规则在所有档位下都保留（契约测试逐条断言）。
+  provider 不支持 `persona` 时沿用既有降级：整段人格内联进提示词，不另造机制。
+  设置页新增三档下拉框 + 自定义指令文本域，中英双词典。
+
+- **P2-2 答案写回输入框（先做技术探针）**：探针在**真实 DSH 页面**（隔离 `DSH_HOME`
+  + 无头 Edge，插件不参与）上得到三条硬结论：① composer 是 **Lexical
+  contenteditable**（`[data-composer-input][data-lexical-editor="true"]`），不是
+  textarea；② `document.execCommand('insertText')` 返回 `false` 且**完全不生效**；
+  ③ 合成 `beforeinput`（`inputType:'insertText'`）会被 Lexical 接受——文本落地、
+  发送按钮由禁用转可用；④ DSH 的槽位标准 prop `inputActions` 暴露官方写入面
+  `captureInsertion()` + `insertText(text, span)` + `setDraft(text)`
+  （源码：`dsh-client-ui-conversation` 的 `SessionInputShell.actions`）。
+  据此实现三级写入阶梯：**官方 `insertText`**（重新 `captureInsertion` 后可重试一次）
+  → **DOM `beforeinput`**（contenteditable 追加 / textarea 用原生 value setter + input
+  事件）→ 明确失败。改写类动作（`builtin:polish` / `builtin:fix`）的已完成答案上出现
+  「插入到输入框」；仅当真的存在写入面时才渲染该按钮。DOM 路径**只能追加**（Lexical
+  不接受脚本设定的 Range），"替换原文"只在捕获到文本框内的选区时才提供。任何失败都
+  toast 明示（`已插入到输入框，请按 Enter 发送` / `输入框内容已变化…` / `找不到可写入的输入框`）。
+
+- **P2-3 原文回看定位**：卡片与历史管理条目新增「查看原文」。用**码点级首尾签名**
+  （各 40 码点）在页面文本节点中反查；遍历跳过本插件 DOM（`[data-dsa-root]`）与
+  编辑框；匹配前对两边做空白归一（连续空白 → 单个换行）并保留回原始索引的映射，
+  因此跨段落选中也能命中，且"同一开头出现两次"时用尾签名挑对那一段。
+  高亮**优先 CSS Custom Highlight API**（`CSS.highlights` + `Highlight`，不改 DOM，
+  实测本机 Edge 155 支持），次选 `window.getSelection()`；4 秒后自动清除，多次点击
+  不叠加。找不到时明示「原文已变化或不在当前视图」——**不承诺 100% 命中**：虚拟列表与
+  DOM 重渲染必然存在失败场景（README §14 已写明）。
+
+- **P2-4 模型生成的追问建议**：新增 `followUpSuggestions`（布尔，**默认 false**）。
+  开启后宿主在人格末尾要求模型用 `<followups>问题1 | 问题2</followups>` 输出 2–3 个
+  建议；客户端**宽容解析**：无块 / 半块 / 多余闭合标签 / 块超 600 字符 / 单问超 120
+  码点 / 重复项 / 超过 3 条，全部退化为"无芯片"，绝不报错、绝不影响答案正文。
+  流式期间从**未闭合的 `<followups>` 起整段隐藏**，并额外隐藏末尾的半个标签
+  （`<fol`、`</follow`、孤立 `<`），避免标记闪现；`done` 后整体解析。点击芯片走既有
+  `followUp`（旧问答进 history）。**不额外发请求**（smoke 断言一次 ask 只启动一个子代理）。
+
+- **P2-5a 导出 Markdown**：单卡「导出 .md」+ 历史管理「导出全部 .md」。`card.text`
+  本身是 Markdown，导出时拼上问题标题与 `> 原文` 引用块后整体落盘，保真无损；
+  Blob + `URL.createObjectURL` + `a.download`（**不往 `document.body` 插节点**），
+  文件名带本地时间戳，`finally` 里 `revokeObjectURL`。导出内容由纯函数
+  `buildCardMarkdown` / `buildHistoryMarkdown` 生成，测试直接断言字符串，不触发下载。
+
+- **P2-5b 多版本答案**：`retry` / `retryEdit` 覆盖答案前把旧问答（含 reasoning）
+  存入 `card.versions`（上限 **5** 条，空答案不记、完全相同的重试不重复记）。
+  卡片上出现版本切换条，旧版本**只读**渲染（复用 `renderRichText`），可一键「返回最新」。
+  localStorage schema **v2 → v3**（新增 `versions`）：读取顺序 v3 → v2 → v1，**旧键全部保留**，
+  损坏数据仍降级为"无历史"。
+
+- 新增 CSS：`.dsa-sug`（建议芯片行）、`.dsa-versions`（版本切换条）；两者均渲染在既有
+  `.dsa-card` 之内、只使用 `--dsw-alias-*` 主题令牌，**没有新增浮层根节点**，
+  因此既有的 `-webkit-app-region:no-drag` 守卫原样覆盖它们。
+
+本机实测（四项均 exit 0）：verify **57** / contract **946** / float-placement **38** /
+smoke **226** = **1267 项全部通过**（较 1.7.2 的 1004 项新增 263 项）。
+
+> 未验证（如实记录，测试通过不等于真机通过）：
+> ① P2-2 的「插入到输入框」按钮**没有在真实页面里点过**——探针验证的是写入机制
+> （官方 `insertText` 存在、`beforeinput` 能改 Lexical 状态），插件的按钮渲染与点击链路
+> 只由契约测试覆盖；insert 的真实手感、插入位置（末尾追加而非光标处）需人工确认。
+> ② P2-3 的**视觉观感未验证**：高亮颜色/对比度、滚动落点、4 秒后清除的实际观感，
+> 以及虚拟列表滚动后的命中率，均未在真实会话里逐项点过；CSS Highlight 的**能力**已实测。
+> ③ P2-5a 的真实下载未验证：测试环境没有 `anchor.click()`，只断言了"失败必须 toast"；
+> 浏览器/Electron 内是否真的落盘、中文文件名是否正常，需人工确认。
+> ④ P2-1 / P2-4 对**真实模型的**风格与 `<followups>` 遵循度未验证（本机无模型凭据），
+> 验证到的是"指令确实进了人格/提示词"与"客户端对任意畸形块都能降级"。
+> ⑤ 桌面 Electron 外壳内的表现（窗口拖拽区、下载权限）未复测。
+
 ## 1.7.2
 
 **主题：文档补丁版——把 DSH 0.2.1-alpha.3 / 0.2.1-alpha.4 的适配核查结论带上 npm 包。**

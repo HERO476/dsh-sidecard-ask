@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.7.2'
+    const CLIENT_VERSION = '1.8.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -111,6 +111,11 @@ window.__ModuleLoader__.load({
       notifyOnDone: false,
       contextMenu: true,
       historyMaxCards: 10,
+      // 1.8.0 P2-1: answer detail/tone. `standard` keeps the 1.7.x persona.
+      answerStyle: 'standard',
+      customPersona: '',
+      // 1.8.0 P2-4: model-written follow-up chips (opt-in).
+      followUpSuggestions: false,
     }
 
     /**
@@ -439,6 +444,8 @@ window.__ModuleLoader__.load({
         notifyErrorTitle: '侧边追问失败',
         setContextMenu: '选区右键菜单',
         setContextMenuHint: '在可触发区域右键选中文字时，菜单顶部显示追问与快捷动作；若与宿主自身右键菜单冲突可关闭',
+        setFollowUps: '答案末尾给出建议追问',
+        setFollowUpsHint: '开启后模型会用 <followups> 块在答案末尾给出 2–3 个可点的下一步问题，点一下即追问（不额外发请求）',
         setHistoryMax: '历史卡片保存数量',
         setHistoryMaxHint: '0 = 不保存；上限 50 张，单卡文本最多 64K',
         historyTitle: '历史追问卡片',
@@ -454,6 +461,34 @@ window.__ModuleLoader__.load({
         historyCount: '{n} 条',
         historyDeleted: '已删除',
         cardKeysHint: '键盘：R 重试 · C 复制 · Esc 取消聚焦',
+        setAnswerStyle: '回答风格',
+        setAnswerStyleHint: '控制答案的详略与展开程度；不会改变“用提问的语言作答”这条规则',
+        setAnswerStyleConcise: '精简（只给最小完整答案）',
+        setAnswerStyleStandard: '标准（默认）',
+        setAnswerStyleDetailed: '详细（必要时展开并给出依据）',
+        setCustomPersona: '自定义指令',
+        setCustomPersonaHint: '追加在风格档位之后，随每次提问一起发送；≤{n} 字',
+        setCustomPersonaPlaceholder: '例如：尽量给出可验证的来源；不要用表格',
+        locate: '查看原文',
+        locateHint: '回到页面里这段原文的位置并高亮',
+        locateNotFound: '原文已变化或不在当前视图',
+        locateUnsupported: '当前环境不支持定位（拿不到页面文本节点）',
+        exportMd: '导出 .md',
+        exportAllMd: '导出全部 .md',
+        exportEmpty: '没有可导出的内容',
+        exportFailed: '导出失败：浏览器不允许下载',
+        insertToComposer: '插入到输入框',
+        insertReplace: '替换原文',
+        insertHint: '把这条改写结果放进主对话输入框（不改动已发送的消息）',
+        insertDone: '已插入到输入框，请按 Enter 发送',
+        insertStale: '输入框内容已变化，插入未生效，请重试',
+        insertNoComposer: '找不到可写入的输入框',
+        insertFailed: '插入失败，请手动复制',
+        versionsLabel: '历史版本',
+        versionN: '第 {n} 版',
+        versionLatest: '返回最新',
+        versionViewing: '正在查看历史版本（只读）',
+        suggestionsLabel: '建议追问',
         familyLegacyDiag: '旧版共载',
         familyPeers: '同页实例',
       },
@@ -646,6 +681,8 @@ window.__ModuleLoader__.load({
         notifyErrorTitle: 'Side answer failed',
         setContextMenu: 'Selection context menu',
         setContextMenuHint: 'Right-clicking a qualifying selection shows Ask plus quick actions at the top of the menu; turn off if it conflicts with the host own menu',
+        setFollowUps: 'Suggest follow-ups at the end',
+        setFollowUpsHint: 'The model ends each answer with a <followups> block of 2–3 next questions, rendered as clickable chips (no extra request)',
         setHistoryMax: 'Saved history cards',
         setHistoryMaxHint: '0 = do not save; up to 50 cards, at most 64K text each',
         historyTitle: 'History cards',
@@ -661,6 +698,36 @@ window.__ModuleLoader__.load({
         historyCount: '{n} cards',
         historyDeleted: 'Deleted',
         cardKeysHint: 'Keys: R retry · C copy · Esc unfocus',
+        setAnswerStyle: 'Answer style',
+        setAnswerStyleHint: 'Controls how much detail the answer carries; it never changes "answer in the question\u2019s language"',
+        setAnswerStyleConcise: 'Concise (smallest complete answer)',
+        setAnswerStyleStandard: 'Standard (default)',
+        setAnswerStyleDetailed: 'Detailed (expand and give the basis)',
+        setCustomPersona: 'Custom instruction',
+        setCustomPersonaHint: 'Appended after the style directive and sent with every question; at most {n} characters',
+        setCustomPersonaPlaceholder: 'e.g. cite verifiable sources; do not use tables',
+        locate: 'Show source',
+        locateHint: 'Jump back to the passage on the page and highlight it',
+        locateNotFound: 'The source text changed or is not in the current view',
+        locateUnsupported: 'This environment cannot locate text (no page text nodes reachable)',
+        exportMd: 'Export .md',
+        exportAllMd: 'Export all .md',
+        exportEmpty: 'Nothing to export',
+        exportFailed: 'Export failed: the browser refused the download',
+        insertToComposer: 'Insert into composer',
+        insertReplace: 'Replace the passage',
+        insertHint: 'Put this rewrite into the main-chat composer (sent messages stay untouched)',
+        insertDone: 'Inserted into the composer — press Enter to send',
+        insertStale: 'The composer changed; the insert did not apply — try again',
+        insertNoComposer: 'No writable composer found',
+        insertFailed: 'Insert failed — copy the answer manually',
+        versionsLabel: 'Versions',
+        versionN: 'v{n}',
+        versionLatest: 'Back to latest',
+        versionViewing: 'Viewing an older version (read-only)',
+        suggestionsLabel: 'Suggested follow-ups',
+        familyLegacyDiag: 'Legacy co-load',
+        familyPeers: 'Copies on page',
       },
     }
 
@@ -1828,6 +1895,15 @@ window.__ModuleLoader__.load({
    floating shadow; the row is shown only for a terminal answer with text. */
 .dsa-fu-chips{display:flex;gap:6px;flex-wrap:wrap}
 .dsa-fu-chips .dsa-chip{box-shadow:none;padding:2px 9px;font-size:11px;line-height:15px}
+/* 1.8.0 P2-4: model-suggested follow-ups sit under the fixed refinement chips,
+   labelled so the two chip rows are never confused. */
+.dsa-sug{display:flex;flex-direction:column;gap:4px}
+.dsa-sug .dsa-sug-chips .dsa-chip{max-width:100%;white-space:normal;text-align:left}
+/* 1.8.0 P2-5b: version switcher. The data-on attribute marks the version
+   currently being read. */
+.dsa-versions{flex-wrap:wrap}
+.dsa-versions .dsa-btn{padding:2px 9px;font-size:11px;line-height:16px}
+.dsa-versions .dsa-btn[data-on="true"]{border-color:var(--dsw-alias-brand-primary, #4c8dff);font-weight:600}
 /* The selection context menu: a compact vertical list at the cursor. */
 .dsa-ctxmenu{pointer-events:auto;position:fixed;z-index:65;display:flex;flex-direction:column;
   min-width:168px;padding:4px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
@@ -2220,6 +2296,820 @@ window.__ModuleLoader__.load({
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // §8b 1.8.0 P2 helpers: export, source-locating, answer versions
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Mirrors the Host's cap (contract-asserted); counted in code points. */
+    const MAX_CUSTOM_PERSONA_CHARS = 500
+    /** Code points kept on each side of a passage signature. */
+    const LOCATE_HEAD_POINTS = 40
+    const LOCATE_TAIL_POINTS = 40
+    /** How long a located passage stays highlighted. */
+    const LOCATE_HIGHLIGHT_MS = 4000
+    /** The highlight registry name (`CSS.highlights` is page-wide). */
+    const LOCATE_HIGHLIGHT_NAME = 'dsa-locate'
+    /** How many older answers one card keeps (P2-5b). */
+    const MAX_CARD_VERSIONS = 5
+    /** Built-in actions whose finished answer is meant to go back into the composer. */
+    const REWRITE_ACTION_IDS = ['builtin:polish', 'builtin:fix']
+
+    /**
+     * Head/tail signature of a passage, counted in CODE POINTS so an emoji or a
+     * Plane-2 glyph is one character on both ends of the comparison.
+     *
+     * The pair (head, tail, chars) is deliberately cheap: a full passage would
+     * be megabytes of comparison work, while 40+40 code points already pin a
+     * unique position in a rendered conversation.
+     *
+     * @param {unknown} text - the selected passage.
+     * @param {{head?: number, tail?: number}} [options] - window sizes.
+     * @returns {{head: string, tail: string, chars: number}} the signature.
+     */
+    function buildTextSignature(text, options = {}) {
+      const headSize = Number.isFinite(options?.head) ? Math.max(1, Math.round(options.head)) : LOCATE_HEAD_POINTS
+      const tailSize = Number.isFinite(options?.tail) ? Math.max(0, Math.round(options.tail)) : LOCATE_TAIL_POINTS
+      const points = Array.from(typeof text === 'string' ? text : '')
+      if (points.length === 0) return { head: '', tail: '', chars: 0 }
+      const head = points.slice(0, headSize).join('')
+      const tail = points.length > headSize + tailSize ? points.slice(-tailSize).join('') : ''
+      return { head, tail, chars: points.length }
+    }
+
+    /**
+     * Find a signature in a haystack of page text.
+     *
+     * Walks every occurrence of the head (not just the first): a conversation
+     * that quotes the same opening line twice would otherwise always resolve to
+     * the earlier copy, which is the wrong passage. The tail must line up at
+     * exactly `chars` away, so a coincidental head-only match is rejected.
+     *
+     * @param {string} haystack - normalized page text.
+     * @param {{head: string, tail: string, chars: number}} signature - from {@link buildTextSignature}.
+     * @returns {{start: number, end: number}|null} the matched span, or null.
+     */
+    function locateSignature(haystack, signature) {
+      const source = typeof haystack === 'string' ? haystack : ''
+      if (signature === null || typeof signature !== 'object') return null
+      const head = typeof signature.head === 'string' ? signature.head : ''
+      const tail = typeof signature.tail === 'string' ? signature.tail : ''
+      const chars = Number.isFinite(signature.chars) ? Math.round(signature.chars) : 0
+      if (head === '' || chars <= 0) return null
+      let from = 0
+      while (from <= source.length) {
+        const start = source.indexOf(head, from)
+        if (start === -1) return null
+        const end = start + chars
+        if (end <= source.length) {
+          const expectedTail = tail === '' ? head.slice(-Math.min(head.length, chars)) : tail
+          const tailFrom = Math.max(start, end - expectedTail.length)
+          if (source.slice(tailFrom, end) === expectedTail) return { start, end }
+        }
+        from = start + 1
+      }
+      return null
+    }
+
+    /**
+     * Markdown for one finished card: question as a heading, the passage as a
+     * blockquote, then the answer verbatim (it is already Markdown).
+     *
+     * Pure so the export can be asserted without touching the DOM or a Blob;
+     * `buildCardMarkdown` is also what the card's own `.md` button writes.
+     *
+     * @param {object} card - a card or a durable history entry.
+     * @returns {string} the file body (never empty).
+     */
+    function buildCardMarkdown(card) {
+      const question = String(card?.question ?? '').trim()
+      const answer = String(card?.text ?? '')
+      const passage = String(card?.selection ?? card?.selected ?? '').trim()
+      const parts = []
+      if (question !== '') parts.push(`# ${question}`)
+      if (passage !== '') {
+        // Every line gets its own `>` so a multi-paragraph passage stays one
+        // blockquote instead of becoming prose.
+        parts.push(passage.split('\n').map(line => `> ${line}`).join('\n'))
+      }
+      if (answer.trim() !== '') parts.push(answer.trim())
+      if (parts.length === 0) return '# (empty card)\n'
+      return `${parts.join('\n\n')}\n`
+    }
+
+    /**
+     * Markdown for the whole history: one `##`-level section per entry with a
+     * horizontal rule between them. Deliberately flat (no nested headings) so
+     * a model-written `#` inside an answer cannot break the outline.
+     *
+     * @param {Array<object>} entries - durable history entries.
+     * @returns {string} the file body.
+     */
+    function buildHistoryMarkdown(entries) {
+      const list = Array.isArray(entries) ? entries.filter(entry => entry !== null && typeof entry === 'object') : []
+      if (list.length === 0) return ''
+      const sections = list.map((entry, index) => {
+        const body = buildCardMarkdown(entry)
+        const question = String(entry?.question ?? '').trim()
+        const stamp = formatHistoryTime(entry?.createdAt)
+        const meta = [stamp, typeof entry?.provider === 'string' ? entry.provider : ''].filter(Boolean).join(' · ')
+        // Demote the card heading from `#` to `##` so the file keeps one H1.
+        const demoted = question === '' ? body : body.replace(/^# /, '## ')
+        const head = meta === '' ? '' : `<!-- ${index + 1} · ${meta} -->\n`
+        return `${head}${demoted.trimEnd()}`
+      })
+      return `# dsh-sidecard-ask history\n\n${sections.join('\n\n---\n\n')}\n`
+    }
+
+    /** `YYYY-MM-DD-HHMM` file stamp in LOCAL time; '' for an unusable value. */
+    function fileStamp(at) {
+      const value = Number(at)
+      if (!Number.isFinite(value) || value <= 0) return ''
+      const date = new Date(value)
+      const pad = n => String(n).padStart(2, '0')
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`
+    }
+
+    /** Download file name for one export: `<prefix>-<stamp>.md`. */
+    function markdownFilename(at, prefix = 'sidecard-ask') {
+      const stamp = fileStamp(at)
+      return `${prefix}-${stamp === '' ? 'unknown-time' : stamp}.md`
+    }
+
+    /**
+     * Normalize page text for signature matching: every whitespace run becomes
+     * ONE `\n`, and each normalized character remembers the RAW index it came
+     * from, so a match can be mapped back onto real DOM offsets.
+     *
+     * The selection a user makes across two paragraphs carries `\n\n`, while
+     * the DOM text nodes carry no separator at all; normalizing both sides is
+     * what makes the two comparable.
+     *
+     * @param {string} raw - concatenated page text.
+     * @returns {{text: string, map: number[]}}
+     */
+    function normalizeForLocate(raw, mode = 'block') {
+      const source = typeof raw === 'string' ? raw : ''
+      // `block` keeps ONE newline per whitespace run (paragraph boundaries stay
+      // meaningful, so the first attempt is precise). `flow` DROPS whitespace
+      // entirely: rich text splits one sentence into several text nodes, which
+      // looks like a line break to the block mode but is not one to the reader.
+      const flow = mode === 'flow'
+      const out = []
+      const map = []
+      let index = 0
+      while (index < source.length) {
+        const char = source[index]
+        if (/\s/.test(char)) {
+          let end = index
+          while (end < source.length && /\s/.test(source[end])) end += 1
+          if (!flow && out.length > 0) {
+            out.push('\n')
+            map.push(index)
+          }
+          index = end
+          continue
+        }
+        out.push(char)
+        map.push(index)
+        index += 1
+      }
+      // A trailing separator carries no information and would offset the tail.
+      while (out.length > 0 && out[out.length - 1] === '\n') {
+        out.pop()
+        map.pop()
+      }
+      return { text: out.join(''), map }
+    }
+
+    /**
+     * Collect every visible prose text node of the page into one string.
+     *
+     * Skips this plugin's own UI, script/style nodes, and editable fields: the
+     * passage the user selected lived in a read-only message body, and matching
+     * it against the composer or our own card would "find" the wrong thing.
+     *
+     * @param {Document} doc - the page document.
+     * @returns {{raw: string, nodes: Array<{node: Text, start: number}>, capped: boolean}|null}
+     */
+    function collectPageText(doc) {
+      if (doc === null || doc === undefined || typeof doc.createTreeWalker !== 'function') return null
+      const body = doc.body ?? doc.documentElement
+      if (body === null || body === undefined) return null
+      let walker
+      try {
+        walker = doc.createTreeWalker(body, 4 /* NodeFilter.SHOW_TEXT */, null)
+      } catch {
+        return null
+      }
+      const nodes = []
+      let raw = ''
+      let truncated = false
+      const MAX_CHARS = 400_000
+      let current = walker.currentNode
+      // `nextNode` on a fresh walker already starts at the first text node.
+      while (current !== null) {
+        const parent = current.parentElement
+        if (parent !== null && parent !== undefined) {
+          const skip = parent.closest?.('[data-dsa-root],script,style,noscript,textarea,input,select')
+          const editable = parent.closest?.('[contenteditable=""],[contenteditable="true"]')
+          if (skip === null && editable === null) {
+            const value = String(current.nodeValue ?? '')
+            if (value !== '') {
+              nodes.push({ node: current, start: raw.length })
+              raw += value
+              raw += '\n'
+              if (raw.length > MAX_CHARS) { truncated = true; break }
+            }
+          }
+        }
+        current = walker.nextNode()
+      }
+      return { raw, nodes, capped: truncated }
+    }
+
+    /** Map a raw string index onto `{node, offset}` inside the collected nodes. */
+    function nodeAtOffset(nodes, index) {
+      if (!Array.isArray(nodes) || nodes.length === 0) return null
+      let low = 0
+      let high = nodes.length - 1
+      let found = null
+      while (low <= high) {
+        const mid = (low + high) >> 1
+        if (nodes[mid].start <= index) { found = nodes[mid]; low = mid + 1 } else high = mid - 1
+      }
+      if (found === null) return null
+      const offset = Math.min(String(found.node.nodeValue ?? '').length, Math.max(0, index - found.start))
+      return { node: found.node, offset }
+    }
+
+    /**
+     * Locate a passage in the live page and build a Range over it.
+     *
+     * @param {string} text - the passage as it was selected.
+     * @param {Document} doc - the page document.
+     * @returns {{range: Range, mode: 'dom'}|null} the range, or null when the
+     *   passage is no longer in this view (virtual list, re-render, edit).
+     */
+    function locatePassageRange(text, doc) {
+      const signature = buildTextSignature(text)
+      if (signature.chars === 0) return null
+      const collected = collectPageText(doc)
+      if (collected === null) return null
+      const passage = String(text ?? '')
+      // Two passes, precise first: `block` keeps paragraph boundaries, `flow`
+      // ignores whitespace entirely for passages split by inline markup.
+      for (const mode of ['block', 'flow']) {
+        const normalized = normalizeForLocate(collected.raw, mode)
+        const target = {
+          head: normalizeForLocate(signature.head, mode).text,
+          tail: normalizeForLocate(signature.tail, mode).text,
+          // The length must be the normalized length of the WHOLE passage: the
+          // raw code-point count would be off by every collapsed run.
+          chars: normalizeForLocate(passage, mode).text.length,
+        }
+        if (target.head === '' || target.chars <= 0) continue
+        const hit = locateSignature(normalized.text, target)
+        if (hit === null) continue
+        const rawStart = normalized.map[hit.start]
+        const rawEnd = normalized.map[Math.max(0, hit.end - 1)]
+        if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) continue
+        // `rawEnd` is the LAST character; the Range end is exclusive.
+        const start = nodeAtOffset(collected.nodes, rawStart)
+        const end = nodeAtOffset(collected.nodes, rawEnd + 1)
+        if (start === null || end === null) continue
+        try {
+          const range = doc.createRange()
+          range.setStart(start.node, start.offset)
+          range.setEnd(end.node, end.offset)
+          if (range.collapsed === true) continue
+          return { range, mode: 'dom' }
+        } catch {
+          continue
+        }
+      }
+      return null
+    }
+
+    /** Clear the page-wide locate highlight (idempotent). */
+    function clearLocateHighlight() {
+      try {
+        const registry = typeof window !== 'undefined' ? window.CSS?.highlights : undefined
+        if (registry !== undefined && typeof registry.delete === 'function') registry.delete(LOCATE_HIGHLIGHT_NAME)
+      } catch { /* an older browser has no highlight registry */ }
+      try {
+        const selection = typeof window !== 'undefined' && typeof window.getSelection === 'function'
+          ? window.getSelection() : null
+        // Only clear a selection THIS helper created (it always spans the mark
+        // we set); wiping the user's own selection would be rude.
+        if (selection !== null && selection.rangeCount > 0 && selection.__dsaLocated === true) {
+          selection.removeAllRanges()
+          selection.__dsaLocated = false
+        }
+      } catch { /* nothing to clear */ }
+    }
+
+    /** One pending highlight-clear timer, module-wide (no stacking). */
+    let locateTimer = null
+
+    /**
+     * Paint one located range and scroll it into view.
+     *
+     * Preference order is deliberate: the CSS Custom Highlight API does not
+     * touch the DOM at all, so a React-controlled conversation never sees a
+     * mutation; `window.getSelection()` is the fallback for browsers without
+     * the registry. Both are read-only with respect to text nodes — this
+     * plugin never edits page content.
+     *
+     * @param {Range} range - the passage range.
+     * @returns {'highlight'|'selection'|'none'} which mechanism won.
+     */
+    function paintLocatedRange(range) {
+      if (range === null || range === undefined) return 'none'
+      if (locateTimer !== null) {
+        clearTimeout(locateTimer)
+        locateTimer = null
+      }
+      clearLocateHighlight()
+      // Scroll first: a range outside the viewport would highlight invisibly.
+      try {
+        const element = range.startContainer?.parentElement ?? null
+        element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+      } catch { /* scrolling is best effort */ }
+      let mode = 'none'
+      try {
+        const registry = typeof window !== 'undefined' ? window.CSS?.highlights : undefined
+        if (registry !== undefined && typeof registry.set === 'function' && typeof window.Highlight === 'function') {
+          registry.set(LOCATE_HIGHLIGHT_NAME, new window.Highlight(range))
+          mode = 'highlight'
+        }
+      } catch { /* fall through to the selection path */ }
+      if (mode === 'none') {
+        try {
+          const selection = window.getSelection()
+          selection.removeAllRanges()
+          selection.addRange(range)
+          selection.__dsaLocated = true
+          mode = 'selection'
+        } catch { /* an unselectable range (detached node) */ }
+      }
+      locateTimer = setTimeout(() => {
+        locateTimer = null
+        clearLocateHighlight()
+      }, LOCATE_HIGHLIGHT_MS)
+      return mode
+    }
+
+    /**
+     * Download a text file without adding anything to `document.body`.
+     *
+     * The anchor is never appended: this plugin is forbidden from writing into
+     * `document.body` (it would put DOM outside the component tree), and
+     * Chromium/Safari fire `click()` on a detached anchor. A browser that
+     * insists on a connected anchor simply gets no download — the caller shows
+     * the failure instead of pretending it worked.
+     *
+     * @returns {'ok'|'unsupported'|'failed'}
+     */
+    function downloadMarkdown(filename, content) {
+      let url = null
+      try {
+        if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return 'unsupported'
+        if (typeof document === 'undefined' || typeof document.createElement !== 'function') return 'unsupported'
+        const blob = new Blob([String(content ?? '')], { type: 'text/markdown;charset=utf-8' })
+        url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = String(filename ?? 'export.md')
+        anchor.rel = 'noopener'
+        anchor.style.display = 'none'
+        anchor.click()
+        return 'ok'
+      } catch (error) {
+        console.warn(`[${PLUGIN_ID}] export failed:`, error)
+        return 'failed'
+      } finally {
+        // The object URL must be released even when the click itself threw.
+        if (url !== null) {
+          try { URL.revokeObjectURL(url) } catch { /* already gone */ }
+        }
+      }
+    }
+
+    /**
+     * Whether one card may offer "insert into the composer".
+     *
+     * All four must hold: a finished side answer with text, a rewrite-style
+     * action (the feature exists for 润色/纠错, not for every Q&A), and a live
+     * write path. `support` comes from {@link composerWriteSupport}; passing
+     * it in keeps this decision pure and testable.
+     *
+     * @param {object} card - the card.
+     * @param {'actions'|'dom'|'none'} support - live write capability.
+     * @returns {boolean}
+     */
+    function canInsertAnswer(card, support) {
+      if (card === null || card === undefined) return false
+      if (card.carrier !== 'side') return false
+      if (card.status !== 'done' && card.status !== 'stopped') return false
+      if (String(card.text ?? '').trim() === '') return false
+      if (!REWRITE_ACTION_IDS.includes(String(card.actionId ?? ''))) return false
+      return support === 'actions' || support === 'dom'
+    }
+
+    /**
+     * Push one snapshot of a card's current answer onto its version list.
+     *
+     * Pure and bounded: an empty answer is not a version (retrying an errored
+     * card must not create a blank entry), and the oldest entry is dropped past
+     * the cap, because a card's version history is a convenience, not an
+     * archive.
+     *
+     * @param {unknown} versions - the current list.
+     * @param {{question?: string, text?: string, reasoning?: string, at?: number}} snapshot
+     * @param {number} [limit] - cap, defaults to {@link MAX_CARD_VERSIONS}.
+     * @returns {Array<object>} the next list (same array identity is not required).
+     */
+    function withVersion(versions, snapshot, limit = MAX_CARD_VERSIONS) {
+      const list = Array.isArray(versions)
+        ? versions.filter(entry => entry !== null && typeof entry === 'object' && typeof entry.text === 'string')
+        : []
+      const text = String(snapshot?.text ?? '')
+      if (text.trim() === '') return list.slice(-limit)
+      const entry = {
+        question: String(snapshot?.question ?? ''),
+        text,
+        reasoning: String(snapshot?.reasoning ?? ''),
+        at: Number.isFinite(snapshot?.at) ? snapshot.at : Date.now(),
+      }
+      const last = list[list.length - 1]
+      // A retry that produced nothing new must not fill the list with copies.
+      if (last !== undefined && last.text === entry.text && last.question === entry.question) return list
+      return [...list, entry].slice(-Math.max(1, limit))
+    }
+
+    /**
+     * The patch that preserves a card's current answer before a retry
+     * replaces it (P2-5b). `viewingVersion` always resets, because the version
+     * the reader was looking at may no longer be the one they get back.
+     *
+     * @param {object} card - the live card.
+     * @returns {{versions: Array<object>, viewingVersion: null}}
+     */
+    function versionPatch(card) {
+      return {
+        versions: withVersion(card?.versions, {
+          question: card?.question,
+          text: card?.text,
+          reasoning: card?.reasoning,
+          at: Date.now(),
+        }),
+        viewingVersion: null,
+      }
+    }
+
+    // ── P2-2: write an answer back into the composer ────────────────────
+    //
+    // Probe result (2026-10-17, real DSH 0.2.x page, headless Edge):
+    //   · the composer is a Lexical contenteditable div
+    //     (`[data-composer-input][data-lexical-editor="true"]`), NOT a textarea;
+    //   · `document.execCommand('insertText')` returns false and moves NOTHING;
+    //   · a synthetic `beforeinput` InputEvent(inputType:'insertText') IS
+    //     honoured: the text lands and the send button enables;
+    //   · the sanctioned API is the slot-provided `inputActions` face:
+    //     `captureInsertion()` + `insertText(text, span)` + `setDraft(text)`.
+    //
+    // So the write ladder is: action face → DOM beforeinput → give up loudly.
+    // A caret-precise insert through a DOM Range did NOT work (Lexical keeps
+    // its own selection model), which is why the DOM rung appends at the end.
+
+    /** The composer element this page renders, or null. */
+    function findComposerElement() {
+      if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return null
+      // The first two selectors are the DSH composer itself (probe-verified);
+      // the third only matches a textarea INSIDE the conversation slot, so a
+      // stray textarea in some other plugin's panel is never written to.
+      for (const selector of ['[data-composer-input]', '[data-lexical-editor="true"]', '[data-slot^="conversation"] textarea']) {
+        try {
+          const found = document.querySelector(selector)
+          if (found !== null && found !== undefined) return found
+        } catch { return null }
+      }
+      return null
+    }
+
+    /** What can be written to right now: `actions` (best), `dom`, or `none`. */
+    let composerProbeAt = 0
+    let composerProbe = null
+    function composerWriteSupport() {
+      if (capturedComposerActions !== null
+        && typeof capturedComposerActions.insertText === 'function'
+        && typeof capturedComposerActions.captureInsertion === 'function') {
+        return 'actions'
+      }
+      // The probe is a couple of `querySelector` calls; caching it briefly
+      // keeps it off the streaming render path without going stale for long.
+      const now = Date.now()
+      if (composerProbe !== null && now - composerProbeAt < 1500) return composerProbe
+      composerProbe = findComposerElement() === null ? 'none' : 'dom'
+      composerProbeAt = now
+      return composerProbe
+    }
+
+    /** The editable element focused before our popover took focus, or null. */
+    let capturedComposer = null
+    /** The caret span handed out by `inputActions.captureInsertion()`. */
+    let composerSpan = null
+
+    /**
+     * Remember the composer (and its selection) BEFORE our UI steals focus.
+     *
+     * Called when the popover opens and when a chip/card action fires. Reading
+     * `document.activeElement` is only meaningful at that instant: one
+     * `textarea.focus()` inside the popover and the composer is no longer it.
+     *
+     * @returns {{element: Element, kind: 'field'|'editor', start: number|null, end: number|null}|null}
+     */
+    function captureComposerTarget() {
+      const element = typeof document !== 'undefined' ? document.activeElement : null
+      if (element === null || element === undefined) return null
+      // Never capture OUR OWN inputs: a chip inside the popover is clicked
+      // while the popover's textarea owns focus, and remembering that would
+      // later "insert" into a closed popover instead of the composer.
+      const own = typeof element.closest === 'function' ? element.closest('[data-dsa-root]') : null
+      if (own !== null && own !== undefined) return null
+      const tag = String(element.tagName ?? '')
+      if (tag === 'TEXTAREA' || tag === 'INPUT') {
+        capturedComposer = {
+          element,
+          kind: 'field',
+          start: Number.isInteger(element.selectionStart) ? element.selectionStart : null,
+          end: Number.isInteger(element.selectionEnd) ? element.selectionEnd : null,
+        }
+        return capturedComposer
+      }
+      const editable = element.getAttribute?.('contenteditable')
+      if (editable === '' || editable === 'true') {
+        capturedComposer = { element, kind: 'editor', start: null, end: null }
+        return capturedComposer
+      }
+      return null
+    }
+
+    /** Whether "replace the passage in the composer" is offerable at all. */
+    function composerReplaceAvailable() {
+      return capturedComposer !== null
+        && capturedComposer.kind === 'field'
+        && Number.isInteger(capturedComposer.start)
+        && Number.isInteger(capturedComposer.end)
+        && capturedComposer.end > capturedComposer.start
+    }
+
+    /**
+     * Compute the next value of a plain text field.
+     *
+     * Pure so the insert/replace arithmetic is testable without a DOM: an
+     * absent selection means "append", a collapsed one inserts at the caret,
+     * and a ranged one replaces that range.
+     *
+     * @param {unknown} value - the field's current value.
+     * @param {unknown} start - selection start (null/undefined = append).
+     * @param {unknown} end - selection end.
+     * @param {unknown} text - the text to insert.
+     * @returns {{value: string, caret: number}}
+     */
+    function nextComposerValue(value, start, end, text) {
+      const source = typeof value === 'string' ? value : ''
+      const insert = typeof text === 'string' ? text : ''
+      const from = Number.isInteger(start) ? Math.max(0, Math.min(source.length, start)) : source.length
+      const to = Number.isInteger(end) ? Math.max(from, Math.min(source.length, end)) : from
+      return { value: source.slice(0, from) + insert + source.slice(to), caret: from + insert.length }
+    }
+
+    /**
+     * Write `text` into the composer.
+     *
+     * Every failure is a returned reason, never a thrown error, so the caller
+     * can always show something: `no-composer`, `stale`, `not-accepted`,
+     * `write-failed`.
+     *
+     * @param {string} text - the answer to insert.
+     * @param {{replace?: boolean}} [options] - replace the remembered selection.
+     * @returns {{ok: boolean, mode: 'actions'|'field'|'editor'|'none'|'stale'|'failed', reason?: string}}
+     */
+    function insertIntoComposer(text, options = {}) {
+      const body = typeof text === 'string' ? text : ''
+      if (body.trim() === '') return { ok: false, mode: 'none', reason: 'empty' }
+      const replace = options?.replace === true
+
+      // Rung 1 — the harness's own action face (verified on a real page).
+      const actions = capturedComposerActions
+      let actionRefused = false
+      if (actions !== null
+        && typeof actions.insertText === 'function'
+        && typeof actions.captureInsertion === 'function') {
+        const attempt = (span) => {
+          if (span === null || span === undefined) return false
+          try {
+            // The API answers false when the draft revision moved on.
+            return actions.insertText(body, span) !== false
+          } catch {
+            return false
+          }
+        }
+        if (composerSpan === null) {
+          try { composerSpan = actions.captureInsertion() } catch { composerSpan = null }
+        }
+        if (attempt(composerSpan)) return { ok: true, mode: 'actions' }
+        // One re-capture: the user may simply have typed since we remembered.
+        try { composerSpan = actions.captureInsertion() } catch { composerSpan = null }
+        if (attempt(composerSpan)) return { ok: true, mode: 'actions' }
+        // Refused twice. The API rejects BEFORE mutating, so falling through to
+        // the DOM rung can only add the text once — and a user who switched
+        // editors mid-answer still gets their answer inserted.
+        actionRefused = true
+      }
+
+      // Rung 2 — the DOM.
+      const remembered = capturedComposer?.element
+      const element = remembered !== null && remembered !== undefined && remembered.isConnected !== false
+        ? remembered
+        : findComposerElement()
+      if (element === null || element === undefined) {
+        return actionRefused
+          ? { ok: false, mode: 'stale', reason: 'stale' }
+          : { ok: false, mode: 'none', reason: 'no-composer' }
+      }
+      const tag = String(element.tagName ?? '')
+      if (tag === 'TEXTAREA' || tag === 'INPUT') {
+        const before = String(element.value ?? '')
+        const useRange = replace
+          && capturedComposer !== null
+          && capturedComposer.kind === 'field'
+          && capturedComposer.element === element
+        const start = useRange ? capturedComposer.start : before.length
+        const end = useRange ? capturedComposer.end : before.length
+        const plan = nextComposerValue(before, start, end, body)
+        try {
+          const proto = Object.getPrototypeOf(element)
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+          // React controlled inputs ignore a plain assignment: the native
+          // setter plus one bubbling `input` event is what moves their state.
+          if (typeof setter === 'function') setter.call(element, plan.value)
+          else element.value = plan.value
+          element.dispatchEvent(new Event('input', { bubbles: true }))
+          try { element.setSelectionRange(plan.caret, plan.caret) } catch { /* not a text field */ }
+          // A controlled field that silently reverted is a FAILED write, not a
+          // success we merely cannot see.
+          if (String(element.value ?? '') !== plan.value) {
+            return { ok: false, mode: 'failed', reason: 'not-accepted' }
+          }
+          return { ok: true, mode: 'field' }
+        } catch {
+          return { ok: false, mode: 'failed', reason: 'write-failed' }
+        }
+      }
+      // A contenteditable (Lexical in DSH): only `beforeinput` is honoured.
+      try {
+        element.focus?.()
+        const doc = element.ownerDocument ?? document
+        const view = doc.defaultView ?? window
+        const range = doc.createRange()
+        range.selectNodeContents(element)
+        range.collapse(false)
+        const selection = view.getSelection()
+        selection.removeAllRanges()
+        selection.addRange(range)
+        if (typeof InputEvent !== 'function') return { ok: false, mode: 'failed', reason: 'no-input-event' }
+        const event = new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: body,
+        })
+        element.dispatchEvent(event)
+        const after = String(element.innerText ?? element.textContent ?? '')
+        return after.includes(body)
+          ? { ok: true, mode: 'editor' }
+          : { ok: false, mode: 'failed', reason: 'not-accepted' }
+      } catch {
+        return { ok: false, mode: 'failed', reason: 'write-failed' }
+      }
+    }
+
+    // ── P2-4: model-written follow-up suggestions ────────────────────────
+    /** How many suggestion chips one answer may carry. */
+    const MAX_FOLLOWUP_CHIPS = 3
+    /** Code-point cap for ONE suggestion (a runaway question is not a chip). */
+    const MAX_FOLLOWUP_CHARS = 120
+    /** Cap for the whole block; beyond it the model did not follow the format. */
+    const MAX_FOLLOWUP_BLOCK_CHARS = 600
+    /** Opening tag, tolerant of `</ followups >` style spacing and case. */
+    const FOLLOWUP_OPEN_RE = /<\s*followups\s*>/i
+    /** A complete block, global + case-insensitive. */
+    const FOLLOWUP_BLOCK_RE = /<\s*followups\s*>([\s\S]*?)<\s*\/\s*followups\s*>/gi
+    /** A closing tag without its opener. */
+    const FOLLOWUP_CLOSE_RE = /<\s*\/\s*followups\s*>/gi
+
+    /**
+     * Split one `<followups>` body on unescaped `|`.
+     *
+     * `\|` is an escaped separator and survives as a literal pipe — a question
+     * like "`a | b` 是什么语法？" must stay ONE chip instead of becoming two
+     * broken halves.
+     *
+     * @param {string} inner - the block body.
+     * @returns {string[]} raw question strings (not trimmed yet).
+     */
+    function splitFollowUpList(inner) {
+      const parts = []
+      let current = ''
+      const source = String(inner ?? '')
+      for (let index = 0; index < source.length; index += 1) {
+        const char = source[index]
+        if (char === '\\' && source[index + 1] === '|') {
+          current += '|'
+          index += 1
+          continue
+        }
+        if (char === '|') {
+          parts.push(current)
+          current = ''
+          continue
+        }
+        current += char
+      }
+      parts.push(current)
+      return parts
+    }
+
+    /**
+     * Strip the follow-up block out of an answer and resolve its questions.
+     *
+     * Must be tolerant by contract: no block, half a block, a stray closing
+     * tag, an oversized block or 40 questions all degrade to "plain answer,
+     * no chips". It never throws and never hides prose that came BEFORE the
+     * block — the streaming case relies on that.
+     *
+     * @param {unknown} text - the answer text.
+     * @returns {{text: string, followups: string[]}} the prose and up to 3 questions.
+     */
+    function parseFollowUps(text) {
+      let source = typeof text === 'string' ? text : ''
+      const blocks = []
+      source = source.replace(FOLLOWUP_BLOCK_RE, (_match, inner) => {
+        blocks.push(String(inner ?? ''))
+        return ''
+      })
+      // Half-open block (stream cut mid-answer, or the model forgot the close):
+      // everything from the opening tag onward is unreliable formatting.
+      const dangling = FOLLOWUP_OPEN_RE.exec(source)
+      if (dangling !== null) source = source.slice(0, dangling.index)
+      source = source.replace(FOLLOWUP_CLOSE_RE, '')
+      const followups = []
+      const inner = blocks[0]
+      if (typeof inner === 'string' && inner.length <= MAX_FOLLOWUP_BLOCK_CHARS) {
+        for (const raw of splitFollowUpList(inner)) {
+          // Tolerate list decoration the model likes to add ("1. ", "- ", "• ").
+          const question = raw.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()
+          if (question === '') continue
+          if (codePointLength(question) > MAX_FOLLOWUP_CHARS) continue
+          if (followups.includes(question)) continue
+          followups.push(question)
+          if (followups.length >= MAX_FOLLOWUP_CHIPS) break
+        }
+      }
+      return { text: source.replace(/\n{3,}/g, '\n\n').trim(), followups }
+    }
+
+    /**
+     * What to render WHILE a card is still streaming.
+     *
+     * The block must never flash as prose: from an unclosed `<followups>` on,
+     * everything is hidden, and so is a trailing PARTIAL tag (`<fol`,
+     * `</follow`) — those few characters would otherwise appear for a frame
+     * every time a chunk boundary splits the marker.
+     *
+     * @param {unknown} text - the streaming text so far.
+     * @returns {string} the visible prefix.
+     */
+    function streamVisibleText(text) {
+      let source = typeof text === 'string' ? text : ''
+      source = source.replace(FOLLOWUP_BLOCK_RE, '')
+      const open = FOLLOWUP_OPEN_RE.exec(source)
+      if (open !== null) return source.slice(0, open.index)
+      const at = source.lastIndexOf('<')
+      if (at === -1) return source
+      const tail = source.slice(at)
+      const partial = /^<\s*(\/?)\s*([a-z]*)\s*>?$/i.exec(tail)
+      if (partial === null) return source
+      const name = partial[2].toLowerCase()
+      // Both `followups` and `/followups` share the name; a lone '<' (empty
+      // name) is a marker in progress too.
+      if (name === '' || 'followups'.startsWith(name)) return source.slice(0, at)
+      return source
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────
     // §9 components
     // ─────────────────────────────────────────────────────────────────────
 
@@ -2487,6 +3377,13 @@ window.__ModuleLoader__.load({
             h('summary', null, t('reasoningTitle')),
             h('div', { className: 'dsa-reasoning' }, renderRichText(card.reasoning)))
         : null
+      // P2-4: the `<followups>` block is machine-readable scaffolding, never
+      // prose. While streaming it is hidden from the first unclosed tag (a
+      // half-written marker must not flash); once terminal the whole block is
+      // stripped and only the answer is rendered.
+      const bodyText = card.status === 'streaming'
+        ? streamVisibleText(card.text)
+        : parseFollowUps(card.text).text
       // Follow the stream only while the reader sits at the bottom; scrolling
       // up to reread an earlier paragraph must win over the auto-scroll. The
       // 48px slack keeps single-line deltas from losing the tail.
@@ -2506,19 +3403,26 @@ window.__ModuleLoader__.load({
           h('div', null, localizeError(card.error)),
           engineMissing ? h('div', { className: 'dsa-muted' }, t('errorNoSideEngine')) : null)
       }
-      if (card.text === '' && card.status === 'streaming') {
+      // `bodyText`, not `card.text`: an answer that so far contains ONLY a
+      // <followups> block has no prose to show yet, and an empty body with a
+      // live "作答中…" line beats a blank rectangle.
+      if (bodyText === '' && card.status === 'streaming') {
         return h('div', null, reasoning, h('div', { className: 'dsa-muted' }, t('answerStreaming')))
       }
-      if (card.text === '' && card.status === 'done') {
+      if (bodyText === '' && card.status === 'done') {
         return h('div', null, reasoning, h('div', { className: 'dsa-muted' }, t('answerEmpty')))
       }
       return h('div', { className: 'dsa-answer', ref: containerRef },
-        reasoning, renderRichText(card.text))
+        reasoning, renderRichText(bodyText))
     }
 
     /** Card footer: status, copy, follow-up, retry/edit-retry, close. */
-    function CardActions({ card, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain }) {
+    function CardActions({ card, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain, onLocate, onExport, onInsert, onReplace, readOnly = false }) {
       const terminal = card.status === 'done' || card.status === 'error' || card.status === 'stopped'
+      const hasSelection = String(card.selection ?? '').trim() !== ''
+      const hasAnswer = String(card.text ?? '').trim() !== ''
+      // P2-2: only a rewrite answer, only with a live write path.
+      const insertable = canInsertAnswer(card, composerWriteSupport())
       return h('div', { className: 'dsa-row' },
         h('span', { className: 'dsa-muted' },
           card.status === 'streaming' ? t('answerStreaming')
@@ -2527,22 +3431,51 @@ window.__ModuleLoader__.load({
         card.status === 'streaming'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onCancel }, t('cancelAnswer'))
           : null,
-        terminal && card.status !== 'done' && card.carrier === 'side'
+        terminal && !readOnly && card.status !== 'done' && card.carrier === 'side'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onRetry }, t('retry'))
           : null,
         // Edit & retry is available for EVERY terminal side card: a typo in
         // the question used to invalidate the whole card (plain retry only
         // resends verbatim), and an error card can be corrected the same way.
-        terminal && card.carrier === 'side'
+        terminal && !readOnly && card.carrier === 'side'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onRetryEdit }, t('retryEdit'))
           : null,
-        card.status === 'error' && card.carrier === 'side'
+        card.status === 'error' && !readOnly && card.carrier === 'side'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onSendToMain }, t('sendToMain'))
           : null,
         terminal && card.text !== ''
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onCopy }, t('copy'))
           : null,
-        terminal
+        // 1.8.0 P2-3: jump back to the passage. Offered whenever the card
+        // still knows what was selected; a click that finds nothing explains
+        // itself instead of doing nothing (virtual lists do lose passages).
+        hasSelection
+          ? h('button', {
+            type: 'button',
+            className: 'dsa-btn',
+            title: t('locateHint'),
+            onClick: onLocate,
+          }, t('locate'))
+          : null,
+        // 1.8.0 P2-5a: the answer is already Markdown, so the export is a
+        // straight concatenation — no re-rendering, no fidelity loss.
+        hasAnswer
+          ? h('button', { type: 'button', className: 'dsa-btn', onClick: onExport }, t('exportMd'))
+          : null,
+        // 1.8.0 P2-2: a rewrite goes back into the composer. Offered only when
+        // a write path really exists — a dead button is worse than no button.
+        insertable
+          ? h('button', {
+            type: 'button',
+            className: 'dsa-btn',
+            title: t('insertHint'),
+            onClick: onInsert,
+          }, t('insertToComposer'))
+          : null,
+        insertable && composerReplaceAvailable()
+          ? h('button', { type: 'button', className: 'dsa-btn', onClick: onReplace }, t('insertReplace'))
+          : null,
+        terminal && !readOnly
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onFollowUp }, t('followUp'))
           : null,
         h('button', {
@@ -2561,7 +3494,7 @@ window.__ModuleLoader__.load({
      * (the layer is the only surface that can cover the conversation). A host
      * tab that embeds the same card passes no callback and gets no buttons.
      */
-    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain, onFloatMode }) {
+    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain, onFloatMode, onLocate, onExport, onInsert, onReplace, onViewVersion }) {
       const [followOpen, setFollowOpen] = React.useState(false)
       const [draft, setDraft] = React.useState('')
       // Edit-&-retry editor: prefilled with the card's CURRENT question and
@@ -2571,6 +3504,23 @@ window.__ModuleLoader__.load({
       const [editDraft, setEditDraft] = React.useState('')
       const answerRef = React.useRef(null)
       const config = store.state.config
+      // P2-5b: an older version is READ-ONLY content swapped into the same
+      // body. Keeping it out of the store means "back to latest" is just a
+      // click, never a re-fetch.
+      const versions = Array.isArray(card.versions) ? card.versions : []
+      const viewingVersion = Number.isInteger(card.viewingVersion)
+        && card.viewingVersion >= 0 && card.viewingVersion < versions.length
+        ? card.viewingVersion
+        : null
+      const shown = viewingVersion === null
+        ? card
+        : {
+          ...card,
+          question: String(versions[viewingVersion].question ?? ''),
+          text: String(versions[viewingVersion].text ?? ''),
+          reasoning: String(versions[viewingVersion].reasoning ?? ''),
+        }
+      const parsedFollowUps = parseFollowUps(card.text)
       // Icon-only, so the header row keeps one line: the full labels
       // ("收起为胶囊（不遮挡对话）") are 12+ characters each and would wrap the
       // title bar. The words stay on `title`/`aria-label`.
@@ -2631,9 +3581,32 @@ window.__ModuleLoader__.load({
               floatControl('capsule', 'floatCollapse', '⇥'),
               floatControl('off', 'floatHide', '×'))
             : null),
-        h('pre', { className: 'dsa-quote' }, card.question),
-        metaBits.length > 0 ? h('div', { className: 'dsa-muted' }, metaBits.join(' · ')) : null,
-        h(AnswerBody, { card, containerRef: answerRef }),
+        h('pre', { className: 'dsa-quote' }, shown.question),
+        versions.length > 0
+          ? h('div', { className: 'dsa-row dsa-versions' },
+            h('span', { className: 'dsa-muted' }, t('versionsLabel')),
+            versions.map((entry, index) => h('button', {
+              key: `v${index}`,
+              type: 'button',
+              className: 'dsa-btn',
+              'data-on': String(index === viewingVersion),
+              onClick: () => onViewVersion(index),
+            }, t('versionN', { n: index + 1 }))),
+            viewingVersion !== null
+              ? h('button', {
+                type: 'button',
+                className: 'dsa-btn dsa-btn-primary',
+                onClick: () => onViewVersion(null),
+              }, t('versionLatest'))
+              : null)
+          : null,
+        viewingVersion !== null
+          ? h('div', { className: 'dsa-muted' }, t('versionViewing'))
+          : null,
+        viewingVersion === null && metaBits.length > 0
+          ? h('div', { className: 'dsa-muted' }, metaBits.join(' · '))
+          : null,
+        h(AnswerBody, { card: shown, containerRef: answerRef }),
         card.toolFilter === 'unsupported'
           ? h('div', { className: 'dsa-muted' }, t('toolGuardUnavailable'))
           : (card.toolFilter === 'inherit' ? h('div', { className: 'dsa-muted' }, t('toolGuardInherited')) : null),
@@ -2705,19 +3678,43 @@ window.__ModuleLoader__.load({
         // #7: one-tap refinements of a finished answer. They submit follow-up
         // TURNS through the same handler as the textarea, so the answer stays
         // in history and each chip costs one ordinary request.
-        terminalWithAnswer
+        terminalWithAnswer && viewingVersion === null
           ? h(QuickChips, {
             wrapClassName: 'dsa-fu-chips',
             actions: followUpChips(),
             onPick: chip => onFollowUp(chip.question),
           })
           : null,
+        // P2-4: chips the MODEL proposed for this answer. The block has
+        // already been stripped from the body; a missing/half/oversized block
+        // simply yields none. Clicking one submits an ordinary follow-up turn.
+        terminalWithAnswer && viewingVersion === null && parsedFollowUps.followups.length > 0
+          ? h('div', { className: 'dsa-sug' },
+            h('span', { className: 'dsa-muted' }, t('suggestionsLabel')),
+            h(QuickChips, {
+              wrapClassName: 'dsa-fu-chips dsa-sug-chips',
+              actions: parsedFollowUps.followups.map((question, index) => ({
+                id: `sug-${index}`,
+                label: question,
+                question,
+                shortcut: '',
+              })),
+              onPick: chip => onFollowUp(chip.question),
+            }))
+          : null,
         h(CardActions, {
-          card,
+          card: shown,
+          // An older version is read-only: retry / edit / follow-up all act on
+          // the LIVE turn, so showing them here would silently switch context.
+          readOnly: viewingVersion !== null,
           onCopy: () => onCopy(answerRef.current),
           onRetry,
           onCancel,
           onSendToMain,
+          onLocate: () => onLocate(shown),
+          onExport: () => onExport(shown),
+          onInsert: () => onInsert(shown),
+          onReplace: () => onReplace(shown),
           onRetryEdit: () => {
             // Open with the live question, so reopening after an earlier edit
             // re-edits the question actually asked, not the card's first one.
@@ -2859,6 +3856,11 @@ window.__ModuleLoader__.load({
           onCancel: () => actions.cancel(card),
           onSendToMain: () => actions.sendToMain(card),
           onClose: () => actions.close(card),
+          onLocate: target => actions.locateCard(target ?? card),
+          onExport: target => actions.exportCard(target ?? card),
+          onInsert: target => actions.insertAnswer(target ?? card),
+          onReplace: target => actions.insertAnswer(target ?? card, { replace: true }),
+          onViewVersion: index => actions.viewVersion(card, index),
           onFloatMode: setFloatMode,
         }))))
     }
@@ -3114,6 +4116,19 @@ window.__ModuleLoader__.load({
                 className: 'dsa-btn',
                 onClick: () => actions.restoreHistoryCard(entry.id),
               }, t('historyRestore')),
+              String(entry.selection ?? '').trim() !== ''
+                ? h('button', {
+                  type: 'button',
+                  className: 'dsa-btn',
+                  title: t('locateHint'),
+                  onClick: () => actions.locateText(entry.selection),
+                }, t('locate'))
+                : null,
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn',
+                onClick: () => actions.exportCard(entry),
+              }, t('exportMd')),
               h('button', {
                 type: 'button',
                 className: 'dsa-btn',
@@ -3129,16 +4144,22 @@ window.__ModuleLoader__.load({
                 onClick: () => actions.deleteHistoryCard(entry.id),
               }, t('historyDelete')))),
             state.history.length > 0
-              ? h('div', null, h('button', {
-                type: 'button',
-                className: 'dsa-btn',
-                onClick: () => {
-                  // confirm() is optional in embedded WebViews; when absent,
-                  // clear immediately (the manager is explicitly user-driven).
-                  if (typeof window.confirm === 'function' && !window.confirm(t('historyClearConfirm'))) return
-                  actions.clearHistory()
-                },
-              }, t('historyClear')))
+              ? h('div', { className: 'dsa-row' },
+                h('button', {
+                  type: 'button',
+                  className: 'dsa-btn',
+                  onClick: () => actions.exportHistory(),
+                }, t('exportAllMd')),
+                h('button', {
+                  type: 'button',
+                  className: 'dsa-btn',
+                  onClick: () => {
+                    // confirm() is optional in embedded WebViews; when absent,
+                    // clear immediately (the manager is explicitly user-driven).
+                    if (typeof window.confirm === 'function' && !window.confirm(t('historyClearConfirm'))) return
+                    actions.clearHistory()
+                  },
+                }, t('historyClear')))
               : null))
 
       // §4.5 a non-leader copy explains why its interaction surface is gone.
@@ -3197,8 +4218,21 @@ window.__ModuleLoader__.load({
           ])),
           field(t('setSideTimeout'), number('sideTimeoutMs', 5000, 3600000), t('setSideTimeoutHint')),
           field(t('setSideProvider'), providerSelect(), t('setSideProviderHint')),
+          field(t('setAnswerStyle'), select('answerStyle', [
+            ['concise', t('setAnswerStyleConcise')],
+            ['standard', t('setAnswerStyleStandard')],
+            ['detailed', t('setAnswerStyleDetailed')],
+          ]), t('setAnswerStyleHint')),
           field(t('setHistoryMax'), number('historyMaxCards', 0, 50), t('setHistoryMaxHint'))),
         quickActionsEditor,
+        field(t('setCustomPersona'), h('textarea', {
+          className: 'dsa-textarea',
+          value: String(draft.customPersona ?? ''),
+          maxLength: MAX_CUSTOM_PERSONA_CHARS,
+          rows: 3,
+          placeholder: t('setCustomPersonaPlaceholder'),
+          onChange: event => setDraft({ ...draft, customPersona: event.target.value }),
+        }), t('setCustomPersonaHint', { n: MAX_CUSTOM_PERSONA_CHARS })),
         h('label', { className: 'dsa-check' },
           h('input', {
             type: 'checkbox',
@@ -3228,6 +4262,14 @@ window.__ModuleLoader__.load({
             : notifyPerm === 'denied'
               ? t('notifyDenied')
               : t('setNotifyOnDoneHint')),
+        h('label', { className: 'dsa-check' },
+          h('input', {
+            type: 'checkbox',
+            checked: draft.followUpSuggestions === true,
+            onChange: event => setDraft({ ...draft, followUpSuggestions: event.target.checked }),
+          }),
+          t('setFollowUps')),
+        h('span', { className: 'dsa-muted' }, t('setFollowUpsHint')),
         historySection,
         h('div', { className: 'dsa-row' },
           h('button', {
@@ -3388,7 +4430,12 @@ window.__ModuleLoader__.load({
         // payload is read once and imported into v2 on boot; the v1 key is
         // left untouched (no destructive migration), so a downgrade still
         // finds it.
-        const PERSIST_KEY = 'dsh-sidecard-ask:cards:v2'
+        // v3 (1.8.0): adds `versions` (older answers kept across retry /
+        // retry-edit). The chain v1 → v2 → v3 is read in order; every older
+        // key is LEFT IN PLACE (non-destructive migration), so a downgrade
+        // still finds its own payload.
+        const PERSIST_KEY = 'dsh-sidecard-ask:cards:v3'
+        const PERSIST_V2_KEY = 'dsh-sidecard-ask:cards:v2'
         const PERSIST_LEGACY_KEY = 'dsh-sidecard-ask:cards:v1'
         const PERSIST_FALLBACK_CARDS = 10
         const PERSIST_TEXT_LIMIT = 65536
@@ -3416,19 +4463,27 @@ window.__ModuleLoader__.load({
           try {
             raw = window.localStorage?.getItem(PERSIST_KEY)
           } catch { return [] }
-          const v2 = parseEnvelope(raw, 2).slice(0, 50)
-          if (v2.length > 0 || (raw !== null && raw !== undefined)) return v2
-          // One-time v1 import: v1 entries carry no createdAt (0 = unknown).
+          const v3 = parseEnvelope(raw, 3).slice(0, 50)
+          if (v3.length > 0 || (raw !== null && raw !== undefined)) return v3
+          // v2 → v3: v2 entries have no `versions`, so the field is seeded empty.
+          let v2raw = null
+          try {
+            v2raw = window.localStorage?.getItem(PERSIST_V2_KEY)
+          } catch { return [] }
+          if (v2raw !== null && v2raw !== undefined) {
+            return parseEnvelope(v2raw, 2).slice(0, 50).map(entry => ({ ...entry, versions: [] }))
+          }
+          // v1 → v3: v1 entries carry neither createdAt nor versions.
           let legacy = null
           try {
             legacy = window.localStorage?.getItem(PERSIST_LEGACY_KEY)
           } catch { return [] }
-          return parseEnvelope(legacy, 1).slice(0, 50).map(entry => ({ ...entry, createdAt: 0 }))
+          return parseEnvelope(legacy, 1).slice(0, 50).map(entry => ({ ...entry, createdAt: 0, versions: [] }))
         }
 
         function writePersisted(cards) {
           try {
-            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 2, cards }))
+            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards }))
           } catch (error) {
             // Quota or privacy mode — the cards stay on screen, just not durable.
             console.warn(`[${PLUGIN_ID}] card history not persisted:`, error)
@@ -3459,6 +4514,21 @@ window.__ModuleLoader__.load({
               provider: typeof card.provider === 'string' ? card.provider : '',
               elapsedMs: Number.isFinite(card.elapsedMs) ? card.elapsedMs : null,
               history: Array.isArray(card.history) ? card.history.slice(-12) : [],
+              // P2-2: kept so a replayed rewrite card still offers "insert".
+              actionId: typeof card.actionId === 'string' ? card.actionId.slice(0, 60) : null,
+              // P2-5b: bounded, text-capped older answers. `question` is short
+              // by nature; the answer is capped like the live one.
+              versions: Array.isArray(card.versions)
+                ? card.versions
+                  .filter(entry => entry !== null && typeof entry === 'object' && typeof entry.text === 'string')
+                  .slice(-MAX_CARD_VERSIONS)
+                  .map(entry => ({
+                    question: String(entry.question ?? '').slice(0, 2000),
+                    text: String(entry.text ?? '').slice(0, PERSIST_TEXT_LIMIT),
+                    reasoning: String(entry.reasoning ?? '').slice(0, PERSIST_TEXT_LIMIT),
+                    at: Number.isFinite(entry.at) ? entry.at : 0,
+                  }))
+                : [],
             }))
           // cap === 0 disables persistence: do not touch the existing key
           // (documented as "kept until an explicit clear"), just mirror the
@@ -3473,18 +4543,19 @@ window.__ModuleLoader__.load({
 
         /** Replay finished cards from a previous page load into the store. */
         const restorePersisted = () => {
-          // Detect the v1→v2 migration BEFORE reading: when the v2 key is
-          // absent but a legacy payload exists, the imported set is written
-          // out under v2 once (non-destructively; v1 is kept).
-          let v2Raw
+          // Detect the migration BEFORE reading: when the CURRENT key is
+          // absent but an older payload exists, the imported set is written
+          // out under the current version once (non-destructively; v1/v2 are
+          // kept, so a downgrade still finds its own key).
+          let currentRaw
           try {
-            v2Raw = window.localStorage?.getItem(PERSIST_KEY)
-          } catch { v2Raw = null }
+            currentRaw = window.localStorage?.getItem(PERSIST_KEY)
+          } catch { currentRaw = null }
           const cap = historyCap()
           const saved = readPersisted().slice(0, cap)
           store.set({ history: saved })
           if (saved.length === 0) return
-          if (cap > 0 && (v2Raw === null || v2Raw === undefined)) {
+          if (cap > 0 && (currentRaw === null || currentRaw === undefined)) {
             writePersisted(saved)
           }
           const replayed = saved.map(entry => ({
@@ -3504,6 +4575,10 @@ window.__ModuleLoader__.load({
             provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
             elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
             createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
+            // P2-5b: replayed versions stay switchable after a reload.
+            versions: replayVersions(entry.versions),
+            viewingVersion: null,
+            actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
             // A native/better tab cannot survive a reload, so history always
             // comes back on the flow stack where it is visible immediately.
             surface: 'flow',
@@ -3515,6 +4590,20 @@ window.__ModuleLoader__.load({
               : [],
           }))
           store.set({ cards: [...replayed, ...store.state.cards] })
+        }
+
+        /** Sanitize a persisted `versions` array into the live shape. */
+        function replayVersions(raw) {
+          if (!Array.isArray(raw)) return []
+          return raw
+            .filter(entry => entry !== null && typeof entry === 'object' && typeof entry.text === 'string')
+            .slice(-MAX_CARD_VERSIONS)
+            .map(entry => ({
+              question: String(entry.question ?? ''),
+              text: String(entry.text ?? ''),
+              reasoning: String(entry.reasoning ?? ''),
+              at: Number.isFinite(entry.at) ? entry.at : 0,
+            }))
         }
 
         /** Map one durable history entry back to a live flow card. */
@@ -3536,6 +4625,9 @@ window.__ModuleLoader__.load({
           elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
           createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
           notified: true,
+          versions: replayVersions(entry.versions),
+          viewingVersion: null,
+          actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
           surface: 'flow',
           open: true,
           history: Array.isArray(entry.history)
@@ -3547,6 +4639,11 @@ window.__ModuleLoader__.load({
 
         const actions = {
           openPopover(candidate) {
+            // P2-2: the composer must be remembered BEFORE the popover's
+            // textarea takes focus, otherwise "insert into composer" has no
+            // target by the time the answer is ready.
+            captureComposerTarget()
+            try { composerSpan = capturedComposerActions?.captureInsertion?.() ?? null } catch { composerSpan = null }
             store.set({ popover: { candidate } })
           },
           closePopover() {
@@ -3623,6 +4720,12 @@ window.__ModuleLoader__.load({
               createdAt: Date.now(),
               // #5 guard: at most one notification per card.
               notified: false,
+              // P2-5b: older answers this card can switch back to.
+              versions: [],
+              viewingVersion: null,
+              // P2-2: which quick action started this card (rewrite actions
+              // offer "insert into the composer"); null for a typed question.
+              actionId: payload?.actionId ?? null,
             }
             if (payload.carrier === 'main') {
               store.set({ cards: [card, ...store.state.cards] })
@@ -3692,6 +4795,26 @@ window.__ModuleLoader__.load({
             void runSideCard(card.id)
           },
           /**
+           * P2-2: write a finished rewrite into the composer.
+           *
+           * `replace` is only meaningful for a plain text field whose
+           * selection we actually captured; a contenteditable composer gets
+           * the answer appended (Lexical ignores a programmatic range).
+           * Returns the mode so a test (and the toast) can tell what happened.
+           */
+          insertAnswer(card, options = {}) {
+            const replace = options?.replace === true && composerReplaceAvailable()
+            const result = insertIntoComposer(String(card?.text ?? ''), { replace })
+            if (result.ok === true) {
+              toast(t('insertDone'))
+              return result.mode
+            }
+            toast(result.mode === 'stale'
+              ? t('insertStale')
+              : result.mode === 'none' ? t('insertNoComposer') : t('insertFailed'))
+            return result.mode
+          },
+          /**
            * One quick-action chip: resolve the template ({selection} is the
            * only placeholder), then take the SAME path as a popover submit
            * fixed to the side card — surface picking, render proof and the
@@ -3701,12 +4824,79 @@ window.__ModuleLoader__.load({
             const config = store.state.config
             const question = renderActionQuestion(action, candidate.text, config.maxChars)
             if (question.trim() === '') return
-            void actions.submit(candidate, { question, carrier: 'side' })
+            // P2-2: a chip click also has to remember where the composer was.
+            captureComposerTarget()
+            try { composerSpan = capturedComposerActions?.captureInsertion?.() ?? null } catch { composerSpan = null }
+            void actions.submit(candidate, { question, carrier: 'side', actionId: action?.id ?? null })
           },
           copy(card, element) {
             void copyText(card.text, element).then((result) => {
               toast(result === 'copied' ? t('copied') : result === 'selected' ? t('copySelectedHint') : t('copyFailed'))
             })
+          },
+          /**
+           * 1.8.0 P2-3: jump back to the passage one card/history entry came
+           * from. Returns `'highlight' | 'selection' | 'missing' |
+           * 'unsupported'` — every non-success path toasts, so a click can
+           * never look like a no-op.
+           */
+          locateText(text) {
+            const source = String(text ?? '')
+            if (source.trim() === '') {
+              toast(t('locateNotFound'))
+              return 'missing'
+            }
+            // A headless/embedded surface may have no text walker at all; say
+            // so instead of pretending the passage "changed".
+            if (typeof document === 'undefined'
+              || typeof document.createRange !== 'function'
+              || typeof document.createTreeWalker !== 'function') {
+              toast(t('locateUnsupported'))
+              return 'unsupported'
+            }
+            let found = null
+            try {
+              found = locatePassageRange(source, document)
+            } catch (error) {
+              console.warn(`[${PLUGIN_ID}] locate failed:`, error)
+            }
+            if (found === null) {
+              toast(t('locateNotFound'))
+              return 'missing'
+            }
+            const mode = paintLocatedRange(found.range)
+            if (mode === 'none') {
+              toast(t('locateUnsupported'))
+              return 'unsupported'
+            }
+            return mode
+          },
+          locateCard(card) {
+            return actions.locateText(card?.selection ?? '')
+          },
+          /** 1.8.0 P2-5a: write one card to `<prefix>-<stamp>.md`. */
+          exportCard(card) {
+            if (String(card?.text ?? '').trim() === '') {
+              toast(t('exportEmpty'))
+              return 'empty'
+            }
+            const result = downloadMarkdown(markdownFilename(Date.now()), buildCardMarkdown(card))
+            if (result !== 'ok') toast(t('exportFailed'))
+            return result
+          },
+          /** 1.8.0 P2-5a: write the whole durable history to one file. */
+          exportHistory() {
+            const entries = store.state.history
+            if (!Array.isArray(entries) || entries.length === 0) {
+              toast(t('exportEmpty'))
+              return 'empty'
+            }
+            const result = downloadMarkdown(
+              markdownFilename(Date.now(), 'sidecard-ask-history'),
+              buildHistoryMarkdown(entries),
+            )
+            if (result !== 'ok') toast(t('exportFailed'))
+            return result
           },
           followUp(card, text) {
             const history = [...card.history, { question: card.question, answer: card.text }]
@@ -3718,6 +4908,8 @@ window.__ModuleLoader__.load({
               status: 'pending',
               error: null,
               streaming: null,
+              // A new turn is a new answer: leave any old-version view.
+              viewingVersion: null,
             })
             if (next === undefined) return
             if (next.carrier === 'side') void runSideCard(card.id)
@@ -3740,7 +4932,15 @@ window.__ModuleLoader__.load({
             }
           },
           retry(card) {
-            patchCard(card.id, { status: 'pending', text: '', reasoning: '', error: null, streaming: null })
+            // P2-5b: the answer being replaced is kept as a version first.
+            patchCard(card.id, {
+              ...versionPatch(card),
+              status: 'pending',
+              text: '',
+              reasoning: '',
+              error: null,
+              streaming: null,
+            })
             if (card.carrier === 'side') void runSideCard(card.id)
           },
           /**
@@ -3753,6 +4953,7 @@ window.__ModuleLoader__.load({
             const trimmed = String(question ?? '').trim()
             if (trimmed === '' || card.carrier !== 'side') return
             patchCard(card.id, {
+              ...versionPatch(card),
               question: trimmed,
               status: 'pending',
               text: '',
@@ -3761,6 +4962,18 @@ window.__ModuleLoader__.load({
               streaming: null,
             })
             void runSideCard(card.id)
+          },
+          /**
+           * P2-5b: show one older version (or the live one with `null`).
+           * Read-only by construction — nothing is re-fetched, the card's own
+           * data is swapped into the body.
+           */
+          viewVersion(card, index) {
+            const versions = Array.isArray(card?.versions) ? card.versions : []
+            const next = Number.isInteger(index) && index >= 0 && index < versions.length ? index : null
+            if (next === null && index !== null && index !== undefined) return null
+            patchCard(card.id, { viewingVersion: next })
+            return next
           },
           cancel(card) {
             const controller = controllers.get(card.id)
@@ -4499,6 +5712,11 @@ window.__ModuleLoader__.load({
               onCancel: () => actions.cancel(card),
               onSendToMain: () => { void actions.sendToMain(card) },
               onClose: () => actions.close(card),
+              onLocate: target => actions.locateCard(target ?? card),
+              onExport: target => actions.exportCard(target ?? card),
+              onInsert: target => actions.insertAnswer(target ?? card),
+              onReplace: target => actions.insertAnswer(target ?? card, { replace: true }),
+              onViewVersion: index => actions.viewVersion(card, index),
             }))
         }
 
@@ -4667,6 +5885,32 @@ window.__ModuleLoader__.load({
           errorCodes: ERROR_CODES,
           resolveLanguage,
           dict: DICT,
+          // 1.8.0 P2 surfaces
+          MAX_CUSTOM_PERSONA_CHARS,
+          MAX_CARD_VERSIONS,
+          REWRITE_ACTION_IDS,
+          LOCATE_HEAD_POINTS,
+          LOCATE_TAIL_POINTS,
+          buildTextSignature,
+          locateSignature,
+          locatePassageRange,
+          normalizeForLocate,
+          buildCardMarkdown,
+          buildHistoryMarkdown,
+          markdownFilename,
+          fileStamp,
+          canInsertAnswer,
+          composerWriteSupport,
+          composerReplaceAvailable,
+          captureComposerTarget,
+          nextComposerValue,
+          insertIntoComposer,
+          withVersion,
+          versionPatch,
+          parseFollowUps,
+          streamVisibleText,
+          splitFollowUpList,
+          MAX_FOLLOWUP_CHIPS,
         }),
       }),
     }

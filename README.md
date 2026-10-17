@@ -8,6 +8,13 @@
 
 聊天记录、任务详情、右侧栏内容……只要是能选中的文本都能用；**没装侧边卡片插件也能跑**（自动回退到内置浮层卡片）。
 
+> **1.8.0 增强一览**（P2，详见 CHANGELOG）：**回答风格档位**（`answerStyle` 精简/标准/详细）
+> 与 ≤500 字的自定义指令；改写类答案可**写回主对话输入框**（先做了真实页面探针，走官方
+> `inputActions.insertText`，DOM 路径退化为 `beforeinput` 追加）；卡片与历史条目可**查看原文**
+> （码点签名反查 + CSS Custom Highlight 高亮，找不到会明说）；可选的**模型建议追问**芯片
+> （`<followups>` 块，宽容解析，不额外发请求）；**导出 .md**（单卡 / 全部）与**多版本答案**
+> （localStorage 升到 v3，v1/v2 非破坏式迁移）。
+
 > **1.5.0 增强一览**（详见 CHANGELOG）：内置浮层不再压住主对话——宽度改由纯函数 `floatPlacement`
 > 按「对话区右侧可用带宽」计算（旧实现是固定 400px，在用户截图上压入正文约 113px）；浮层默认是**一行高的胶囊**，
 > 可随时「收起 / 隐藏」，运行时的形态切换不写回配置；新增 `floatMode`（默认 `capsule`）与
@@ -162,7 +169,10 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `quickActions` | 动作数组（≤12 条） | 5 个内置动作 | **一键快捷动作**：选中后按钮旁的动作芯片。条目形如 `{id, enabled, shortcut}`；内置 id 为 `builtin:explain/translate/summarize/polish/fix`，自定义动作（非 `builtin:` 前缀）还需 `label`（≤20 字）与 `question`（≤500 字，可用 `{selection}` 内嵌选中正文）。设置页可视化编辑，用户层整表覆盖默认值 | 立即（快捷键下次按键生效） |
 | `notifyOnDone` | 布尔 | `false` | 页面在后台时，作答完成/失败是否弹系统通知；首次开启需浏览器通知权限 | 立即 |
 | `contextMenu` | 布尔 | `true` | 是否在可触发选区的右键菜单顶部加入追问与快捷动作；与宿主菜单冲突时可关 | 立即 |
-| `historyMaxCards` | 0–50 | `10` | 历史卡片持久化上限（localStorage v2）；`0` = 不写盘（已有历史保留到显式清空） | 立即 |
+| `historyMaxCards` | 0–50 | `10` | 历史卡片持久化上限（localStorage v3）；`0` = 不写盘（已有历史保留到显式清空） | 立即 |
+| `answerStyle` | `concise` \| `standard` \| `detailed` | `standard` | **回答风格档位**：只给最小完整答案 / 现状 / 必要时展开并给出依据。指令追加在人格之后，**不会**覆盖"用提问的语言作答"与"选中文本是数据"这两条 | 下一次提问 |
+| `customPersona` | 字符串，≤500 码点 | `''` | **自定义指令**：追加在风格档位之后，以 `Additional user instruction:` 标注随每次提问发送（例如"尽量给可验证来源"） | 下一次提问 |
+| `followUpSuggestions` | 布尔 | `false` | **模型生成的建议追问**：让模型在答案末尾用 `<followups>问1 \| 问2</followups>` 给出 2–3 个可点的下一步问题（客户端剥离该块并渲染为芯片，**不额外发请求**） | 下一次提问 |
 
 非法值会被拒绝（设置页报错、接口返回 `invalid-config`），并把被忽略的项列在 `/state` 的 `problems` 里——不会静默吞掉。
 
@@ -318,7 +328,7 @@ dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[d
 
 ## 六、未知 DSH API：占位接口与替换方式
 
-开发时以**运行时能力探测**为主，任何"本机没验证到"的接口都在代码里显式留了占位与替换点。它们集中在两处：
+开发时以**运行时能力探测**为主，任何"本机没验证到"的接口都在代码里显式留了占位与替换点。它们集中在三处：
 
 ### 1. `client.js` §7 —— `surfaces.native`（原生右侧栏适配器）
 
@@ -348,6 +358,22 @@ ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
   这条通道是在两次"客户端静默失效只能靠人工翻槽位清单才发现"之后补上的。
 
 > 约定：所有占位点都写成 `PLACEHOLDER: <名字>` 注释 + 可运行的降级路径，替换时只需改该函数的实现，调用方（卡片、设置页）无需改动。
+
+### 3. `client.js` §8c —— 答案写回输入框（1.8.0，已做真机探针）
+
+2026-10-17 用**隔离 `DSH_HOME` + 无头 Edge**（插件不参与）对真实 DSH 页面做了探针，
+脚本见 `.compat-report/scripts/composer-probe.mjs`，三条硬结论：
+
+| 问题 | 结论 |
+|---|---|
+| composer 的真实 DOM | **Lexical contenteditable**：`<div contenteditable="true" role="textbox" data-composer-input="true" data-lexical-editor="true">`，槽位 `conversation.composer` |
+| 有没有官方写入面 | **有**。槽位标准 prop `inputActions` 暴露 `captureInsertion()` / `insertText(text, span)` / `setDraft(text)` / `submit()`（源码 `dsh-client-ui-conversation` 的 `SessionInputShell.actions`）。`sessions.using(...).binding.session.prompt` 只负责**提交**，不能写草稿 |
+| native setter + input 事件能否同步 | **N/A 且无效**：不是 textarea，没有 value setter；`document.execCommand('insertText')` 返回 `false`、文本不变。**有效的是**合成 `beforeinput`（`inputType:'insertText'`）：文本落地、发送按钮由禁用转可用 |
+
+因此实现是三级阶梯：`inputActions.insertText`（重新 `captureInsertion` 后可重试一次）→
+DOM `beforeinput`（追加到末尾）→ 失败时 toast。**脚本设定的 Range 不被 Lexical 采纳**，
+所以 DOM 路径只能追加、不能定位光标；"替换原文"仅在捕获到**文本框内**选区时提供。
+替换点：`client.js` 搜 `P2-2`，函数 `insertIntoComposer` / `composerWriteSupport`。
 
 ---
 
@@ -452,6 +478,8 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 | **步骤被宿主拒绝** | 子代理接缝把这种空 turn 记为 `refusal`；插件翻译成 `blocked-step`，文案点明常见原因（会话已归档）并给出「改到主对话」 | `ask()` 的终局映射（host） |
 | **卸载** | 插件卸载时取消全部进行中的作答、注销槽位、移除 DOM 监听、断开流式桥 | `ctx.effect` + `disposers` |
 | **跨站请求** | 插件路由带信任围栏：Host 必须是回环或配置的可信域，`sec-fetch-site: cross-site` 或跨域 `Origin` 一律 403 | `isTrustedRequest`（host） |
+| **找不到原文（1.8.0）** | 签名匹配失败 / 页面无文本节点 → toast「原文已变化或不在当前视图」或「当前环境不支持定位」，**不静默** | `locateText` → `locatePassageRange`（client §8b） |
+| **写回失败（1.8.0）** | 无输入框 / 草稿已变 / 写入被拒 → 分别是「找不到可写入的输入框」「输入框内容已变化…」「插入失败，请手动复制」；只在真能写时才渲染按钮 | `insertIntoComposer` / `canInsertAnswer`（client §8c） |
 
 ### 错误码对照（`error` 事件的 `code`）
 
@@ -490,6 +518,28 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 7e. 设置页勾选「完成后桌面通知」会请求通知权限；授权后切到其它标签页/窗口，作答结束时应弹系统通知。
 7f. 设置页「历史追问卡片」：可搜索、恢复到浮层、单条删除、清空；「历史卡片保存数量」设 0 后新卡片不再写盘；
    注意：**关闭浮层卡片不会删历史**（1.8.0 起历史只在管理中心删除）。
+7g. **回答风格（1.8.0）**：设置页把「回答风格」切成「精简」并保存 → 下一次追问的答案应明显更短、
+   不复述原文；切「详细」→ 应看到展开与依据。自检办法：`GET /state` 的 `config.answerStyle` 应为所选值；
+   若 provider 不支持 persona，指令会内联进提示词（卡片上的 provider 行为不变）。
+   在「自定义指令」里写一句可辨认的要求（如"每条都用表格"）→ 下一次答案应体现；超过 500 字时
+   保存会被拒绝（`invalid-config`），不会半保存。
+7h. **插入到输入框（1.8.0）**：在主对话输入框里先随便打几个字（**不要发送**），再选中一段正文 →
+   点「润色」芯片 → 答案完成后卡片上出现「插入到输入框」；点它 → 输入框末尾应追加答案，
+   并提示「已插入到输入框，请按 Enter 发送」。**已发送的消息不得被改动**。
+   判据：插入后输入框里的内容 = 原有草稿 + 答案（末尾追加，不是光标处插入）；再点一次会再追加一份。
+   若在输入框里先选中一段文字（文本框或 textarea），才可能看到「替换原文」。
+7i. **查看原文（1.8.0）**：在聊天区选中一段文字追问 → 答案完成后点「查看原文」→ 页面应滚动回那段
+   原文并高亮约 4 秒；连点两次不应叠加高亮。把会话滚动到别处、或让该消息被虚拟列表回收后再点 →
+   应看到提示「原文已变化或不在当前视图」（**这不是 bug**，是如实降级）。
+7j. **建议追问（1.8.0）**：设置页打开「答案末尾给出建议追问」→ 下一次答案末尾应出现「建议追问」
+   与 2–3 个芯片；点其中一个 → 它以**新一轮**追问发出，旧问答进入卡片历史。
+   关掉开关 → 新答案不再出现该行。模型没有按格式输出时（可人为在提示词上干扰）应只有答案、没有芯片。
+7k. **导出（1.8.0）**：卡片上点「导出 .md」→ 应下载 `sidecard-ask-YYYY-MM-DD-HHMM.md`，
+   内容依次是问题标题、`> 原文` 引用块、答案原文（Markdown 原样）；设置页历史区点「导出全部 .md」→
+   一条历史一节、`---` 分隔。浏览器若拦截下载，应看到「导出失败：浏览器不允许下载」而不是静默。
+7l. **多版本（1.8.0）**：对一张已完成卡片点「改问」并改成另一个问题 → 重新作答后卡片上出现
+   「第 1 版」；点它 → 显示**旧问题 + 旧答案**并标注"正在查看历史版本（只读）"，点「返回最新」回到新答案。
+   刷新页面后历史卡片仍能切版本（v3 持久化）。连续改问 6 次后只保留最近 5 版。
 8. **浮层形态与位置（1.5.0）**：默认应是一个**一行高的胶囊**（状态 + 问题首句），点它才展开成完整卡片；
    展开后标题栏右侧有「收起为胶囊」（⇥）与「隐藏浮层」（×）——隐藏后只剩一个带计数的圆点，点它恢复。
    用 F12 选中浮层根节点（`[data-dsa-root]`）读两个值自检：
@@ -538,8 +588,15 @@ node test/smoke-test.mjs        # 端到端：流式/截断/取消/持久化/失
 ```
 
 四个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模（1.8.0 本机实测，四项均 exit 0）：verify **53** 项 + contract **721** 项 + float-placement **38** 项 +
-smoke **192** 项 = **1004 项全部通过**。
+当前规模（1.8.0 本机实测，四项均 exit 0）：verify **57** 项 + contract **946** 项 + float-placement **38** 项 +
+smoke **226** 项 = **1267 项全部通过**（1.7.2 为 1004 项；新增 263 项覆盖 P2-1 风格档位、
+P2-2 写回决策表与两级写入、P2-3 签名/遍历/失败分支、P2-4 宽容解析与芯片渲染、
+P2-5 导出内容与 v1/v2→v3 迁移）。
+
+**真机探针（不属于四套自测）**：`.compat-report/scripts/composer-probe.mjs` 需要
+`playwright-core` 与本机 Edge，对**真实 DSH 页面**回答 composer DOM / 官方写入面 /
+`beforeinput` 是否生效 / `CSS.highlights` 是否可用四个问题。它是 P2-2 的落地依据，
+**不能**被四套自测替代，也不替代人工观感确认。
 
 > 1.5.0 之前这里还放过 `tools/balance-check.mjs` 与 `tools/i18n-check.mjs` 两个「替代检查」。
 > 它们已被**删除**：前者用「正则字面量 vs 除号」的启发式判断，把 8 个源文件全部误报为残损；
@@ -705,5 +762,21 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
    本仓库当前文件比运行中的宿主模块新（1.0.1 的「归档父会话不再一刀切 / 持久化 chunk 流式源 / 能力门控 / 路由降级」），
    **重启后**这些改动才生效；`/state` 的 `version` 与 `capabilities.parent` 字段可以直接确认是否已加载新版。
 6. **"安装启动"真机验证从 0.1.5-rc.3 起**：1.6.0 实测 0.1.5-rc.3 → 0.2.1-alpha.2，1.7.1 复核 0.2.1-alpha.3 / alpha.4（见 §7.3）；
-   更早版本只有产物层证据——验证到的是"这些版本缺哪些 API + 插件对每个缺失都有分支"，分支本身由 1004 项自测覆盖。
+   更早版本只有产物层证据——验证到的是"这些版本缺哪些 API + 插件对每个缺失都有分支"，分支本身由 1267 项自测覆盖。
+7. **原文定位（1.8.0）不承诺 100% 命中**：签名匹配依赖"那段文字此刻仍在 DOM 里"。虚拟列表回收、
+   消息折叠、流式重渲染、富文本把文本拆进多个节点都会导致找不到——此时卡片明示
+   「原文已变化或不在当前视图」，**不会**静默无反应。高亮优先 `CSS.highlights`（不改 DOM，
+   本机 Edge 155 实测可用），不支持时退化为 `window.getSelection()` 选中，观感不同属预期。
+8. **写回输入框（1.8.0）只保证"追加到末尾"**：DSH 的 composer 是 Lexical contenteditable，
+   脚本设定的 Range 不被采纳（探针实测），所以无法精确插到光标处；`document.execCommand('insertText')`
+   在该编辑器上**无效**（返回 false、文本不变）。写入优先走槽位 `inputActions.insertText`，
+   取不到时用 `beforeinput` 追加。**已发送的消息不会被改动**；"替换原文"只在捕获到文本框内选区时出现，
+   contenteditable 不提供替换。真实页面里的按钮点击与手感尚未人工验证（见 CHANGELOG 1.8.0 未验证栏）。
+9. **导出（1.8.0）不往 `document.body` 插节点**：下载锚点是游离节点，Chromium/Safari 会触发下载，
+   个别浏览器（老 Firefox）可能要求节点在文档里——那种情况下插件只报「导出失败」，不会伪造成功。
+   Electron 外壳的下载落盘目录与权限未在本版复测。
+10. **建议追问（1.8.0）依赖模型遵循格式**：模型不写 `<followups>`、写半个、或写得过长时，
+    客户端只会"少几个芯片"，答案正文照常显示；这是设计内的降级，不是错误。该功能不额外发请求。
+11. **多版本（1.8.0）只在「重试 / 改问」时产生**：普通「继续追问」把旧问答存进 `history`（作为上下文），
+    不进 `versions`；每卡上限 5 条，超出丢最旧。v3 持久化保留 v2/v1 旧键，回退旧版本仍可读自己的数据。
 

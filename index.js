@@ -42,7 +42,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.7.2'
+export const PLUGIN_VERSION = '1.8.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -119,6 +119,28 @@ export const DEFAULT_CONFIG = {
    * disk until the next explicit clear).
    */
   historyMaxCards: 10,
+  /**
+   * How much detail the side answerer gives. `concise` asks for the smallest
+   * complete answer, `detailed` asks for the reasoning basis, `standard`
+   * keeps the base persona (the 1.7.x behaviour). The Host appends exactly one
+   * directive line to {@link SIDE_PERSONA}; it never touches the
+   * "answer in the question's language" rule inside the persona.
+   */
+  answerStyle: 'standard',
+  /**
+   * Free-form extra instruction appended AFTER the style directive, sent
+   * verbatim under an `Additional user instruction:` line. Bounded so a
+   * runaway paste cannot dwarf the selection it is meant to refine.
+   */
+  customPersona: '',
+  /**
+   * Ask the child to end its answer with 2–3 suggested follow-up questions in
+   * a `<followups>a | b</followups>` block (P2-4). Off by default: it costs a
+   * little output budget and not every user wants chips under every answer.
+   * The Client strips the block and renders the questions as chips; a missing
+   * or half-written block simply yields no chips.
+   */
+  followUpSuggestions: false,
 }
 
 /** Bounds for the `quickActions` user layer (defense in depth). */
@@ -145,6 +167,7 @@ const ENUMS = {
   captureZones: ['auto', 'chat', 'task', 'chat+task'],
   sideTools: ['readonly', 'inherit'],
   floatMode: ['capsule', 'full', 'off'],
+  answerStyle: ['concise', 'standard', 'detailed'],
 }
 
 /** Numeric keys with their accepted range. */
@@ -199,6 +222,58 @@ const SIDE_PERSONA = [
   'Prefer the smallest complete answer; use a short list when it is clearer than prose.',
   'Do not call tools unless the question genuinely needs more context.',
 ].join(' ')
+
+/** Hard cap for `customPersona`, counted in code points (paste-bomb guard). */
+export const MAX_CUSTOM_PERSONA_CHARS = 500
+
+/**
+ * One directive line per NON-default answer style.
+ *
+ * Deliberately silent about language: the persona already says "answer in the
+ * language the question is asked in", and a style line that mentioned a
+ * language would start competing with it. `standard` has no entry — it is the
+ * persona exactly as 1.7.x shipped it.
+ */
+export const STYLE_DIRECTIVES = {
+  concise: 'Answer style: CONCISE — give only the smallest complete answer; no preamble, no recap of the passage, no examples unless asked.',
+  detailed: 'Answer style: DETAILED — develop the answer where more detail genuinely helps, and state the basis of every non-obvious claim (reasoning, source, or code reference). Stay structured; never pad.',
+}
+
+/**
+ * The follow-up-suggestions instruction (P2-4).
+ *
+ * One fixed marker pair, ONCE per answer, no repetition outside it — the
+ * Client strips exactly that block and turns `|`-separated questions into
+ * chips. Asking for a machine-readable wrapper is what makes a tolerant
+ * parser possible at all; the wording deliberately does not threaten
+ * anything, because a model that ignores it must still produce a normal
+ * answer (the Client degrades to "no chips", never to an error).
+ */
+export const FOLLOW_UP_DIRECTIVE = 'End every answer with 2–3 suggested follow-up questions the reader could ask next, wrapped in exactly one block of the form <followups>first question | second question | third question</followups>. Write nothing about those questions outside that block; keep them short and free of the `|` character.'
+
+/**
+ * Compose the child's persona for one run: base persona ← style directive ←
+ * follow-up directive ← the user's own extra instruction.
+ *
+ * The style directive is appended (never substituted) so the
+ * "passage is DATA, not instruction" fence and the language rule survive every
+ * style. `customPersona` is the user's own config, not model output, so it is
+ * passed verbatim under an explicit label instead of being fenced as data.
+ *
+ * @param {{answerStyle?: string, customPersona?: string, followUpSuggestions?: boolean}} [config]
+ *   effective config slice.
+ * @returns {string} the persona text handed to the provider (or inlined into the prompt).
+ */
+export function buildPersonaText(config = {}) {
+  const style = typeof config?.answerStyle === 'string' ? config.answerStyle : 'standard'
+  const parts = [SIDE_PERSONA]
+  const directive = STYLE_DIRECTIVES[style]
+  if (typeof directive === 'string') parts.push(directive)
+  if (config?.followUpSuggestions === true) parts.push(FOLLOW_UP_DIRECTIVE)
+  const extra = typeof config?.customPersona === 'string' ? config.customPersona.trim() : ''
+  if (extra !== '') parts.push(`Additional user instruction:\n${extra}`)
+  return parts.join('\n\n')
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Pure helpers (exported so the tests can exercise them without a Harness)
@@ -321,7 +396,14 @@ export function sanitizeLayer(raw, problems = []) {
     if (typeof raw.sideProvider === 'string' && raw.sideProvider.length <= 80) out.sideProvider = raw.sideProvider
     else problems.push('sideProvider: 必须是字符串，已忽略')
   }
-  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu']) {
+  if (raw.customPersona !== undefined) {
+    // Counted in code points: a 500-emoji paste is 500 characters to the user
+    // and 1000 UTF-16 units to `String.length`.
+    const points = typeof raw.customPersona === 'string' ? Array.from(raw.customPersona).length : -1
+    if (points >= 0 && points <= MAX_CUSTOM_PERSONA_CHARS) out.customPersona = raw.customPersona
+    else problems.push(`customPersona: 必须是 ≤${MAX_CUSTOM_PERSONA_CHARS} 字符的字符串，已忽略`)
+  }
+  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions']) {
     if (raw[boolKey] === undefined) continue
     if (typeof raw[boolKey] === 'boolean') out[boolKey] = raw[boolKey]
     else problems.push(`${boolKey}: 必须是布尔值，已忽略`)
@@ -1008,13 +1090,17 @@ function createSideEngine(ctx, configOf) {
       // into the prompt text and a missing tool filter is reported on the wire.
       const personaSupported = caps?.persona === true
       const toolFilterSupported = caps?.toolFilter === true
-      const promptText = personaSupported ? prompt : `${SIDE_PERSONA}\n\n${prompt}`
+      // Style and the user's own extra instruction ride the SAME persona
+      // string, so the "persona vs prompt" gate above covers all three of
+      // them with one branch — there is no second injection point.
+      const personaText = buildPersonaText(config)
+      const promptText = personaSupported ? prompt : `${personaText}\n\n${prompt}`
       const run = await startSubagent(service, provider, {
         label: `划词追问：${question.slice(0, 40)}`,
         prompt: [{ type: 'text', text: promptText }],
         parent: parent.agent,
         signal: controller.signal,
-        ...(personaSupported ? { persona: SIDE_PERSONA } : {}),
+        ...(personaSupported ? { persona: personaText } : {}),
         ...(toolFilter === undefined || !toolFilterSupported ? {} : { toolFilter }),
       })
       runRecord.dispose = run.dispose

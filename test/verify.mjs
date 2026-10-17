@@ -90,6 +90,27 @@ for (const file of ['zh.json', 'en.json']) {
   report.ok(Object.keys(parsed).length >= 8, `${file} parses and carries keys`)
 }
 const dictionary = loaded.module.api.pure.dict
+// The shipped locale files are a curated SUBSET of the embedded dictionary.
+// They may be incomplete, but they must never contradict it: a stale string in
+// a published file is what a consumer integrating `./locale/*.json` would show.
+for (const [file, lang] of [['zh.json', 'zh'], ['en.json', 'en']]) {
+  const parsed = JSON.parse(readFileSync(join(ROOT, 'locale', file), 'utf8'))
+  const mismatched = Object.entries(parsed)
+    .filter(([key, value]) => dictionary[lang][key] !== value)
+    .map(([key]) => key)
+  report.ok(mismatched.length === 0, `${file} agrees with the embedded ${lang} dictionary`, `mismatched: ${mismatched.join(', ')}`)
+}
+// 1.8.0's new UI strings must be reachable through the published locale files
+// too, not only through the inlined dictionary.
+const P2_LOCALE_KEYS = [
+  'setAnswerStyle', 'setCustomPersona', 'setFollowUps', 'locate', 'locateNotFound',
+  'exportMd', 'exportAllMd', 'insertToComposer', 'insertDone', 'versionsLabel', 'suggestionsLabel',
+]
+for (const file of ['zh.json', 'en.json']) {
+  const parsed = JSON.parse(readFileSync(join(ROOT, 'locale', file), 'utf8'))
+  const missing = P2_LOCALE_KEYS.filter(key => typeof parsed[key] !== 'string' || parsed[key] === '')
+  report.ok(missing.length === 0, `${file} carries the 1.8.0 UI strings`, `missing: ${missing.join(', ')}`)
+}
 const usedKeys = new Set([...clientSource.matchAll(/\bt\('([A-Za-z][A-Za-z0-9]*)'/g)].map(match => match[1]))
 const missingZh = [...usedKeys].filter(key => dictionary.zh[key] === undefined)
 const missingEn = [...usedKeys].filter(key => dictionary.en[key] === undefined)

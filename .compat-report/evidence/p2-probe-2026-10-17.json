@@ -1,0 +1,113 @@
+{
+  "url": "http://127.0.0.1:8099/",
+  "title": "DeepSeek Harness",
+  "editableCount": 1,
+  "candidates": [
+    {
+      "tag": "DIV",
+      "className": "uV2eYG_input",
+      "contentEditable": "true",
+      "role": "textbox",
+      "ariaLabel": "描述你想要构建的内容, / 调用指令, @ 文件或对话",
+      "placeholder": "描述你想要构建的内容, / 调用指令, @ 文件或对话",
+      "visible": true,
+      "rect": {
+        "w": 745,
+        "h": 52,
+        "top": 451
+      },
+      "dataSlots": [
+        "conversation.composer.bar",
+        "conversation.composer",
+        "main.conversation",
+        "main",
+        "root"
+      ]
+    }
+  ],
+  "composerGuess": {
+    "tag": "DIV",
+    "className": "uV2eYG_input",
+    "contentEditable": "true",
+    "role": "textbox",
+    "ariaLabel": "描述你想要构建的内容, / 调用指令, @ 文件或对话",
+    "placeholder": "描述你想要构建的内容, / 调用指令, @ 文件或对话",
+    "visible": true,
+    "rect": {
+      "w": 745,
+      "h": 52,
+      "top": 451
+    },
+    "dataSlots": [
+      "conversation.composer.bar",
+      "conversation.composer",
+      "main.conversation",
+      "main",
+      "root"
+    ]
+  },
+  "composerOuterHTML": "<div contenteditable=\"true\" role=\"textbox\" aria-multiline=\"true\" data-composer-input=\"true\" class=\"uV2eYG_input\" data-phase=\"plain\" data-placeholder=\"描述你想要构建的内容, / 调用指令, @ 文件或对话\" aria-label=\"描述你想要构建的内容, / 调用指令, @ 文件或对话\" data-lexical-editor=\"true\" style=\"user-select: text; white-space: pre-wrap; word-break: break-word;\"></div>",
+  "hasProseMirror": false,
+  "hasLexical": true,
+  "hasSlate": false,
+  "hasDraftJs": false,
+  "bodyTextSample": "新会话\nCtrl\n+\nAlt\n+\nN\n插件\n自动化任务\n工作区\n默认工作区\n新会话\n更多\n探索未至之境\n预览版\n默认工作区\n标准模式\n描述你想要构建的内容, / 调用指令, @ 文件或对话\n工作区内修改\n请选择模型\n预览版说明\n\nDeepSeek Harness 目前的 0.2 版本仍处于预览阶段，还有许多地方需要持续改进和打磨，希望听取广大开发者和用户的反馈建议。现在，新的桌面端面向广泛用户，开发者相关的进阶功能可在配置中开启使用。预计 DeepSeek Harness 的产品功能以及插件 API 都会继续快速迭代、持续演化，并逐渐趋于稳定。\n\n我们期待与全球用户和开发者一起，在开源、可复用",
+  "writeProbe": {
+    "ok": true,
+    "before": {
+      "tag": "DIV",
+      "text": "",
+      "send": {
+        "disabled": true,
+        "label": "发送消息"
+      }
+    },
+    "results": {
+      "nativeSetter": {
+        "skipped": "composer is not a textarea (contenteditable: no value setter applies)"
+      },
+      "execCommand": {
+        "supported": true,
+        "result": false,
+        "after": {
+          "tag": "DIV",
+          "text": "",
+          "send": {
+            "disabled": true,
+            "label": "发送消息"
+          }
+        },
+        "stateMoved": false,
+        "sendEnabled": false
+      },
+      "afterCleanup": {
+        "tag": "DIV",
+        "text": "",
+        "send": {
+          "disabled": true,
+          "label": "发送消息"
+        }
+      },
+      "beforeInput": {
+        "notCancelled": false,
+        "after": {
+          "tag": "DIV",
+          "text": "PROBE-BEFORE-1792232377402",
+          "send": {
+            "disabled": false,
+            "label": "发送消息"
+          }
+        },
+        "stateMoved": true
+      }
+    }
+  },
+  "highlightProbe": {
+    "supported": true,
+    "range": true,
+    "registered": 1,
+    "cleared": 0,
+    "sample": "(() => {\n  c"
+  },
+  "consoleErrors": []
+}
