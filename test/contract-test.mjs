@@ -14,10 +14,11 @@ import { readFileSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import net from 'node:net'
 import {
   ROOT, HOST_ENTRY, CLIENT_ENTRY, createReporter, makeHostCtx, makeSubagentEngine,
   callRoute, loadClientModule, makeClientCtx, expandTree, byClass, byTag, textOf, hostModuleUrl,
-  createLocalStorageStub,
+  hostNodes, createLocalStorageStub,
 } from './harness.mjs'
 
 // The host persists user config under $DSH_HOME; point it at a scratch
@@ -86,7 +87,16 @@ const pure = client.api.pure
 // ────────────────────────────────────────────────────────────────────────────
 
 console.log('constants')
-report.equal(pure.CLIENT_DEFAULTS, host.DEFAULT_CONFIG, 'client defaults mirror the host defaults exactly')
+// `feedbackAddress` is the one deliberate exception: it is a user-layer key the
+// Host strips from `/state` (the page must never hold the inbox), and its packed
+// default is `b64:`-obfuscated on the Host side only — mirroring it into the
+// Client bundle would hand the address to anyone with DevTools.
+const mirrorableDefaults = defaults => Object.fromEntries(
+  Object.keys(defaults).filter(key => key !== 'feedbackAddress').map(key => [key, defaults[key]]),
+)
+report.equal(mirrorableDefaults(pure.CLIENT_DEFAULTS), mirrorableDefaults(host.DEFAULT_CONFIG), 'client defaults mirror the host defaults exactly')
+report.equal(host.DEFAULT_CONFIG.feedbackAddress.startsWith('b64:'), true, 'the packed inbox is stored obfuscated')
+report.equal(host.decodeAddress(host.DEFAULT_CONFIG.feedbackAddress).includes('@'), true, 'the packed inbox decodes to a mailbox')
 
 // D16: the card-history cap lived as a bare `6` on both sides; one drifted
 // constant would silently change what the child ever sees.
@@ -141,8 +151,13 @@ console.log('\nhost error localization')
 // Client's own dictionaries; codes whose message carries a live diagnostic
 // (the reason only exists inside the Host string) keep that string verbatim.
 {
-  const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'aborted']
-  const HOST_DYNAMIC_CODES = ['blocked-step', 'engine-error', 'internal']
+  const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'aborted',
+    // /feedback: the four codes the Client can phrase itself.
+    'feedback-invalid', 'feedback-unconfigured', 'feedback-too-fast', 'feedback-too-many']
+  const HOST_DYNAMIC_CODES = ['blocked-step', 'engine-error', 'internal',
+    // The relay's own reason only exists inside the Host message (and stays
+    // there); the low-level smtp-* codes back that same message.
+    'feedback-send-failed', 'smtp-rejected', 'smtp-timeout', 'smtp-closed']
   for (const code of HOST_STATIC_CODES) {
     report.ok(pure.errorCodes[code] !== undefined, `host code "${code}" is localized client-side`)
     const key = pure.errorCodes[code]?.key
@@ -2988,4 +3003,636 @@ report.equal(pure.electFamilyLeader([], 'solo'), 'solo', 'a lone member elects i
   report.ok(loserReport.family.peers.length >= 1, 'the report lists the leading peer')
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// F28: the settings-page feedback form. The draft is checked on the Client so
+// the Host's 400 never surprises anybody, and the `mailto:` fallback must work
+// with no credentials at all — those two are pure and tested directly. The
+// transport itself is exercised against a real socket pair (see below).
+// ────────────────────────────────────────────────────────────────────────────
+console.log('\nfeedback: draft helpers')
+{
+  const good = { kind: 'bug', title: '卡片不显示', body: '在长对话里追问之后卡片没有出现，控制台也没有报错。', contact: '' }
+  report.equal(pure.validateFeedbackDraft(good).ok, true, 'a complete draft passes the Client check')
+  report.equal(
+    pure.validateFeedbackDraft({ ...good, title: 'ab' }).key,
+    'feedbackNeedsTitle',
+    'a too-short title is refused before posting',
+  )
+  report.equal(
+    pure.validateFeedbackDraft({ ...good, title: '第一行\n第二行' }).key,
+    'feedbackNeedsTitle',
+    'a newline in the title is refused (header injection)',
+  )
+  report.equal(
+    pure.validateFeedbackDraft({ ...good, body: '太短' }).key,
+    'feedbackNeedsBody',
+    'a too-short body is refused before posting',
+  )
+  report.equal(
+    pure.validateFeedbackDraft({ ...good, contact: 'x'.repeat(200) }, { ...pure.FEEDBACK_DEFAULTS, contactMax: 120 }).key,
+    'feedbackContactTooLong',
+    'an over-long contact line is refused',
+  )
+  report.equal(
+    pure.validateFeedbackDraft({ ...good, contact: '不是邮箱' }).key,
+    'feedbackContactInvalid',
+    'a non-address in the reply field is refused before posting',
+  )
+  report.equal(
+    pure.validateFeedbackDraft({ ...good, contact: 'me@example.com' }).ok,
+    true,
+    'a real reply address passes',
+  )
+  report.equal(
+    pure.validateFeedbackDraft({ ...good, title: '写'.repeat(120) }).ok,
+    true,
+    'the title bound is inclusive at exactly 120 code points',
+  )
+
+  const subject = pure.feedbackSubjectFor({ version: '9.9.9', draft: good })
+  report.equal(subject, '[dsh-sidecard-ask 9.9.9] bug: 卡片不显示', 'the subject carries the version, kind and title')
+  const plainText = pure.feedbackPlainTextFor({ version: '9.9.9', draft: { ...good, contact: '' }, userAgent: 'UA/1.0' })
+  report.ok(plainText.includes('contact: (not provided)'), 'a blank contact field says so instead of staying empty')
+  report.ok(plainText.includes('plugin: 9.9.9') && plainText.includes('user agent: UA/1.0'), 'the text carries the environment')
+  // The `mailto:` URL is built by the Host now (the page never holds the
+  // address), so that is where its encoding is asserted.
+  const hostMailto = host.buildMailtoUrl({ to: 'ops@example.test', version: '9.9.9', input: good, userAgent: 'UA/1.0' })
+  report.ok(hostMailto.startsWith('mailto:ops@example.test?subject='), 'the host mailto builder addresses the recipient')
+  report.ok(
+    hostMailto.includes(encodeURIComponent(subject)),
+    'the host mailto builder encodes the same subject the SMTP path sends',
+  )
+}
+
+console.log('\nfeedback: host transport')
+{
+  const feedback = host
+  report.equal(feedback.looksLikeEmail('ops@example.test'), true, 'a plain address is accepted')
+  report.equal(feedback.looksLikeEmail('not-an-address'), false, 'a value without @ is rejected')
+  report.equal(feedback.looksLikeEmail('a@b'), false, 'a dotless domain is rejected')
+  report.equal(feedback.maskEmail('peiyan@qq.com'), 'p***@qq.com', 'logging never shows the full mailbox')
+
+  const accepted = feedback.sanitizeFeedbackInput({
+    kind: 'bug',
+    title: '  卡片不显示  ',
+    body: '\r\n在长对话里追问后卡片没有出现。\r\n',
+    contact: ' me@example.com ',
+  })
+  report.equal(accepted.ok, true, 'a well-formed report survives sanitizing')
+  report.equal(accepted.value?.title, '卡片不显示', 'surrounding whitespace is trimmed')
+  report.equal(accepted.value?.body.includes('\r'), false, 'CRLF is collapsed so the body cannot smuggle headers')
+  report.equal(feedback.sanitizeFeedbackInput({ kind: 'nope', title: 'ok title', body: 'ok body here' }).value?.kind, 'other', 'an unknown kind degrades to other')
+  report.equal(feedback.sanitizeFeedbackInput({ title: 'x\nx', body: 'ok body here' }).ok, false, 'the Host also refuses a newline in the title')
+  report.equal(feedback.sanitizeFeedbackInput({ title: 'ok title', body: 'short' }).ok, false, 'the Host enforces the body bound itself')
+  report.equal(
+    feedback.sanitizeFeedbackInput({ kind: 'bug', title: 'ok title', body: 'ok body here', contact: 'me@example.com' }).ok,
+    true,
+    'the Host accepts a real reply address',
+  )
+  report.equal(
+    feedback.sanitizeFeedbackInput({ kind: 'bug', title: 'ok title', body: 'ok body here', contact: 'me at example' }).ok,
+    false,
+    'the Host refuses a reply value that is not an address (it becomes a header)',
+  )
+
+  const smtps = feedback.parseSmtpUrl('smtps://u%40qq.com:auth%23code@smtp.qq.com')
+  report.equal(smtps.ok, true, 'an smtps URL parses')
+  report.equal(smtps.endpoint?.port, 465, 'smtps defaults to port 465')
+  report.equal(smtps.endpoint?.secure, true, 'smtps means implicit TLS')
+  report.equal(smtps.endpoint?.pass, 'auth#code', 'percent-encoded credentials are decoded')
+  report.equal(smtps.endpoint?.from, 'u@qq.com', 'the sender defaults to the authenticating user')
+  const smtp = feedback.parseSmtpUrl('smtp://u:p@127.0.0.1:2525?starttls=0&from=bot%40relay.local')
+  report.equal(smtp.endpoint?.starttls, false, '?starttls=0 disables the upgrade for a local relay')
+  report.equal(smtp.endpoint?.from, 'bot@relay.local', '?from= overrides the sender')
+  report.equal(feedback.parseSmtpUrl('http://example.com').ok, false, 'a non-SMTP scheme is refused')
+  report.equal(feedback.parseSmtpUrl('smtp://smtp.example.com').ok, false, 'credentials are required')
+
+  report.equal(
+    feedback.readSmtpFromEnv({ DSH_SIDECARD_SMTP_URL: 'smtp://u%40example.test:p@127.0.0.1:2525?starttls=0' }).ok,
+    true,
+    'the single-URL form is read from the environment',
+  )
+  report.equal(
+    feedback.readSmtpFromEnv({ DSH_SIDECARD_SMTP_HOST: 'smtp.example.com', DSH_SIDECARD_SMTP_USER: 'u@example.com', DSH_SIDECARD_SMTP_PASS: 'p', DSH_SIDECARD_SMTP_PORT: '2525' }).endpoint?.port,
+    2525,
+    'the discrete form is read from the environment',
+  )
+  report.equal(feedback.readSmtpFromEnv({}).ok, false, 'an empty environment is reported as unconfigured')
+  // The sibling plugin dsh-conversation-recycle-bin uses the same inbox and the
+  // same relay, so its variables are accepted as a fallback: one export
+  // configures both plugins.
+  report.equal(
+    feedback.readSmtpFromEnv({ DSH_CRB_SMTP_URL: 'smtps://u%40example.test:p@127.0.0.1:465' }).ok,
+    true,
+    'the shared recycle-bin SMTP variable is honoured',
+  )
+  report.equal(
+    feedback.feedbackRecipient({}, { DSH_CRB_FEEDBACK_TO: 'ops@example.test' }),
+    'ops@example.test',
+    'the shared recycle-bin recipient variable is honoured',
+  )
+  report.equal(
+    feedback.feedbackRecipient({ feedbackAddress: 'b64:' + Buffer.from('ops@example.test', 'utf8').toString('base64') }, {}),
+    'ops@example.test',
+    'a b64-encoded recipient is decoded',
+  )
+  report.equal(
+    feedback.feedbackRecipient({ feedbackAddress: 'ops@example.test' }, { DSH_SIDECARD_FEEDBACK_TO: 'env@example.test' }),
+    'env@example.test',
+    'the environment wins over the configured address',
+  )
+
+  const noAddress = feedback.describeFeedback({}, {})
+  report.equal(noAddress.configured, false, 'no recipient means unconfigured')
+  report.equal(noAddress.transport, 'mailto', 'an unconfigured transport degrades to mailto')
+  const noSmtp = feedback.describeFeedback({ feedbackAddress: 'ops@example.test' }, {})
+  report.equal(noSmtp.configured, false, 'no SMTP means the SMTP path is unavailable')
+  report.ok(String(noSmtp.reason).length > 0, 'the reason says what is missing')
+  const ready = feedback.describeFeedback(
+    { feedbackAddress: 'ops@example.test' },
+    { DSH_SIDECARD_SMTP_URL: 'smtp://u%40example.test:p@127.0.0.1:2525?starttls=0' },
+  )
+  report.equal(ready.configured, true, 'address plus SMTP is ready')
+  report.equal(ready.transport, 'smtp', 'the ready transport is SMTP')
+  report.equal(ready.toMasked, 'o***@example.test', 'the reported recipient is masked')
+  report.equal(JSON.stringify(ready).includes('"p"'), false, 'the descriptor never carries the password')
+
+  const mail = feedback.composeFeedbackMail({
+    version: '9.9.9',
+    input: { kind: 'idea', title: '加暗色', body: '希望支持暗色主题。', contact: 'me@example.com' },
+    environment: 'plugin: 9.9.9',
+    now: new Date('2026-01-02T03:04:05Z'),
+    to: 'ops@example.test',
+    from: 'bot@example.test',
+  })
+  report.ok(mail.subject.includes('9.9.9') && mail.subject.includes('加暗色'), 'the mail subject is triageable on its own')
+  report.ok(mail.raw.includes('Content-Transfer-Encoding: base64'), 'the body is base64, so the relay never sees raw UTF-8')
+  report.ok(mail.raw.includes('=?UTF-8?B?'), 'the subject is RFC 2047 encoded')
+  report.ok(mail.raw.includes('Message-ID: <'), 'the message has an id')
+  const decoded = Buffer.from(mail.raw.split('\r\n\r\n')[1].replace(/\r\n/g, ''), 'base64').toString('utf8')
+  report.ok(decoded.includes('Kind: idea') && decoded.includes('加暗色'), 'the decoded body carries the report')
+  report.ok(decoded.includes('environment (attached automatically)'), 'the environment block rides along')
+
+  const environmentBlock = feedback.describeEnvironment({ version: '9.9.9', dshVersion: '1.2.3', now: new Date('2026-01-02T03:04:05Z') })
+  report.ok(environmentBlock.includes('dsh: 1.2.3'), 'the environment names the DSH version')
+  report.ok(environmentBlock.includes(process.platform), 'the environment names the platform')
+  report.equal(environmentBlock.includes('\\'), false, 'the environment leaks no filesystem path')
+  // The reporter's own address never becomes `From:` (the relay would reject
+  // it), but it does become `Reply-To:`, so "reply" reaches the reporter.
+  const withContact = feedback.composeFeedbackMail({
+    version: '9.9.9',
+    input: { kind: 'bug', title: '卡片不显示', body: '追问之后卡片没有出现。', contact: 'me@example.com' },
+    environment: 'plugin: 9.9.9',
+    now: new Date('2026-01-02T03:04:05Z'),
+    to: 'ops@example.test',
+    from: 'bot@example.test',
+  })
+  report.ok(withContact.raw.includes('Reply-To: me@example.com'), 'the reporter address becomes Reply-To')
+  report.ok(withContact.raw.includes('From: bot@example.test'), 'From: stays the authenticated account')
+  const withContactBody = Buffer.from(withContact.raw.split('\r\n\r\n')[1].replace(/\r\n/g, ''), 'base64').toString('utf8')
+  report.ok(withContactBody.includes('Contact: me@example.com'), 'the reporter address travels in the body')
+  const hostMailto = host.buildMailtoUrl({ to: 'ops@example.test', version: '9.9.9', input: { kind: 'idea', title: '加暗色', body: '希望支持暗色主题。', contact: 'me@example.com' } })
+  report.ok(
+    decodeURIComponent(hostMailto).includes('contact: me@example.com'),
+    'the mailto body carries the reporter contact instead of a From: loop',
+  )
+  report.equal(decodeURIComponent(hostMailto).includes('from: '), false, 'the mailto body no longer carries a from: line')
+
+  let clock = 1_000
+  const gate = feedback.createFeedbackGate({ minGapMs: 1_000, windowMs: 10_000, maxPerWindow: 2 }, () => clock)
+  report.equal(gate.check().ok, true, 'the first report is allowed')
+  gate.record()
+  report.equal(gate.check().code, 'feedback-too-fast', 'a second report inside the gap is refused')
+  clock += 1_500
+  report.equal(gate.check().ok, true, 'the gap expires')
+  gate.record()
+  clock += 1_500
+  report.equal(gate.check().code, 'feedback-too-many', 'the window quota is enforced')
+  report.ok(gate.check().retryAfterMs > 0, 'a refused send says how long to wait')
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// F29: `/feedback` end to end against a socket-accurate SMTP double. The point
+// is not that "a mail was sent" but that the wire conversation is one a real
+// relay accepts: EHLO with multiline 250s, AUTH, MAIL FROM / RCPT TO / DATA and
+// the dot-stuffed terminator. The stub records what it actually received.
+
+// Written once, before the block, so the later blocks can reuse it.
+// A socket-accurate SMTP double: accepted commands are recorded verbatim, so the
+// wire conversation itself is what the assertions below inspect.
+const startRelay = () => new Promise((resolve, reject) => {
+  const state = { rcpt: [], mails: [], commands: [] }
+  const server = net.createServer(socket => {
+    socket.setEncoding('utf8')
+    socket.write('220 relay.example ESMTP ready\r\n')
+    let buffer = ''
+    let inData = false
+    let data = ''
+    socket.on('error', () => {})
+    socket.on('data', chunk => {
+      buffer += chunk
+      let index
+      while ((index = buffer.indexOf('\r\n')) >= 0) {
+        const line = buffer.slice(0, index)
+        buffer = buffer.slice(index + 2)
+        if (inData) {
+          if (line === '.') {
+            inData = false
+            state.mails.push(data)
+            data = ''
+            socket.write('250 2.0.0 queued\r\n')
+          } else {
+            data += `${line}\n`
+          }
+          continue
+        }
+        const upper = line.toUpperCase()
+        state.commands.push(upper)
+        if (upper.startsWith('EHLO')) socket.write('250-relay.example\r\n250-AUTH PLAIN LOGIN\r\n250 SIZE 10485760\r\n')
+        else if (upper.startsWith('AUTH')) socket.write('235 2.7.0 authenticated\r\n')
+        else if (upper.startsWith('MAIL FROM')) { data = ''; socket.write('250 2.1.0 ok\r\n') }
+        else if (upper.startsWith('RCPT TO')) { state.rcpt.push(line); socket.write('250 2.1.5 ok\r\n') }
+        else if (upper.startsWith('DATA')) { inData = true; socket.write('354 end with <CRLF>.<CRLF>\r\n') }
+        else if (upper.startsWith('QUIT')) { socket.write('221 2.0.0 bye\r\n'); socket.end() }
+        else socket.write('500 5.5.1 unrecognized\r\n')
+      }
+    })
+  })
+  server.on('error', reject)
+  server.listen(0, '127.0.0.1', () => resolve({ server, state, port: server.address().port }))
+})
+
+console.log('\nfeedback: /feedback route over a real socket')
+{
+
+  // Unconfigured first: an empty environment and no recipient.
+  const coldHost = makeHostCtx({})
+  host.apply(coldHost.ctx, {})
+  const coldRes = await callRoute(coldHost, '/feedback', {
+    body: { title: '卡片不显示', body: '追问之后卡片没有出现，控制台无报错。' },
+  })
+  report.equal(coldRes.status, 503, 'without a recipient the route refuses with 503')
+  report.equal(coldRes.json().error?.code, 'feedback-unconfigured', 'the refusal names feedback-unconfigured')
+  const coldState = (await callRoute(coldHost, '/state', { body: {} })).json()
+  report.equal(coldState.value?.capabilities?.feedback?.configured, false, '/state reports feedback as unconfigured')
+  report.equal(coldState.value?.capabilities?.feedback?.transport, 'mailto', '/state offers the mailto fallback')
+  const coldMailto = await callRoute(coldHost, '/feedback-mailto', {
+    body: { title: '卡片不显示', body: '追问之后卡片没有出现，控制台无报错。' },
+  })
+  report.equal(coldMailto.status, 503, 'without a recipient the mailto route refuses too')
+  report.equal(coldMailto.json().error?.code, 'feedback-unconfigured', 'the mailto refusal names the same code')
+
+  const relay = await startRelay()
+  const previousUrl = process.env.DSH_SIDECARD_SMTP_URL
+  const previousTo = process.env.DSH_SIDECARD_FEEDBACK_TO
+  // The recipient comes from the environment rather than the apply patch: a
+  // persisted user layer (written by earlier config tests) outranks a patch,
+  // and this test is about the route, not about layer precedence.
+  process.env.DSH_SIDECARD_FEEDBACK_TO = 'ops@example.test'
+  process.env.DSH_SIDECARD_SMTP_URL = `smtp://relay%40example.test:secret@127.0.0.1:${relay.port}?starttls=0`
+  try {
+    const fbHost = makeHostCtx({})
+    host.apply(fbHost.ctx, { feedbackAddress: 'ops@example.test' })
+    const stateRes = (await callRoute(fbHost, '/state', { body: {} })).json()
+    report.equal(stateRes.value?.capabilities?.feedback?.configured, true, '/state sees a ready transport once both halves exist')
+    report.equal(stateRes.value?.capabilities?.feedback?.toMasked, 'o***@example.test', 'the advertised recipient stays masked')
+    // The page must never receive the plaintext address: not in the descriptor
+    // (where `to` used to sit) and not in the config blob either.
+    report.equal(stateRes.value?.capabilities?.feedback?.to, undefined, '/state does not carry the plaintext recipient')
+    report.equal(stateRes.value?.capabilities?.feedback?.hasRecipient, true, '/state only tells the page that one exists')
+    report.equal(
+      Object.prototype.hasOwnProperty.call(stateRes.value?.config ?? {}, 'feedbackAddress'),
+      false,
+      '/state strips feedbackAddress from the config blob',
+    )
+
+    // The mail-app fallback is built here, so the browser only ever receives a
+    // finished URL — never the address on its own.
+    const mailtoRes = await callRoute(fbHost, '/feedback-mailto', {
+      body: { kind: 'idea', title: '顺手提个建议', body: '希望反馈表单能记住上次填的内容。', contact: '' },
+    })
+    const mailtoBody = mailtoRes.json().value
+    report.equal(mailtoRes.status, 200, 'the mailto route answers with a URL')
+    report.ok(String(mailtoBody?.url ?? '').startsWith('mailto:ops@example.test?subject='), 'the URL addresses the configured recipient')
+    report.ok(String(mailtoBody?.url ?? '').includes(encodeURIComponent('顺手提个建议')), 'the URL encodes the title into the subject')
+    report.equal(mailtoBody?.toMasked, 'o***@example.test', 'the mailto response still masks the recipient')
+
+    const badRes = await callRoute(fbHost, '/feedback', { body: { title: 'x', body: '追问之后卡片没有出现，控制台无报错。' } })
+    report.equal(badRes.status, 400, 'a too-short title is refused with 400')
+    report.equal(badRes.json().error?.code, 'feedback-invalid', 'the refusal names feedback-invalid')
+
+    const sentRes = await callRoute(fbHost, '/feedback', {
+      body: { kind: 'bug', title: '卡片不显示', body: '在长对话里追问之后卡片没有出现，控制台也没有报错。', contact: 'me@example.com' },
+    })
+    const sentBody = sentRes.json()
+    report.equal(sentRes.status, 200, 'a valid report is accepted')
+    report.equal(sentBody.value?.sent, true, 'the response confirms the send')
+    report.equal(sentBody.value?.transport, 'smtp', 'the response names the real transport')
+    report.equal(sentBody.value?.toMasked, 'o***@example.test', 'the response never echoes the full recipient')
+
+    report.equal(relay.state.rcpt.length, 1, 'the relay received exactly one envelope')
+    report.ok(String(relay.state.rcpt[0]).includes('ops@example.test'), 'the envelope names the configured recipient')
+    report.ok(relay.state.commands.some(line => line.startsWith('AUTH PLAIN')), 'the client authenticated with AUTH PLAIN')
+    report.equal(relay.state.mails.length, 1, 'the DATA block reached the relay')
+    const mailText = relay.state.mails[0] ?? ''
+    report.ok(mailText.includes('Subject: =?UTF-8?B?'), 'the wire subject is RFC 2047 encoded')
+    report.ok(mailText.includes('Content-Transfer-Encoding: base64'), 'the wire body is base64')
+    const headerSplit = mailText.split('Content-Transfer-Encoding: base64')
+    const wireBody = Buffer.from(String(headerSplit[1] ?? '').split('\n').slice(1).join(''), 'base64').toString('utf8')
+    report.equal(stateRes.value?.config?.feedbackFrom, undefined, 'there is no separate sender key any more')
+    report.ok(mailText.includes('Reply-To: me@example.com'), 'the wire mail carries the reporter address as Reply-To')
+    report.ok(wireBody.includes('Contact: me@example.com'), 'the reporter address rides in the body')
+    report.ok(mailText.includes('From: relay@example.test'), 'From: stays the authenticated SMTP account')
+    report.ok(wireBody.includes('Kind: bug') && wireBody.includes('卡片不显示'), 'the decoded wire body carries the report')
+    report.equal(wireBody.includes('secret'), false, 'the SMTP password never appears in the mail')
+
+    const tooFast = await callRoute(fbHost, '/feedback', {
+      body: { kind: 'idea', title: '再来一封', body: '紧接着再发一封，应该被限速挡住。' },
+    })
+    report.equal(tooFast.status, 429, 'an immediate second report is throttled')
+    report.equal(tooFast.json().error?.code, 'feedback-too-fast', 'the throttle names feedback-too-fast')
+    report.ok(
+      tooFast.headers['retry-after'] !== undefined || tooFast.headers['Retry-After'] !== undefined,
+      'the throttle tells the client when to retry',
+    )
+
+    const logs = fbHost.log
+    report.equal(JSON.stringify(logs).includes('在长对话里追问之后卡片没有出现'), false, 'the report body is never logged')
+    report.ok(JSON.stringify(logs).includes('o***@example.test'), 'the log line keeps the masked recipient')
+  } finally {
+    if (previousUrl === undefined) delete process.env.DSH_SIDECARD_SMTP_URL
+    else process.env.DSH_SIDECARD_SMTP_URL = previousUrl
+    if (previousTo === undefined) delete process.env.DSH_SIDECARD_FEEDBACK_TO
+    else process.env.DSH_SIDECARD_FEEDBACK_TO = previousTo
+    await new Promise(resolve => relay.server.close(resolve))
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// F30: the settings surface. The feedback card sits at the top and is open by
+// default, but the recipient is only ever shown masked: there is no "reveal"
+// control, and editing is write-only.
+// ────────────────────────────────────────────────────────────────────────────
+console.log('\nfeedback: settings surface')
+{
+  const feedbackState = {
+    ok: true,
+    value: {
+      plugin: 'dsh-sidecard-ask',
+      version: client.api.version,
+      config: { ...pure.CLIENT_DEFAULTS },
+      capabilities: {
+        feedback: {
+          transport: 'smtp',
+          configured: true,
+          hasRecipient: true,
+          toMasked: 'o***@example.test',
+          reason: '',
+          limits: { titleMin: 4, titleMax: 120, bodyMin: 10, bodyMax: 4000, contactMax: 120 },
+        },
+      },
+      provenance: {},
+    },
+  }
+  const fbLoaded = loadClientModule({
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => feedbackState }),
+    language: 'zh-CN',
+  })
+  const fbCtx = makeClientCtx({})
+  fbLoaded.module.apply(fbCtx.ctx)
+  fbLoaded.shim.flushEffects()
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const fbSettings = fbCtx.find('settings.section', pure.IDS.settings)
+  const fbTree = expandTree(fbLoaded.shim.React.createElement(fbSettings.component, {}))
+  const nodes = hostNodes(fbTree)
+  const openButton = nodes.find(node => node.props['data-feedback-open'] !== undefined)
+  report.ok(openButton !== undefined, 'the settings page offers one feedback button')
+  report.equal(openButton?.props?.['aria-haspopup'], 'dialog', 'the button opens a dialog')
+  report.equal(openButton?.props?.['aria-expanded'], 'false', 'and reports that the dialog is closed')
+
+  // 1.9.1 rebuild: the form is NOT on the page any more. The old always-mounted
+  // inline panel pushed every real setting below the fold — that is what got
+  // rejected. Only the banner stays on the page; the form lives in a dialog.
+  report.equal(
+    nodes.some(node => node.props?.['data-dsa-feedback-dialog'] !== undefined),
+    false,
+    'the dialog is not mounted while closed',
+  )
+  report.equal(
+    nodes.some(node => node.props?.['data-feedback-field'] !== undefined),
+    false,
+    'the settings page carries no feedback inputs at all',
+  )
+  report.equal(nodes.some(node => node.props?.['data-feedback-toggle'] !== undefined), false, 'the old inline toggle is gone')
+  report.equal(
+    nodes.some(node => node.props?.['data-feedback-smtp-toggle'] !== undefined),
+    false,
+    'the SMTP form is gone from the page: the transport is the host business',
+  )
+
+  // Nothing about the recipient reaches the page, in any form.
+  const plain = textOf(fbTree)
+  report.equal(plain.includes('ops@example.test'), false, 'the plaintext address never reaches the page')
+  report.equal(plain.includes('o***@example.test'), false, 'the masked recipient is gone as well')
+  report.equal(nodes.some(node => node.props?.['data-feedback-recipient'] !== undefined), false, 'no recipient row is rendered')
+  report.equal(nodes.some(node => node.props?.['data-feedback-reveal'] !== undefined), false, 'there is no reveal control')
+
+  // The dialog is rendered directly: the settings page mounts it only while open
+  // and the test shim cannot drive a click-driven open.
+  const Dialog = fbLoaded.module.components?.FeedbackDialog
+  report.ok(typeof Dialog === 'function', 'the feedback dialog is exported for direct rendering')
+  const zhTable = pure.dict?.zh ?? {}
+  const zhT = (key, vars) => {
+    let text = String(zhTable[key] ?? key)
+    for (const [name, value] of Object.entries(vars ?? {})) text = text.split(`{${name}}`).join(String(value))
+    return text
+  }
+  const renderDialog = overrides => expandTree(fbLoaded.shim.React.createElement(Dialog, {
+    t: zhT,
+    limits: { titleMin: 4, titleMax: 120, bodyMin: 10, bodyMax: 4000, contactMax: 200 },
+    draft: { kind: 'bug', title: '', body: '', contact: '' },
+    onChange: () => {},
+    status: 'idle',
+    error: '',
+    ready: true,
+    reason: '',
+    hasRecipient: true,
+    onClose: () => {},
+    onSubmit: () => {},
+    onMailto: () => {},
+    onCopy: () => {},
+    ...overrides,
+  }))
+  const dialogTree = renderDialog({})
+  const dialogNodes = hostNodes(dialogTree)
+  const dialogRoot = dialogNodes.find(node => node.props?.['data-dsa-feedback-dialog'] !== undefined)
+  report.ok(dialogRoot !== undefined, 'the dialog renders as a modal surface')
+  const dialogCard = dialogNodes.find(node => node.props?.role === 'dialog')
+  report.ok(dialogCard !== undefined, 'the dialog carries role dialog')
+  report.equal(dialogCard?.props?.['aria-modal'], 'true', 'and is announced as modal')
+  report.ok(dialogNodes.some(node => node.props?.['data-feedback-close'] !== undefined), 'the dialog can be closed from its head')
+
+  for (const fieldName of ['kind', 'title', 'body', 'contact']) {
+    report.ok(
+      dialogNodes.some(node => node.props?.['data-feedback-field'] === fieldName),
+      `the dialog offers the ${fieldName} field`,
+    )
+  }
+  const contactField = dialogNodes.find(node => node.props?.['data-feedback-field'] === 'contact')
+  report.equal(contactField?.props?.type, 'email', 'the reporter address is a real email input')
+  report.equal(contactField?.props?.maxLength, 200, 'the reporter address is bounded like the host bound it')
+  report.equal(dialogNodes.some(node => node.props?.['data-feedback-field'] === 'from'), false, 'there is no separate sender field')
+  report.ok(textOf(dialogTree).includes('回信'), 'the label says the address is the reply address')
+
+  report.ok(dialogNodes.some(node => node.props?.['data-feedback-submit'] !== undefined), 'the dialog offers the send button')
+  report.ok(dialogNodes.some(node => node.props?.['data-feedback-mailto'] !== undefined), 'the dialog offers the mail-app path')
+  report.ok(dialogNodes.some(node => node.props?.['data-feedback-copy'] !== undefined), 'the dialog offers the copy path')
+  const idleSubmit = dialogNodes.find(node => node.props?.['data-feedback-submit'] !== undefined)
+  report.equal(idleSubmit?.props?.disabled, false, 'the send button is enabled while idle')
+
+  // Status and readiness lines belong to the dialog, not the page.
+  const sendingTree = renderDialog({ status: 'sending' })
+  const sendingSubmit = hostNodes(sendingTree).find(node => node.props?.['data-feedback-submit'] !== undefined)
+  report.equal(sendingSubmit?.props?.disabled, true, 'the send button locks while a send is in flight')
+  report.ok(textOf(renderDialog({ status: 'sent' })).includes('已发送'), 'a successful send says so')
+  report.ok(textOf(renderDialog({ status: 'error', error: 'relay said no' })).includes('relay said no'), 'a failed send prints the reason')
+  report.ok(
+    textOf(renderDialog({ ready: false, hasRecipient: true })).includes('用邮件客户端发送'),
+    'without a transport the dialog points at the mail-app path',
+  )
+  report.ok(
+    textOf(renderDialog({ ready: false, hasRecipient: false })).includes('没有可用的发信服务'),
+    'without a recipient the dialog says nothing can be sent',
+  )
+  report.ok(
+    textOf(renderDialog({ ready: false, reason: 'the host says why' })).includes('the host says why'),
+    'the host reason is printed verbatim',
+  )
+
+  // Placement: the banner is the first block after the title, ahead of the
+  // family banner and the settings grid.
+  const rootNode = nodes.find(node => node.props?.className === 'dsa-settings')
+  const rootKids = Array.isArray(rootNode?.children) ? rootNode.children.flat(Infinity) : []
+  const heroKid = rootKids.findIndex(kid => kid?.props?.['data-dsa-feedback-section'] !== undefined)
+  const gridKid = rootKids.findIndex(kid => kid?.props?.className === 'dsa-grid')
+  report.ok(heroKid >= 0, 'the feedback banner is a direct block of the settings page')
+  report.ok(gridKid === -1 || heroKid < gridKid, 'the feedback banner precedes the settings grid')
+  report.equal(
+    rootKids.filter(kid => kid?.props?.['data-dsa-feedback-section'] !== undefined).length,
+    1,
+    'there is exactly one feedback entry on the page',
+  )
+
+  const styleTag = byTag(fbTree, 'style')[0]
+  const css = String(styleTag?.children?.join('') ?? '')
+  report.ok(css.includes('.dsa-feedback-bar{'), 'the stylesheet ships the banner')
+  report.ok(css.includes('.dsa-feedback-backdrop{'), 'the stylesheet ships the dialog backdrop')
+  report.ok(css.includes('.dsa-feedback-dialog{'), 'the stylesheet ships the dialog card')
+  report.equal(css.includes('.dsa-feedback-hero'), false, 'the old inline panel styles are gone')
+  report.ok(css.includes('[data-state="sent"]'), 'the stylesheet ships the success state')
+  report.ok(css.includes('[data-state="error"]'), 'the stylesheet ships the failure state')
+}
+
+// A normal user cannot export environment variables for the DSH process, so the
+// transport must be settable in the settings page itself. That path is exercised
+// end to end here: save it through /config, confirm the password never comes
+// back, confirm an untouched password field does not erase the stored one, and
+// push a real message through a real socket.
+console.log('\nfeedback: SMTP typed into the settings page')
+{
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-smtp-'))
+  // This block is about the *page*-configured transport, so the ambient SMTP
+  // environment must not leak in: the environment deliberately wins over the
+  // page (see resolveSmtp), and this machine exports DSH_CRB_SMTP_URL.
+  const clearedEnv = ['DSH_SIDECARD_SMTP_URL', 'DSH_CRB_SMTP_URL', 'DSH_SIDECARD_SMTP_HOST', 'DSH_SIDECARD_SMTP_USER', 'DSH_SIDECARD_SMTP_PASS', 'DSH_CRB_FEEDBACK_TO', 'DSH_SIDECARD_FEEDBACK_TO', 'DSH_SIDECARD_SMTP_FROM']
+  const savedEnv = new Map(clearedEnv.map(key => [key, process.env[key]]))
+  for (const key of clearedEnv) delete process.env[key]
+  const typedRelay = await startRelay()
+  try {
+    const typedHost = makeHostCtx({})
+    host.apply(typedHost.ctx, {})
+    const saved = await callRoute(typedHost, '/config', {
+      body: {
+        feedbackAddress: 'ops@example.test',
+        feedbackSmtpHost: '127.0.0.1',
+        feedbackSmtpPort: typedRelay.port,
+        feedbackSmtpSecure: false,
+        feedbackSmtpUser: 'relay@example.test',
+        feedbackSmtpPass: 'auth-code',
+        feedbackSmtpFrom: '',
+      },
+    })
+    report.equal(saved.status, 200, 'the settings page can save the transport itself')
+
+    const typedState = (await callRoute(typedHost, '/state', { body: {} })).json()
+    const descriptor = typedState.value?.capabilities?.feedback
+    report.equal(descriptor?.configured, true, 'a transport saved in the page counts as ready')
+    report.equal(descriptor?.transport, 'smtp', 'the descriptor names SMTP')
+    report.equal(descriptor?.smtp?.source, 'config', 'the descriptor says where the transport came from')
+    report.equal(descriptor?.smtp?.hasPassword, true, 'the page only learns that a password exists')
+    report.equal(descriptor?.smtp?.pass, undefined, 'the descriptor never carries the password')
+    report.equal(
+      Object.prototype.hasOwnProperty.call(typedState.value?.config ?? {}, 'feedbackSmtpPass'),
+      false,
+      '/state strips the SMTP password from the config blob',
+    )
+    report.equal(JSON.stringify(typedState).includes('auth-code'), false, 'the password appears nowhere in the payload')
+
+    // Saving again with the password field untouched (the page always posts an
+    // empty string for it) must keep the stored secret.
+    const keep = await callRoute(typedHost, '/config', { body: { feedbackSmtpPass: '', feedbackSmtpPort: typedRelay.port } })
+    report.equal(keep.status, 200, 'saving without retyping the password is accepted')
+    const keptState = (await callRoute(typedHost, '/state', { body: {} })).json()
+    report.equal(keptState.value?.capabilities?.feedback?.smtp?.hasPassword, true, 'an empty password field keeps the stored password')
+    report.equal(keptState.value?.capabilities?.feedback?.configured, true, 'the transport is still ready after that save')
+
+    const typedSend = await callRoute(typedHost, '/feedback', {
+      body: { kind: 'bug', title: '配好之后还是发不出', body: '在设置页填好 SMTP 之后，点发送仍然提示未配置。' },
+    })
+    report.equal(typedSend.status, 200, 'the page-configured transport actually sends')
+    report.equal(typedSend.json().value?.transport, 'smtp', 'the response names the real transport')
+    report.equal(typedRelay.state.mails.length, 1, 'the relay accepted exactly one message')
+    report.ok(typedRelay.state.commands.some(line => line.startsWith('AUTH PLAIN')), 'the client authenticated with AUTH PLAIN')
+    report.ok(String(typedRelay.state.mails[0] ?? '').includes('From: relay@example.test'), 'From: is the authenticated account')
+  } finally {
+    process.env.DSH_HOME = previousHome
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    await new Promise(resolve => typedRelay.server.close(resolve))
+  }
+}
+
+// 真实事故回归：本机只配了环境变量（DSH_CRB_SMTP_URL 由兄弟插件共用），设置页里
+// 却残留着「主机/账号填了、密码没填」的半套配置。旧实现先看设置页，于是一套能用的
+// 环境被半套配置挡住，反馈永远报「还没填全」。
+console.log('\nfeedback: a complete environment beats a half-filled settings page')
+{
+  const halfTyped = {
+    feedbackSmtpHost: 'smtp.example.test',
+    feedbackSmtpUser: 'owner@example.test',
+    feedbackSmtpPass: '',
+  }
+  const completeEnv = {
+    DSH_CRB_SMTP_URL: 'smtps://owner%40example.test:secret@smtp.example.test:465',
+  }
+  const resolved = host.resolveSmtp(halfTyped, completeEnv)
+  report.equal(resolved.ok, true, 'the environment still yields a usable endpoint')
+  report.equal(resolved.source, 'env', 'the environment is the source, not the page')
+  report.equal(resolved.endpoint?.user, 'owner@example.test', 'the URL user is decoded')
+  report.equal(resolved.endpoint?.from, 'owner@example.test', 'From: falls back to the URL user')
+
+  const noPassword = host.resolveSmtp(halfTyped, {})
+  report.equal(noPassword.ok, false, 'without any environment the half-filled page is still incomplete')
+  report.equal(noPassword.reason, '设置页里的 SMTP 账号或密码还没填全', 'and says so')
+
+  const envOnly = host.resolveSmtp({}, completeEnv)
+  report.equal(envOnly.ok, true, 'an empty page plus the environment works')
+  report.equal(envOnly.source, 'env', 'the source is the environment')
+}
+
 report.summary()
+

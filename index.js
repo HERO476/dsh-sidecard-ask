@@ -32,8 +32,10 @@
  */
 
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import net from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import tls from 'node:tls'
 
 /** Plugin id: the bundle row id, the Client module id, and the log tag. */
 export const name = 'dsh-sidecard-ask'
@@ -42,7 +44,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.8.4'
+export const PLUGIN_VERSION = '1.9.1'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -152,6 +154,35 @@ export const DEFAULT_CONFIG = {
    * or half-written block simply yields no chips.
    */
   followUpSuggestions: false,
+  /**
+   * Recipient of the settings page's 「反馈」 mail.
+   *
+   * The default is the maintainer's real inbox, stored as `b64:<base64>` so a
+   * plain `name@domain` string cannot be grepped out of the published tarball.
+   * That is OBFUSCATION, NOT ENCRYPTION — `decodeAddress()` ships in this same
+   * file, so anyone holding the package can recover it; it only defeats naive
+   * scraping. `DSH_SIDECARD_FEEDBACK_TO` (or the shared `DSH_CRB_FEEDBACK_TO`
+   * from dsh-conversation-recycle-bin) wins over this value, and an empty value
+   * disables the mailbox again.
+   */
+  feedbackAddress: 'b64:MzQzMzI3NjU3N0BxcS5jb20=',
+  /**
+   * SMTP transport, editable in the settings page so a normal user never has to
+   * touch environment variables.
+   *
+   * These live in the USER layer only (`<DSH_HOME>/sidecard-ask/config.json`,
+   * outside the repository, never in a release artifact). The environment still
+   * works and still wins nothing: an empty host means "read the environment".
+   * The password is write-only over the wire: `/state` never returns it, an
+   * empty value on save means "keep the stored one", and the settings page only
+   * learns whether one exists.
+   */
+  feedbackSmtpHost: '',
+  feedbackSmtpPort: 465,
+  feedbackSmtpSecure: true,
+  feedbackSmtpUser: '',
+  feedbackSmtpPass: '',
+  feedbackSmtpFrom: '',
 }
 
 /** Bounds for the `quickActions` user layer (defense in depth). */
@@ -414,6 +445,48 @@ export function sanitizeLayer(raw, problems = []) {
     if (points >= 0 && points <= MAX_CUSTOM_PERSONA_CHARS) out.customPersona = raw.customPersona
     else problems.push(`customPersona: 必须是 ≤${MAX_CUSTOM_PERSONA_CHARS} 字符的字符串，已忽略`)
   }
+  if (raw.feedbackAddress !== undefined) {
+    // Empty is a legal value ("mail feedback disabled"); a non-empty value must
+    // resolve to a mailbox so a typo cannot silently black-hole every report.
+    // `b64:`-encoded values are accepted and validated after decoding.
+    const value = typeof raw.feedbackAddress === 'string' ? raw.feedbackAddress.trim() : null
+    if (value !== null && (value === '' || looksLikeEmail(decodeAddress(value)))) {
+      out.feedbackAddress = value
+    } else {
+      problems.push('feedbackAddress: 必须是合法邮箱、b64: 编码的邮箱或空字符串，已忽略')
+    }
+  }
+  if (raw.feedbackSmtpHost !== undefined) {
+    const value = typeof raw.feedbackSmtpHost === 'string' ? raw.feedbackSmtpHost.trim() : null
+    if (value !== null && value.length <= 255) out.feedbackSmtpHost = value
+    else problems.push('feedbackSmtpHost: 必须是 1–255 字符的字符串，已忽略')
+  }
+  if (raw.feedbackSmtpPort !== undefined) {
+    const clamped = clampNumber(raw.feedbackSmtpPort, 1, 65_535)
+    if (clamped === undefined) problems.push('feedbackSmtpPort: 必须是 1–65535 的整数，已忽略')
+    else out.feedbackSmtpPort = clamped
+  }
+  if (raw.feedbackSmtpSecure !== undefined) {
+    if (typeof raw.feedbackSmtpSecure === 'boolean') out.feedbackSmtpSecure = raw.feedbackSmtpSecure
+    else problems.push('feedbackSmtpSecure: 必须是布尔值，已忽略')
+  }
+  if (raw.feedbackSmtpUser !== undefined) {
+    const value = typeof raw.feedbackSmtpUser === 'string' ? raw.feedbackSmtpUser.trim() : null
+    // Not forced to be a mailbox: some relays hand out a bare account name. An
+    // address-shaped user still matters, because it becomes the default `From:`.
+    if (value !== null && value.length <= 254) out.feedbackSmtpUser = value
+    else problems.push('feedbackSmtpUser: 必须是 1–254 字符的字符串，已忽略')
+  }
+  if (raw.feedbackSmtpPass !== undefined) {
+    const value = typeof raw.feedbackSmtpPass === 'string' ? raw.feedbackSmtpPass : null
+    if (value !== null && value.length <= 512) out.feedbackSmtpPass = value
+    else problems.push('feedbackSmtpPass: 必须是 1–512 字符的字符串，已忽略')
+  }
+  if (raw.feedbackSmtpFrom !== undefined) {
+    const value = typeof raw.feedbackSmtpFrom === 'string' ? raw.feedbackSmtpFrom.trim() : null
+    if (value !== null && (value === '' || looksLikeEmail(value))) out.feedbackSmtpFrom = value
+    else problems.push('feedbackSmtpFrom: 必须是合法邮箱或空字符串，已忽略')
+  }
   for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions', 'dockRail']) {
     if (raw[boolKey] === undefined) continue
     if (typeof raw[boolKey] === 'boolean') out[boolKey] = raw[boolKey]
@@ -499,6 +572,556 @@ export function buildSidePrompt(input) {
   }
   parts.push('Question:', input.question)
   return parts.join('\n').slice(0, MAX_PROMPT_CHARS)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Feedback mail
+//
+// The settings page can mail one short report to the maintainer. Two rules
+// shape this section:
+//   1. Neither the recipient nor a credential lives in the repository: the
+//      recipient comes from the user layer (`feedbackAddress`) or the
+//      `DSH_SIDECARD_FEEDBACK_TO` variable, the SMTP endpoint from
+//      `DSH_SIDECARD_SMTP_URL` (or the discrete `DSH_SIDECARD_SMTP_*` pair).
+//   2. No dependency is added: the SMTP dialogue below runs on `node:net` and
+//      `node:tls` only, because the Host half may import nothing but node:
+//      built-ins (see the module header). A plugin that cannot reach an SMTP
+//      relay still works: the Client offers a `mailto:` fallback.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Bounds for one feedback mail, mirrored by the Client's own form checks. */
+export const FEEDBACK_LIMITS = {
+  titleMin: 4,
+  titleMax: 120,
+  bodyMin: 10,
+  bodyMax: 4000,
+  contactMax: 120,
+  /** At most one mail per gap, and at most `maxPerWindow` per window. */
+  minGapMs: 30_000,
+  windowMs: 3_600_000,
+  maxPerWindow: 5,
+}
+
+/** Accepted report kinds (the Client localizes their labels). */
+export const FEEDBACK_KINDS = ['bug', 'idea', 'question', 'other']
+
+/**
+ * Pragmatic mailbox check: one `@`, a bounded local part, at least one dot in
+ * the domain, no whitespace/controls and none of the characters that would
+ * let a value break out of a `MAIL FROM:<...>` command. It deliberately does
+ * not try to be RFC 5322 — the relay is the final authority.
+ */
+const EMAIL_PATTERN = /^[^\s@<>()[\]\\,;:"/]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/
+
+/** Marker that a stored address is base64-encoded (see DEFAULT_CONFIG). */
+export const ENCODED_ADDRESS_PREFIX = 'b64:'
+
+/**
+ * Decode a `b64:`-encoded address; any other value is returned trimmed.
+ * Obfuscation only: the decoder ships with the package, so this hides the
+ * address from naive scraping, never from a reader of the source.
+ * @param {unknown} raw - a stored or supplied address.
+ * @returns {string} the address, or '' when the value is empty/undecodable.
+ */
+export function decodeAddress(raw) {
+  if (typeof raw !== 'string') return ''
+  const value = raw.trim()
+  if (!value.startsWith(ENCODED_ADDRESS_PREFIX)) return value
+  try {
+    return Buffer.from(value.slice(ENCODED_ADDRESS_PREFIX.length), 'base64').toString('utf8').trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Where the recipient may come from, in priority order. The second name of
+ * each pair is shared with dsh-conversation-recycle-bin: both plugins report
+ * to the same inbox through the same relay, so one export configures both.
+ */
+export const FEEDBACK_TO_ENV_KEYS = ['DSH_SIDECARD_FEEDBACK_TO', 'DSH_CRB_FEEDBACK_TO']
+/** SMTP endpoint variables, in priority order (own name first, shared second). */
+export const SMTP_URL_ENV_KEYS = ['DSH_SIDECARD_SMTP_URL', 'DSH_CRB_SMTP_URL']
+
+/** Whether `raw` can be used as a mailbox address. */
+export function looksLikeEmail(raw) {
+  if (typeof raw !== 'string') return false
+  const value = raw.trim()
+  return value.length > 2 && value.length <= 254 && EMAIL_PATTERN.test(value)
+}
+
+/** `alice@example.com` → `a***@example.com` (safe to log and to echo). */
+export function maskEmail(raw) {
+  if (typeof raw !== 'string') return ''
+  const value = raw.trim()
+  const at = value.lastIndexOf('@')
+  if (at <= 0) return value === '' ? '' : '***'
+  return `${value.slice(0, 1)}***${value.slice(at)}`
+}
+
+/** Count code points: a 120-emoji title is 120 characters to the author. */
+function codePoints(text) {
+  return Array.from(text).length
+}
+
+/**
+ * Validate and shrink one feedback payload.
+ * @param {unknown} raw - the request body.
+ * @returns {{ok: true, value: object} | {ok: false, message: string}}
+ */
+export function sanitizeFeedbackInput(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, message: '反馈内容必须是对象' }
+  }
+  const kind = FEEDBACK_KINDS.includes(raw.kind) ? raw.kind : 'other'
+  const title = typeof raw.title === 'string' ? raw.title.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim() : ''
+  const body = typeof raw.body === 'string' ? raw.body.replace(/\r\n/g, '\n').trim() : ''
+  const contact = typeof raw.contact === 'string' ? raw.contact.trim() : ''
+  if (codePoints(title) < FEEDBACK_LIMITS.titleMin || codePoints(title) > FEEDBACK_LIMITS.titleMax) {
+    return { ok: false, message: `标题需 ${FEEDBACK_LIMITS.titleMin}–${FEEDBACK_LIMITS.titleMax} 个字符` }
+  }
+  // A CR/LF in a header-bound field is header injection; the title is the only
+  // value that reaches a header, and this is the cheap second line of defence.
+  if (/[\r\n]/.test(title)) return { ok: false, message: '标题不能包含换行' }
+  if (codePoints(body) < FEEDBACK_LIMITS.bodyMin || codePoints(body) > FEEDBACK_LIMITS.bodyMax) {
+    return { ok: false, message: `详细描述需 ${FEEDBACK_LIMITS.bodyMin}–${FEEDBACK_LIMITS.bodyMax} 个字符` }
+  }
+  if (codePoints(contact) > FEEDBACK_LIMITS.contactMax) {
+    return { ok: false, message: `联系方式最多 ${FEEDBACK_LIMITS.contactMax} 个字符` }
+  }
+  // The field is the reporter's own mailbox: it becomes the mail's `Reply-To:`,
+  // so a value that is not an address would produce a header the relay rejects.
+  // Empty stays legal — an anonymous report simply gets no Reply-To.
+  if (contact !== '' && !looksLikeEmail(contact)) {
+    return { ok: false, message: '联系方式需要填邮箱地址（会作为回信地址），留空即匿名' }
+  }
+  return { ok: true, value: { kind, title, body, contact } }
+}
+
+/**
+ * Parse one `smtp://` / `smtps://` URL into a connection descriptor.
+ *
+ * `smtps://user:pass@host:465` is implicit TLS; `smtp://user:pass@host:587`
+ * upgrades with STARTTLS (pass `?starttls=0` for a plain local relay). The
+ * sender defaults to the authenticating user; `?from=` overrides it.
+ * @param {string} raw - the URL.
+ * @returns {{ok: true, endpoint: object} | {ok: false, reason: string}}
+ */
+export function parseSmtpUrl(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return { ok: false, reason: '未配置 SMTP 地址' }
+  let url
+  try {
+    url = new URL(raw.trim())
+  } catch {
+    return { ok: false, reason: 'SMTP 地址不是合法 URL' }
+  }
+  if (url.protocol !== 'smtp:' && url.protocol !== 'smtps:') {
+    return { ok: false, reason: 'SMTP 地址必须以 smtp:// 或 smtps:// 开头' }
+  }
+  const secure = url.protocol === 'smtps:'
+  const host = url.hostname
+  if (host === '') return { ok: false, reason: 'SMTP 地址缺少主机名' }
+  const port = url.port === '' ? (secure ? 465 : 587) : Number(url.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return { ok: false, reason: 'SMTP 端口不在 1–65535 之间' }
+  const user = decodeURIComponent(url.username ?? '')
+  const pass = decodeURIComponent(url.password ?? '')
+  if (user === '' || pass === '') return { ok: false, reason: 'SMTP 地址需要 user:pass' }
+  const from = (url.searchParams.get('from') ?? '').trim() || user
+  if (!looksLikeEmail(from)) return { ok: false, reason: '发件邮箱格式不合法（由 ?from= 指定）' }
+  const starttls = secure ? false : url.searchParams.get('starttls') !== '0'
+  return { ok: true, endpoint: { host, port, secure, starttls, user, pass, from } }
+}
+
+/**
+ * Resolve the configured SMTP endpoint from the environment.
+ *
+ * `DSH_SIDECARD_SMTP_URL` wins. Otherwise the discrete
+ * `DSH_SIDECARD_SMTP_{HOST,PORT,USER,PASS,SECURE,FROM}` variables are read, so
+ * a password that contains `@`/`:` never has to be URL-encoded by hand.
+ */
+export function readSmtpFromEnv(env = process.env) {
+  // `DSH_CRB_SMTP_URL` is accepted as a fallback: the sibling plugin
+  // dsh-conversation-recycle-bin documents that exact variable, and both report
+  // to the same relay, so an operator only has to configure it once.
+  let url = ''
+  for (const key of SMTP_URL_ENV_KEYS) {
+    const value = typeof env?.[key] === 'string' ? env[key].trim() : ''
+    if (value !== '') {
+      url = value
+      break
+    }
+  }
+  if (url !== '') return parseSmtpUrl(url)
+  const host = typeof env.DSH_SIDECARD_SMTP_HOST === 'string' ? env.DSH_SIDECARD_SMTP_HOST.trim() : ''
+  if (host === '') return { ok: false, reason: '未配置 SMTP（DSH_SIDECARD_SMTP_URL / DSH_CRB_SMTP_URL 或 DSH_SIDECARD_SMTP_HOST）' }
+  const secureFlag = typeof env.DSH_SIDECARD_SMTP_SECURE === 'string' ? env.DSH_SIDECARD_SMTP_SECURE.trim().toLowerCase() : ''
+  const secure = secureFlag === '1' || secureFlag === 'true' || secureFlag === 'yes'
+  const port = env.DSH_SIDECARD_SMTP_PORT === undefined ? (secure ? 465 : 587) : Number(env.DSH_SIDECARD_SMTP_PORT)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return { ok: false, reason: 'DSH_SIDECARD_SMTP_PORT 不合法' }
+  const user = typeof env.DSH_SIDECARD_SMTP_USER === 'string' ? env.DSH_SIDECARD_SMTP_USER.trim() : ''
+  const pass = typeof env.DSH_SIDECARD_SMTP_PASS === 'string' ? env.DSH_SIDECARD_SMTP_PASS : ''
+  if (user === '' || pass === '') return { ok: false, reason: '缺少 DSH_SIDECARD_SMTP_USER / DSH_SIDECARD_SMTP_PASS' }
+  const from = (typeof env.DSH_SIDECARD_SMTP_FROM === 'string' ? env.DSH_SIDECARD_SMTP_FROM.trim() : '') || user
+  if (!looksLikeEmail(from)) return { ok: false, reason: 'DSH_SIDECARD_SMTP_FROM 不是合法邮箱' }
+  return { ok: true, endpoint: { host, port, secure, starttls: !secure, user, pass, from } }
+}
+
+/**
+ * Resolve the plaintext recipient. SERVER-SIDE ONLY: this value must never be
+ * put into a response body or rendered by the Client — the settings page only
+ * ever receives `toMasked` plus the `hasRecipient` flag, and asks for a finished
+ * `mailto:` URL when the user actually clicks the mail-app button.
+ * @param {Record<string, unknown>} config - the effective config.
+ * @param {Record<string, string|undefined>} [env] - the process environment.
+ * @returns {string} the address, or '' when unconfigured.
+ */
+export function feedbackRecipient(config = {}, env = process.env) {
+  // Environment wins: a deployment must be able to redirect reports without
+  // editing the packaged default (which is a real inbox, see DEFAULT_CONFIG).
+  for (const key of FEEDBACK_TO_ENV_KEYS) {
+    const value = typeof env?.[key] === 'string' ? env[key].trim() : ''
+    if (value !== '') return decodeAddress(value)
+  }
+  return decodeAddress(typeof config.feedbackAddress === 'string' ? config.feedbackAddress.trim() : '')
+}
+
+/**
+ * Resolve the SMTP endpoint the settings page can see and edit.
+ *
+ * **The environment wins over the page**, and that order is load-bearing: an
+ * operator who exported `DSH_SIDECARD_SMTP_URL` (or the shared
+ * `DSH_CRB_SMTP_URL`) must keep working even after somebody half-filled the SMTP
+ * fields in the settings page — a config blob with a host but no password used
+ * to mask a perfectly complete environment and report "not configured", which is
+ * exactly how a working setup turns into "反馈不好用".
+ * @param {Record<string, unknown>} config - the effective config.
+ * @param {Record<string, string|undefined>} [env] - the process environment.
+ * @returns {{ok: true, source: 'config'|'env', endpoint: object} | {ok: false, reason: string}}
+ */
+export function resolveSmtp(config = {}, env = process.env) {
+  const fromEnv = readSmtpFromEnv(env)
+  if (fromEnv.ok === true) return { ...fromEnv, source: 'env' }
+  const host = typeof config.feedbackSmtpHost === 'string' ? config.feedbackSmtpHost.trim() : ''
+  // Nothing in the page either: report what the environment is missing, which is
+  // the more useful of the two reasons.
+  if (host === '') return fromEnv
+  const secure = config.feedbackSmtpSecure !== false
+  const port = clampNumber(config.feedbackSmtpPort, 1, 65_535) ?? (secure ? 465 : 587)
+  const user = typeof config.feedbackSmtpUser === 'string' ? config.feedbackSmtpUser.trim() : ''
+  const pass = typeof config.feedbackSmtpPass === 'string' ? config.feedbackSmtpPass : ''
+  if (user === '' || pass === '') return { ok: false, reason: '设置页里的 SMTP 账号或密码还没填全' }
+  const from = (typeof config.feedbackSmtpFrom === 'string' ? config.feedbackSmtpFrom.trim() : '') || user
+  if (!looksLikeEmail(from)) return { ok: false, reason: 'SMTP 发件邮箱格式不合法' }
+  return { ok: true, source: 'config', endpoint: { host, port, secure, starttls: !secure, user, pass, from } }
+}
+
+/**
+ * The SMTP settings as the page may see them: everything except the password,
+ * which is reduced to a boolean.
+ */
+export function describeSmtpSettings(config = {}, env = process.env) {
+  const resolved = resolveSmtp(config, env)
+  return {
+    host: typeof config.feedbackSmtpHost === 'string' ? config.feedbackSmtpHost.trim() : '',
+    port: clampNumber(config.feedbackSmtpPort, 1, 65_535) ?? 465,
+    secure: config.feedbackSmtpSecure !== false,
+    user: typeof config.feedbackSmtpUser === 'string' ? config.feedbackSmtpUser.trim() : '',
+    from: typeof config.feedbackSmtpFrom === 'string' ? config.feedbackSmtpFrom.trim() : '',
+    hasPassword: typeof config.feedbackSmtpPass === 'string' && config.feedbackSmtpPass !== '',
+    source: resolved.ok === true ? resolved.source : '',
+  }
+}
+
+/**
+ * Where a report would go, in a shape the settings page can render.
+ * Never contains a password, and never the plaintext address: `toMasked` is all
+ * the Client gets, deliberately.
+ * @param {Record<string, unknown>} config - the effective config.
+ * @param {Record<string, string|undefined>} [env] - the process environment.
+ */
+export function describeFeedback(config = {}, env = process.env) {
+  const to = feedbackRecipient(config, env)
+  const base = {
+    transport: 'mailto',
+    configured: false,
+    hasRecipient: to !== '',
+    toMasked: maskEmail(to),
+    fromMasked: '',
+    reason: '',
+    limits: FEEDBACK_LIMITS,
+    smtp: describeSmtpSettings(config, env),
+  }
+  if (to === '') return { ...base, reason: '未配置收件邮箱：设置 feedbackAddress 或 DSH_SIDECARD_FEEDBACK_TO / DSH_CRB_FEEDBACK_TO' }
+  if (!looksLikeEmail(to)) return { ...base, reason: '收件邮箱格式不合法' }
+  const smtp = resolveSmtp(config, env)
+  if (smtp.ok !== true) return { ...base, reason: `${smtp.reason}（可用“用邮件客户端发送”）` }
+  return { ...base, transport: 'smtp', configured: true, fromMasked: maskEmail(smtp.endpoint.from), reason: '' }
+}
+
+/** RFC 2047 encode one header value (the subject may be Chinese). */
+function encodeHeader(value) {
+  return `=?UTF-8?B?${Buffer.from(String(value), 'utf8').toString('base64')}?=`
+}
+
+/**
+ * Compose the RFC 5322 message the relay will carry.
+ *
+ * The Subject carries the plugin name and version so a maintainer can triage
+ * without opening the body; every body label is ASCII because the Host half is
+ * language neutral (the Client localizes its own UI).
+ * @returns {{subject: string, text: string, raw: string}}
+ */
+export function composeFeedbackMail({ version, input, environment = '', now = new Date(), to, from }) {
+  const subject = `[dsh-sidecard-ask ${version}] ${input.kind}: ${input.title}`
+  const lines = [
+    `Plugin: dsh-sidecard-ask v${version}`,
+    `Kind: ${input.kind}`,
+    `Title: ${input.title}`,
+    `Contact: ${input.contact === '' ? '(not provided)' : input.contact}`,
+    '',
+    'Body:',
+    input.body,
+    '',
+    '--- environment (attached automatically) ---',
+    environment,
+  ]
+  const text = lines.join('\r\n')
+  const encodedBody = Buffer.from(text, 'utf8').toString('base64').replace(/(.{76})/g, '$1\r\n')
+  const messageId = `<${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}@dsh-sidecard-ask>`
+  // `From:` stays the authenticated account: QQ/163/Gmail reject a sender the
+  // account does not own. The reporter's own address rides along as `Reply-To:`
+  // instead, so "reply" reaches the person who filed the report. The value was
+  // validated as a mailbox and holds no CR/LF, so it cannot inject headers.
+  const replyTo = looksLikeEmail(input.contact ?? '') ? [`Reply-To: ${String(input.contact).trim()}`] : []
+  const raw = [
+    `From: ${from}`,
+    `To: ${to}`,
+    ...replyTo,
+    `Subject: ${encodeHeader(subject)}`,
+    `Date: ${now.toUTCString()}`,
+    `Message-ID: ${messageId}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    encodedBody,
+  ].join('\r\n')
+  return { subject, text, raw }
+}
+
+/** A compact, non-identifying environment block (no hostname, no user name). */
+export function describeEnvironment({ version, dshVersion = '', now = new Date() }) {
+  return [
+    `plugin: ${version}`,
+    `dsh: ${dshVersion === '' ? 'unknown' : dshVersion}`,
+    `node: ${process.version}`,
+    `platform: ${process.platform} ${process.arch}`,
+    `at: ${now.toISOString()}`,
+  ].join('\n')
+}
+
+/**
+ * Build the `mailto:` URL the mail-app button navigates to.
+ *
+ * Lives on the Host on purpose: the plaintext recipient must not be rendered or
+ * held by the page. The Client asks for a finished URL and only follows it.
+ * @returns {string} a `mailto:` URL with encoded subject and body.
+ */
+export function buildMailtoUrl({ to, version, input, userAgent = '' }) {
+  const subject = `[dsh-sidecard-ask ${version}] ${input.kind}: ${input.title}`
+  const text = [
+    `plugin: ${version}`,
+    `kind: ${input.kind}`,
+    input.body,
+    '',
+    `contact: ${input.contact === '' ? '(not provided)' : input.contact}`,
+  ]
+  if (userAgent !== '') text.push(`user agent: ${userAgent}`)
+  return `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text.join('\n'))}`
+}
+
+/**
+ * Send-rate gate: one mail per `minGapMs`, at most `maxPerWindow` per window.
+ * Every send is recorded only after it actually went out, so a relay outage
+ * never burns the user's quota.
+ * @param {{minGapMs?: number, windowMs?: number, maxPerWindow?: number}} [options]
+ * @param {() => number} [now] - clock injection for tests.
+ */
+export function createFeedbackGate(options = {}, now = () => Date.now()) {
+  const minGapMs = options.minGapMs ?? FEEDBACK_LIMITS.minGapMs
+  const windowMs = options.windowMs ?? FEEDBACK_LIMITS.windowMs
+  const maxPerWindow = options.maxPerWindow ?? FEEDBACK_LIMITS.maxPerWindow
+  const sent = []
+  return {
+    /** @returns {{ok: true} | {ok: false, code: string, message: string, retryAfterMs: number}} */
+    check() {
+      const at = now()
+      while (sent.length > 0 && at - sent[0] > windowMs) sent.shift()
+      if (sent.length >= maxPerWindow) {
+        return { ok: false, code: 'feedback-too-many', message: '反馈发送过于频繁，请稍后再试', retryAfterMs: Math.max(0, windowMs - (at - sent[0])) }
+      }
+      const last = sent.length > 0 ? sent[sent.length - 1] : 0
+      if (last !== 0 && at - last < minGapMs) {
+        return { ok: false, code: 'feedback-too-fast', message: '刚发过一封，请稍等半分钟再发', retryAfterMs: minGapMs - (at - last) }
+      }
+      return { ok: true }
+    },
+    /** Record a mail that the relay accepted. */
+    record() { sent.push(now()) },
+    /** Number of mails inside the current window (diagnostics/tests). */
+    get size() { return sent.length },
+  }
+}
+
+/**
+ * Minimal SMTP reader: buffered `\r\n` lines plus whole-reply assembly, so a
+ * multi-line greeting (`250-…` / `250 …`) is never mistaken for several
+ * commands' answers.
+ */
+function attachSmtpReader(socket) {
+  const buffered = []
+  const waiters = []
+  let buffer = ''
+  let failure = null
+  const onData = (chunk) => {
+    buffer += chunk.toString('utf8')
+    let index = buffer.indexOf('\r\n')
+    while (index >= 0) {
+      const line = buffer.slice(0, index)
+      buffer = buffer.slice(index + 2)
+      const waiter = waiters.shift()
+      if (waiter === undefined) buffered.push(line)
+      else waiter.resolve(line)
+      index = buffer.indexOf('\r\n')
+    }
+  }
+  const fail = (error) => {
+    failure = failure ?? error
+    while (waiters.length > 0) waiters.shift().reject(failure)
+  }
+  const onError = (error) => { fail(error) }
+  const onClose = () => { fail(Object.assign(new Error('SMTP 连接已关闭'), { code: 'smtp-closed' })) }
+  socket.on('data', onData)
+  socket.on('error', onError)
+  socket.on('close', onClose)
+  return {
+    async line() {
+      if (buffered.length > 0) return buffered.shift()
+      if (failure !== null) throw failure
+      return new Promise((resolve, reject) => { waiters.push({ resolve, reject }) })
+    },
+    /** One whole reply: `{code, text}` where `text` keeps every line. */
+    async reply() {
+      let text = ''
+      let code = 0
+      for (;;) {
+        const line = await this.line()
+        const parsed = Number(line.slice(0, 3))
+        if (Number.isFinite(parsed) && parsed !== 0) code = parsed
+        text = text === '' ? line : `${text}\n${line}`
+        if (line.charAt(3) !== '-') break
+      }
+      return { code, text }
+    },
+    dispose() {
+      socket.removeListener('data', onData)
+      socket.removeListener('error', onError)
+      socket.removeListener('close', onClose)
+    },
+  }
+}
+
+/** Open one TCP/TLS connection, resolving only once the transport is up. */
+function openSmtpSocket(endpoint, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => { socket.destroy(); reject(error) }
+    const socket = endpoint.secure
+      ? tls.connect({ host: endpoint.host, port: endpoint.port, servername: endpoint.host })
+      : net.connect({ host: endpoint.host, port: endpoint.port })
+    socket.once('error', onError)
+    socket.setTimeout(timeoutMs, () => {
+      socket.destroy()
+      reject(Object.assign(new Error(`SMTP 连接超时（${timeoutMs}ms）`), { code: 'smtp-timeout' }))
+    })
+    socket.once(endpoint.secure ? 'secureConnect' : 'connect', () => {
+      socket.removeListener('error', onError)
+      socket.setTimeout(0)
+      resolve(socket)
+    })
+  })
+}
+
+/** Run one SMTP verb and fail the whole dialogue when its reply is not 2xx/3xx. */
+async function smtpCommand(reader, socket, line, accept = [2, 3]) {
+  if (line !== null) socket.write(`${line}\r\n`)
+  const reply = await reader.reply()
+  if (!accept.includes(Math.floor(reply.code / 100))) {
+    throw Object.assign(new Error(`SMTP 拒绝：${reply.text}`), { code: 'smtp-rejected', reply: reply.text, status: reply.code })
+  }
+  return reply
+}
+
+/**
+ * Deliver one already-composed message through a real SMTP dialogue.
+ *
+ * Sequence: greeting → EHLO → (STARTTLS) → EHLO → AUTH PLAIN (fallback LOGIN)
+ * → MAIL FROM → RCPT TO → DATA → QUIT. `endpoint.pass` never appears in an
+ * error message or a log line.
+ * @returns {Promise<{ok: true, acceptedAt: string}>}
+ */
+export async function sendSmtpMessage(endpoint, mail, { timeoutMs = 20_000, now = () => new Date() } = {}) {
+  let socket = await openSmtpSocket(endpoint, timeoutMs)
+  let reader = attachSmtpReader(socket)
+  const deadline = setTimeout(() => { socket.destroy() }, timeoutMs)
+  deadline.unref?.()
+  try {
+    await smtpCommand(reader, socket, null)
+    const identify = `EHLO dsh-sidecard-ask`
+    const greeting = await smtpCommand(reader, socket, identify)
+    // Only upgrade when the server says it can. A relay that never advertises
+    // STARTTLS answers 500 to the verb, and a 587 endpoint on a local network
+    // would then look "broken" for a step nobody asked for.
+    if (endpoint.secure === false && endpoint.starttls !== false && /\bSTARTTLS\b/i.test(greeting.text)) {
+      await smtpCommand(reader, socket, 'STARTTLS', [2])
+      reader.dispose()
+      const upgraded = await new Promise((resolve, reject) => {
+        const secureSocket = tls.connect({ socket, servername: endpoint.host }, () => resolve(secureSocket))
+        secureSocket.once('error', reject)
+      })
+      socket = upgraded
+      reader = attachSmtpReader(socket)
+      await smtpCommand(reader, socket, identify)
+    }
+    const token = Buffer.from(`\u0000${endpoint.user}\u0000${endpoint.pass}`, 'utf8').toString('base64')
+    // PLAIN is one round trip; LOGIN is the fallback for relays that only
+    // speak it. A rejected PLAIN leaves the session usable, so retrying is safe.
+    let accepted = false
+    try {
+      const reply = await smtpCommand(reader, socket, `AUTH PLAIN ${token}`, [2, 3])
+      if (Math.floor(reply.code / 100) === 3) await smtpCommand(reader, socket, token, [2])
+      accepted = true
+    } catch (error) {
+      if (error?.code !== 'smtp-rejected') throw error
+    }
+    if (accepted === false) {
+      await smtpCommand(reader, socket, 'AUTH LOGIN')
+      await smtpCommand(reader, socket, Buffer.from(endpoint.user, 'utf8').toString('base64'), [3])
+      await smtpCommand(reader, socket, Buffer.from(endpoint.pass, 'utf8').toString('base64'), [2])
+    }
+    await smtpCommand(reader, socket, `MAIL FROM:<${endpoint.from}>`)
+    await smtpCommand(reader, socket, `RCPT TO:<${mail.to}>`)
+    await smtpCommand(reader, socket, 'DATA', [3])
+    // Dot-stuffing: a body line starting with "." would end DATA early.
+    const payload = mail.raw.replace(/^\./gm, '..')
+    socket.write(`${payload}\r\n.\r\n`)
+    await smtpCommand(reader, socket, null)
+    try { await smtpCommand(reader, socket, 'QUIT') } catch { /* the mail is already accepted */ }
+    return { ok: true, acceptedAt: now().toISOString() }
+  } finally {
+    clearTimeout(deadline)
+    reader.dispose()
+    socket.destroy()
+  }
 }
 
 /**
@@ -618,12 +1241,13 @@ export function isTrustedRequest(req, trustedHosts = []) {
 // ────────────────────────────────────────────────────────────────────────────
 
 /** Write one JSON response. */
-function writeJson(res, status, value) {
+function writeJson(res, status, value, extraHeaders = {}) {
   const body = JSON.stringify(value)
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'content-length': Buffer.byteLength(body),
+    ...extraHeaders,
   })
   res.end(body)
 }
@@ -633,9 +1257,15 @@ function writeOk(res, value) {
   writeJson(res, 200, { ok: true, value })
 }
 
-/** Write one `{ok:false,error}` response. */
-function writeError(res, status, code, message) {
-  writeJson(res, status, { ok: false, error: { code, message } })
+/**
+ * Write one `{ok:false,error}` response.
+ *
+ * `extraHeaders` exists because `writeHead` replaces the header bag: a value
+ * set with `setHeader` before this call would be dropped (the 429 throttle
+ * relies on `retry-after` surviving).
+ */
+function writeError(res, status, code, message, extraHeaders = {}) {
+  writeJson(res, status, { ok: false, error: { code, message } }, extraHeaders)
 }
 
 /**
@@ -1377,6 +2007,25 @@ export function apply(ctx, patchConfig) {
    */
   let clientReport = null
 
+  /** Send-rate gate for `/feedback` (one mail per 30s, five per hour). */
+  const feedbackGate = createFeedbackGate()
+
+  /**
+   * Best-effort DSH version for the feedback environment block.
+   * Every lookup is optional: a missing service must not fail the send.
+   */
+  const dshVersionOf = () => {
+    try {
+      const runtime = ctx.get('webRuntime')
+      const version = runtime?.version ?? runtime?.harnessVersion
+      if (typeof version === 'string' && version !== '') return version
+    } catch {
+      /* optional service */
+    }
+    const fromEnv = typeof process.env.DSH_VERSION === 'string' ? process.env.DSH_VERSION.trim() : ''
+    return fromEnv
+  }
+
   /** Allow-listed, size-bounded view of one Client report. */
   function sanitizeClientReport(raw) {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
@@ -1442,10 +2091,16 @@ export function apply(ctx, patchConfig) {
 
   /** `/state` — the Client's single source of truth at boot and after a save. */
   const handleState = (res) => {
+    // Two secrets never reach the page: the recipient stays server-side (the page
+    // gets `hasRecipient` and asks for a finished `mailto:` URL), and the SMTP
+    // password is write-only (the page only learns whether one is stored).
+    const publicConfig = { ...state.config }
+    delete publicConfig.feedbackAddress
+    delete publicConfig.feedbackSmtpPass
     writeOk(res, {
       plugin: name,
       version: PLUGIN_VERSION,
-      config: state.config,
+      config: publicConfig,
       problems: state.problems,
       provenance: {
         // Computed live: a save in this process must be reflected immediately.
@@ -1459,6 +2114,9 @@ export function apply(ctx, patchConfig) {
         ...engine.capabilities(),
         // Informational: which process-local stream the host bridges.
         streamSource: 'agent/assistant-stream',
+        // Where a settings-page report would go, and why it cannot (if so).
+        // Never carries a password; addresses are masked for display.
+        feedback: describeFeedback(state.config),
       },
       // The Client half's last self-report (null until it posts one).
       client: clientReport,
@@ -1487,6 +2145,105 @@ export function apply(ctx, patchConfig) {
     }
     clientReport = report
     writeOk(res, { accepted: true, at: report.at })
+  }
+
+  /**
+   * `/feedback` — mail one settings-page report to the configured recipient.
+   *
+   * Failure codes are the Client's contract: `feedback-unconfigured` (no
+   * recipient or no SMTP — the Client then offers `mailto:`),
+   * `feedback-invalid` (bounds), `feedback-too-fast` / `feedback-too-many`
+   * (gate), `feedback-send-failed` (relay refused). The report body is never
+   * logged; only kind, masked recipient and outcome are.
+   */
+  const handleFeedback = async (req, res) => {
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (error) {
+      writeError(res, 400, toWireError(error, 'bad-request').code, toWireError(error).message)
+      return
+    }
+    const input = sanitizeFeedbackInput(body)
+    if (input.ok !== true) {
+      writeError(res, 400, 'feedback-invalid', input.message)
+      return
+    }
+    const status = describeFeedback(state.config)
+    if (status.configured !== true) {
+      writeError(res, 503, 'feedback-unconfigured', status.reason === '' ? '未配置反馈邮箱' : status.reason)
+      return
+    }
+    const gate = feedbackGate.check()
+    if (gate.ok !== true) {
+      const retryAfter = String(Math.max(1, Math.ceil((gate.retryAfterMs ?? 1000) / 1000)))
+      writeError(res, 429, gate.code, gate.message, { 'retry-after': retryAfter })
+      return
+    }
+    const smtp = resolveSmtp(state.config)
+    if (smtp.ok !== true) {
+      writeError(res, 503, 'feedback-unconfigured', smtp.reason)
+      return
+    }
+    // Plaintext recipient stays in this scope; it never reaches a response body.
+    const to = feedbackRecipient(state.config)
+    const now = new Date()
+    const mail = composeFeedbackMail({
+      version: PLUGIN_VERSION,
+      input: input.value,
+      environment: describeEnvironment({ version: PLUGIN_VERSION, dshVersion: dshVersionOf(), now }),
+      now,
+      to,
+      from: smtp.endpoint.from,
+    })
+    try {
+      await sendSmtpMessage(smtp.endpoint, { to, raw: mail.raw, subject: mail.subject })
+      feedbackGate.record()
+      ctx.logger?.info?.(`[sidecard-ask] feedback sent to ${maskEmail(to)} kind=${input.value.kind}`)
+      writeOk(res, { sent: true, at: now.toISOString(), transport: 'smtp', toMasked: maskEmail(to) })
+    } catch (error) {
+      const wire = toWireError(error, 'feedback-send-failed')
+      ctx.logger?.warn?.(`[sidecard-ask] feedback failed to ${maskEmail(to)}: ${wire.code} ${wire.message}`)
+      writeError(res, 502, 'feedback-send-failed', wire.message)
+    }
+  }
+
+  /**
+   * `/feedback-mailto` — hand the Client a finished `mailto:` URL.
+   *
+   * This exists so the plaintext recipient never has to enter the page: the
+   * settings form shows a mask, and when the user clicks "send with my mail app"
+   * the Host builds the URL and the Client only navigates to it.
+   */
+  const handleFeedbackMailto = async (req, res) => {
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (error) {
+      writeError(res, 400, toWireError(error, 'bad-request').code, toWireError(error).message)
+      return
+    }
+    const input = sanitizeFeedbackInput(body)
+    if (input.ok !== true) {
+      writeError(res, 400, 'feedback-invalid', input.message)
+      return
+    }
+    const to = feedbackRecipient(state.config)
+    if (to === '') {
+      writeError(res, 503, 'feedback-unconfigured', '未配置收件邮箱：在设置页填写，或设置 DSH_SIDECARD_FEEDBACK_TO')
+      return
+    }
+    if (!looksLikeEmail(to)) {
+      writeError(res, 503, 'feedback-unconfigured', '收件邮箱格式不合法')
+      return
+    }
+    const url = buildMailtoUrl({
+      to,
+      version: PLUGIN_VERSION,
+      input: input.value,
+      userAgent: typeof body.userAgent === 'string' ? body.userAgent : '',
+    })
+    writeOk(res, { url, toMasked: maskEmail(to) })
   }
 
   /** `/ask` — one SSE stream per side answer. */
@@ -1549,7 +2306,12 @@ export function apply(ctx, patchConfig) {
       return
     }
     const problems = []
-    const accepted = sanitizeLayer(body, problems)
+    // The SMTP password is write-only: `/state` never hands it back, so the
+    // settings form always submits an empty string for an untouched password.
+    // Treat that empty value as "leave it alone" instead of erasing it.
+    const patch = { ...body }
+    if (patch.feedbackSmtpPass === '') delete patch.feedbackSmtpPass
+    const accepted = sanitizeLayer(patch, problems)
     if (problems.length > 0) {
       writeError(res, 400, 'invalid-config', problems.join('；'))
       return
@@ -1576,7 +2338,7 @@ export function apply(ctx, patchConfig) {
    * The HTTP methods the plugin serves; kept in one place because the route
    * registration has two shapes (see below).
    */
-  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose']
+  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback', 'feedback-mailto']
 
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
@@ -1610,6 +2372,8 @@ export function apply(ctx, patchConfig) {
       else if (method === 'config') await handleConfig(req, res)
       else if (method === 'reset') handleReset(req, res)
       else if (method === 'diagnose') await handleDiagnose(req, res)
+      else if (method === 'feedback') await handleFeedback(req, res)
+      else if (method === 'feedback-mailto') await handleFeedbackMailto(req, res)
       else writeError(res, 404, 'not-found', `未知接口 "${method}"`)
     } catch (error) {
       const wire = toWireError(error)

@@ -181,6 +181,13 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `answerStyle` | `concise` \| `standard` \| `detailed` | `standard` | **回答风格档位**：只给最小完整答案 / 现状 / 必要时展开并给出依据。指令追加在人格之后，**不会**覆盖"用提问的语言作答"与"选中文本是数据"这两条 | 下一次提问 |
 | `customPersona` | 字符串，≤500 码点 | `''` | **自定义指令**：追加在风格档位之后，以 `Additional user instruction:` 标注随每次提问发送（例如"尽量给可验证来源"） | 下一次提问 |
 | `followUpSuggestions` | 布尔 | `false` | **模型生成的建议追问**：让模型在答案末尾用 `<followups>问1 \| 问2</followups>` 给出 2–3 个可点的下一步问题（客户端剥离该块并渲染为芯片，**不额外发请求**） | 下一次提问 |
+| `feedbackAddress` | 字符串（邮箱或 `b64:` 编码）\| `''` | 维护者收件箱（`b64:` 混淆存储） | **反馈收件邮箱**：设置页「反馈」弹窗把问题与建议发到这里。默认值指向维护者自己的邮箱，以 `b64:<base64>` 形式打包——**这是混淆不是加密**，`decodeAddress()` 就在同包里，只能挡住正则抓取；环境变量 `DSH_SIDECARD_FEEDBACK_TO` / `DSH_CRB_FEEDBACK_TO` **优先于**本项，置空则只留「用邮件客户端发送」回退路径 | 立即 |
+| `feedbackSmtpHost` | 字符串，≤255 | `''` | **SMTP 服务器**。1.9.1 起只从**环境变量或用户层配置**读。**环境变量优先于配置**（`DSH_SIDECARD_SMTP_URL` / `DSH_CRB_SMTP_URL` 等能凑出完整端点时，配置里的整段不生效）；只有用户层配置会存它，**不进仓库** | 立即 |
+| `feedbackSmtpPort` | 数字，1–65535 | `465` | SMTP 端口。465 配隐式 TLS，587 配 STARTTLS（服务器没声明 STARTTLS 时不会硬升级） | 立即 |
+| `feedbackSmtpSecure` | 布尔 | `true` | 隐式 TLS（465）。关掉则按 STARTTLS 处理 | 立即 |
+| `feedbackSmtpUser` | 字符串，≤254 | `''` | SMTP 登录账号。部分中继给的是裸账号名而非邮箱，故不强制邮箱格式 | 立即 |
+| `feedbackSmtpPass` | 字符串，≤512 | `''` | **密码 / 授权码**（QQ、163 必须用授权码）。**只写不读**：`/state` 会删掉它、页面永远拿到空串；留空保存＝保留原值 | 立即 |
+| `feedbackSmtpFrom` | 字符串（邮箱）\| `''` | `''` | 发信账号显式指定的 `From:`，留空等于 `feedbackSmtpUser`。必须是 SMTP 服务商允许的地址 | 立即 |
 
 非法值会被拒绝（设置页报错、接口返回 `invalid-config`），并把被忽略的项列在 `/state` 的 `problems` 里——不会静默吞掉。
 
@@ -254,6 +261,97 @@ bleeds = 对话区右边界 - left > 1          // 只有带宽 < 240px 时才�
 
 外观之外没有行为变化：键盘漫游、`Alt+1…5`、右键菜单、点击后直接发问都照旧。这条也不写配置项——
 它是版式修正，不需要开关。
+
+### 4.4 设置页的「反馈」入口（邮件）
+
+设置页**最顶部**是一条品牌色描边的**反馈横幅**（`dsa-feedback-bar`）：一行文字 + 右侧主按钮，**点开才是表单**，
+表单放在一个居中对话框（`role="dialog"`，`Esc` / 点背景 / 右上角 `×` 都能关）。1.9.1 之前是「顶部常驻内联表单」，
+它把真正的设置项全挤到屏幕外，被否掉后重做成现在这种「一条横幅 + 一个弹窗」。表单字段：类型（问题 / 建议 / 疑问 / 其他）、
+标题、详细描述、可选的**你的邮箱**（填了就写进邮件的 `Reply-To:`，维护者按「回复」能直接回给你；留空即匿名）。
+**设置页上没有任何 SMTP 输入框**：发信凭据属于部署方/维护者，走环境变量或用户层配置（见下），填报人不用管。
+三条出口，从首选到兜底：
+
+| 出口 | 何时可用 | 说明 |
+|---|---|---|
+| **发送**（推荐） | 收件邮箱已配置 **且** SMTP 凭证可用（环境变量或用户层配置） | 插件直接把邮件投给 SMTP 服务器；成功后清空草稿 |
+| **用邮件客户端发送** | 只要有收件邮箱 | 拼一个 `mailto:` 交给系统邮件应用，**不需要任何凭证** |
+| **复制内容** | 总是 | 把同样的纯文本（含版本与环境）放进剪贴板，用户自己粘到任意渠道 |
+
+**收件邮箱默认可用，也可被环境变量接管。** 打包默认值是维护者邮箱（`b64:` 混淆存储，见上表）；
+环境变量 `DSH_SIDECARD_FEEDBACK_TO` 或 `DSH_CRB_FEEDBACK_TO`（与 dsh-conversation-recycle-bin 共用）
+**优先**于它。用户层配置落在 `$DSH_HOME/sidecard-ask/config.json`
+（Windows 默认 `C:\Users\<你>\.dsh\sidecard-ask\config.json`）——**不在插件目录里，因此不会被提交、
+不会进 npm 包**。
+
+**SMTP 凭证有两种给法**，都落在部署方/维护者这一侧（1.9.1 起设置页不再提供填写框）：
+
+1. **用户层配置**（`$DSH_HOME/sidecard-ask/config.json`，Windows 默认
+   `C:\Users\<你>\.dsh\sidecard-ask\config.json`，或 profile 的 `cordis.patch.yml` 里给该行写 `config`）：
+   `feedbackSmtpHost` / `feedbackSmtpPort` / `feedbackSmtpSecure` / `feedbackSmtpUser` / `feedbackSmtpPass` /
+   `feedbackSmtpFrom`。**密码只写不读**：`/state` 删除该键、页面永远拿到空串，留空保存表示保留原值。
+   QQ 邮箱请填 `smtp.qq.com` / 465 / `secure: true` / 你的 QQ 邮箱 / **授权码**
+   （不是 QQ 密码，要在 QQ 邮箱后台「设置 → 账户 → POP3/SMTP 服务」里生成）。
+2. **环境变量**（推荐，**优先级高于用户层配置**），有两种写法：
+
+```bash
+# 写法一：一个 URL（smtps = 隐式 TLS，端口默认 465；smtp = STARTTLS，端口默认 587）
+DSH_SIDECARD_SMTP_URL="smtps://user%40example.com:app-password@smtp.example.com"
+# 也可以直接复用 dsh-conversation-recycle-bin 的那一个：
+DSH_CRB_SMTP_URL="smtps://user%40example.com:app-password@smtp.example.com"
+
+# 写法二：分开写（密码里带 @ 或 : 时不用手动转义）
+DSH_SIDECARD_SMTP_HOST="smtp.example.com"
+DSH_SIDECARD_SMTP_PORT="465"
+DSH_SIDECARD_SMTP_SECURE="1"        # 1/true/yes = 隐式 TLS
+DSH_SIDECARD_SMTP_USER="user@example.com"
+DSH_SIDECARD_SMTP_PASS="app-password"
+DSH_SIDECARD_SMTP_FROM="user@example.com"   # 可选，默认等于 USER
+```
+
+补充约定（都会体现在 `/state` 的 `capabilities.feedback` 里，反馈弹窗据此显示「已就绪 / 未配置」）：
+
+- **环境变量优先于用户层配置**，而且只认「完整的那一套」：环境里能凑出主机+账号+密码就用环境（`smtp.source = 'env'`），
+  否则才看用户层 `config.json` 填的；两边都不完整就报「还没填全」。这条顺序是有原因的——本机曾出现「环境变量是好的、
+  配置里留着半套（填了主机没填密码）」，旧实现先看配置，于是一套能用的凭证被半套配置挡住，
+  反馈永远发不出去。1.9.1 起设置页不自带 SMTP 表单，这条优先级只作用于「环境变量 vs 用户层配置」。
+
+- **发件人必须像邮箱**：`?from=` / `DSH_SIDECARD_SMTP_FROM` / `USER` 三者取到的地址必须通过邮箱格式检查，
+  否则整条 SMTP 路径判为未配置——`MAIL FROM` 里塞不进一个合法地址就该早点说清楚。
+- **STARTTLS 只在服务器声明时才升级**：先看 `EHLO` 的多行回复里有没有 `STARTTLS`，没有就直接明文对话；
+  否则一个没开 STARTTLS 的内网中继会被自己的升级请求判成「发信失败」。
+- 本地/内网中继可以用 `smtp://user:pass@host:25?starttls=0` 关掉升级；**不要**对公网服务器这么写。
+- 邮件正文是 `text/plain; charset=UTF-8` + base64，主题用 RFC 2047 编码（中文标题不会变乱码）；
+  正文里附插件版本、DSH 版本、Node 版本、平台与时间，**不含主机名、用户名或任何路径**。
+- 限速在 Host 侧：30 秒内最多一封、1 小时内最多 5 封；失败返回 `feedback-too-fast` /
+  `feedback-too-many` 并带 `retry-after` 头。只有**真正投递成功**才计入配额，中继故障不烧配额。
+- 日志只记 kind 与**打码后的**收件人（`o***@example.com`），**从不记录正文**。
+- **收件人从页面里彻底消失**（两轮返工的终点：先删掉「显示收件人」开关，再按用户要求删掉掩码行与
+  「更换收件人」按钮）：
+  - `/state` 的 `capabilities.feedback` 只给 `hasRecipient` / `toMasked` 这类摘要，**没有** `to`；
+  - `/state` 的 `config` 里也**删掉了** `feedbackAddress`，页面拿不到它；
+  - 设置页不显示收件人的任何形式——没有掩码行、没有更换入口、没有地址输入框。收件人只由用户层配置
+    `feedbackAddress` 或环境变量 `DSH_SIDECARD_FEEDBACK_TO` 提供，那是部署方/维护者的事，填写者不用管；
+  - 「用邮件客户端发送」点击时向 Host 要一条**拼好的** `mailto:` URL（`POST /feedback-mailto`），
+    浏览器只负责跳转，不自己拼地址。
+- **`From:` 仍是维护者自己的 SMTP 账号，但填报人的邮箱会写进 `Reply-To:`**：QQ/163 会拒收不属于本账号的
+  `From:`（553），所以发件身份不变；填报人在「你的邮箱」里填了地址，Host 就把它作为 `Reply-To:` 写进邮件头，
+  维护者按「回复」直接回到填报人。该值在 Host 侧先过邮箱格式校验且不含 CR/LF，因此无法注入头字段；
+  留空则整行不写（匿名反馈）。`mailto:` 回退路径里没有 `Reply-To` 可用，同一个地址同时留在正文 `Contact:` 行。
+
+- 三种就绪状态在界面上分开说，不混成一个「未配置」：没有收件人 → 提示配置；有收件人但没有 SMTP →
+  提示「缺的只是发信凭据，现在可用『用邮件客户端发送』」；齐全 → 什么都不提示。
+- **关于「加密」的实话**：这里的邮箱只是一次 SMTP 的收件地址，插件必须能解出明文才能发信，任何随插件
+  分发的「加密」都等于把钥匙一起发出去，只能算混淆——打包默认值用的 `b64:` 就是这种混淆，只挡正则抓取。
+  真正有效的保护是**只存本机配置 + 明文不进浏览器 + 日志打码 + 可被环境变量整体接管**——这四条都已实现。
+  仍然避免不了的两处：`mailto:` URL 本身必然含明文（由 Host 组好直接交给系统邮件应用，不经页面渲染），
+  以及**已经提交进 git 历史的作者邮箱**（见下文）。
+
+失败排查顺序：`/state` 的 `capabilities.feedback.reason`（它会直接说「账号或密码还没填全」这类话）→
+用户层配置是否整行都在（服务器/端口/账号/密码；**端口必须是数字**，字符串会被判非法）→ 环境变量是否
+被 DSH 进程继承（改完要重启 DSH）→ SMTP 服务商是否要求**应用专用密码**（Gmail / QQ 邮箱 / 163 都要求，
+登录密码会被拒）→ 端口与 TLS 写法是否匹配（465 用隐式 TLS；587 让服务器自己声明 STARTTLS）→
+中继是否在白名单里要求 `FROM` 与 `USER` 同域。
+`feedback-send-failed` 的 message 是服务器原文，直接读它比猜快。
 
 ---
 
@@ -664,15 +762,21 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 cd D:\Users\34332\AI\dsh-sidecard-ask
 node test/verify.mjs            # 静态：清单/补丁/导出面/i18n/零依赖
 node test/contract-test.mjs     # 契约：常量、信封、SSE 逐帧、纯函数、槽位注册与渲染
-node test/float-placement.mjs   # 几何：浮层宽度不越过对话区右边界（1.5.0 新增）
-node test/smoke-test.mjs        # 端到端：流式/截断/取消/持久化/失败分支/并发/围栏
+node test/float-placement.mjs   # 浮层定位矩阵
+node test/smoke-test.mjs        # 冒烟：装载、槽位、渲染、错误路径
 ```
 
+当前规模（本机实测，四项均 exit 0）：verify **57** 项 + contract **1239** 项 + float-placement **78** 项 +
+smoke **226** 项 = **1600 项全部通过**（较 1.8.4 的 1359 多 241 项；contract 从 989 涨到 1239，新增大多来自
+反馈功能：
+纯函数边界、`parseSmtpUrl` / `readSmtpFromEnv` 两种写法（含复用 `DSH_CRB_SMTP_URL`）、`b64:` 收件人解码、
+「环境变量优先于用户层配置」的优先级回归、`Reply-To:` 组头、限速闸门，以及一条**真 socket** 的 `/feedback`
+端到端——本地 SMTP 假中继逐条断言 `AUTH PLAIN`、信封、`DATA`、编码后的主题与正文、429 与 `retry-after`，
+并断言正文没有进日志；1.9.1 又把内联表单的断言整块换成「横幅一行 + 弹窗表单」的断言）。
+
 四个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模（本机实测，四项均 exit 0）：verify **57** 项 + contract **998** 项 + float-placement **78** 项 +
-smoke **226** 项 = **1359 项全部通过**（较 1.8.3 的 1350 多 9 项：选区动作条改成单一面板后新增的
-3 条渲染断言——恰好一个 `.dsa-quickbar-sep`、chips 自成一组、主按钮是 embedded 变体——与 6 条样式断言：
-单一面板、品牌实底主按钮、chips 去边框、分隔线规则、深色墨字覆盖、以及面板自带 `maxWidth` 上限。
+1.8.4 为 1359 项：contract 989 → 998，新增 6 条钉住选区动作条的版式（单一面板、品牌实底主按钮、
+chips 去边框、分隔线规则、深色墨字覆盖、面板自带 `maxWidth` 上限）。
 1.8.3 为 1350 项：contract 972 → 989，新增 8 项钉住设置页的「占满
 右侧栏」复选框、3 个新 i18n 键，以及承载面 `auto` 的新顺序；float-placement 38 → 78，新增 40 项覆盖 `railDock` 的夹取/最小尺寸/
 `clipped` 语义、真机上 dock 没生效那次发现的三个缺陷（残留的 `rail` 变量、右栏开合不触发重算、

@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.8.4'
+    const CLIENT_VERSION = '1.9.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -120,6 +120,17 @@ window.__ModuleLoader__.load({
       customPersona: '',
       // 1.8.0 P2-4: model-written follow-up chips (opt-in).
       followUpSuggestions: false,
+      // Empty by design: a maintainer mailbox is injected at run time (the
+      // settings field or DSH_SIDECARD_FEEDBACK_TO), never shipped in a repo.
+      feedbackAddress: '',
+      // SMTP transport, editable in the settings page. The password is
+      // write-only: `/state` never returns it, so this default is always ''.
+      feedbackSmtpHost: '',
+      feedbackSmtpPort: 465,
+      feedbackSmtpSecure: true,
+      feedbackSmtpUser: '',
+      feedbackSmtpPass: '',
+      feedbackSmtpFrom: '',
     }
 
     /**
@@ -133,6 +144,26 @@ window.__ModuleLoader__.load({
       questionLength: 500,
       shortcutLength: 40,
     }
+
+    /**
+     * Fallback bounds for the feedback form. `/state` reports the live limits
+     * (`capabilities.feedback.limits`) and those win; these exist only so an
+     * older Host that reports nothing still gets sane Client-side checks.
+     */
+    const FEEDBACK_DEFAULTS = {
+      titleMin: 4,
+      titleMax: 120,
+      bodyMin: 10,
+      bodyMax: 4000,
+      contactMax: 120,
+    }
+
+    /**
+     * The Host's mailbox rule, mirrored so the form refuses a bad `Reply-To`
+     * before the round trip. Kept deliberately simple: the relay is the final
+     * authority, and this only has to reject obvious non-addresses.
+     */
+    const FEEDBACK_EMAIL_PATTERN = /^[^\s@<>()[\]\\,;:"/]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/
 
     /**
      * Built-in quick actions. The config list only carries `builtin:<id>`;
@@ -465,6 +496,7 @@ window.__ModuleLoader__.load({
         errorNoSideEngine: '这台 DSH 组合没有可用的子代理，无法在侧边卡片作答；可以改到主对话提问。',
         errorTooLarge: '请求体过大',
         errorBadRequest: '请求无效（问题或选中文本为空）',
+      errorFeedbackInvalid: '反馈内容不符合要求，检查标题与详细描述的长度',
         errorUnloaded: '插件正在卸载，无法受理新的追问',
         errorDuplicate: '该追问已在处理中，请等它完成',
         errorBusy: '并发追问已达上限（{n}），请稍后再试',
@@ -656,6 +688,49 @@ window.__ModuleLoader__.load({
         suggestionsLabel: '建议追问',
         familyLegacyDiag: '旧版共载',
         familyPeers: '同页实例',
+        setFeedback: '反馈',
+        setFeedbackHint: '遇到问题或有建议，在这里直接发邮件给我；邮件会自动附带插件版本与运行环境（不含聊天内容）',
+        feedbackOpen: '反馈问题',
+        feedbackClose: '关闭',
+        feedbackDialogTitle: '发送反馈',
+        feedbackKind: '问题类型',
+        feedbackKindBug: '缺陷',
+        feedbackKindIdea: '建议',
+        feedbackKindQuestion: '疑问',
+        feedbackKindOther: '其他',
+        feedbackTitle: '标题',
+        feedbackTitlePlaceholder: '一句话说明问题（4–120 字）',
+        feedbackBody: '详细描述',
+        feedbackBodyPlaceholder: '复现步骤 / 期望结果 / 实际结果（10–4000 字）',
+        feedbackContact: '你的邮箱（选填，作为回信地址）',
+        feedbackContactPlaceholder: 'you@example.com',
+        feedbackContactHint: '填了维护者就能直接回信给你；留空即匿名。',
+        feedbackContactInvalid: '请填写正确的邮箱地址，或留空',
+        feedbackSend: '发送邮件',
+        feedbackSending: '发送中…',
+        feedbackSent: '已发送，谢谢反馈',
+        feedbackMailto: '用邮件客户端发送',
+        feedbackCopy: '复制内容',
+        feedbackCopied: '已复制到剪贴板',
+        feedbackUnconfigured: '没有可用的发信服务，可用“用邮件客户端发送”自行寄出',
+        feedbackMailtoOnly: '收件人已填好，只缺发信凭据（SMTP 账号与授权码，由环境变量或用户层配置提供）；现在也可以“用邮件客户端发送”',
+        feedbackNeedsTitle: '标题至少 4 个字',
+        feedbackNeedsBody: '详细描述至少 10 个字',
+        feedbackContactTooLong: '联系方式太长（≤{n} 字）',
+        feedbackFailed: '发送失败：{message}',
+        feedbackEnvNote: '自动附带：插件版本、Node/平台、发送时间',
+        feedbackSmtpShow: '设置邮件发送（SMTP）',
+        feedbackSmtpHide: '收起邮件发送设置',
+        feedbackSmtpEnvNote: '当前凭证来自环境变量（优先级高于用户层配置）',
+        feedbackSmtpHost: 'SMTP 服务器',
+        feedbackSmtpSecure: 'SSL/TLS（465 端口）',
+        feedbackSmtpPassSaved: '已保存，留空则不改动',
+        feedbackSmtpPass: '密码 / 授权码',
+        feedbackSmtpFrom: '发件邮箱（留空＝同账号）',
+        feedbackSmtpHint: 'QQ、163 等邮箱要用「授权码」而不是登录密码；密码只写进本地 config.json，页面读不回来，也不会随插件发布',
+        feedbackSmtpSaveHint: '填完点「保存」（会把本页设置一起保存）；不保存就点发送，密码不会被记住',
+        feedbackTooFast: '刚发过一封，请稍等半分钟',
+        feedbackTooMany: '发送过于频繁，请稍后再试',
       },
       en: {
         triggerLabel: 'Ask about selection',
@@ -706,6 +781,7 @@ window.__ModuleLoader__.load({
         errorNoSideEngine: 'This DSH composition has no usable subagent, so the side card cannot answer; ask in the main chat instead.',
         errorTooLarge: 'The request body is too large',
         errorBadRequest: 'Invalid request (empty question or empty selection)',
+      errorFeedbackInvalid: 'The report does not meet the length limits — check the title and details',
         errorUnloaded: 'The plugin is unloading and cannot take new follow-ups',
         errorDuplicate: 'This follow-up is already being answered; wait for it to finish',
         errorBusy: 'Too many concurrent answers (limit {n}); try again shortly',
@@ -897,6 +973,49 @@ window.__ModuleLoader__.load({
         suggestionsLabel: 'Suggested follow-ups',
         familyLegacyDiag: 'Legacy co-load',
         familyPeers: 'Copies on page',
+        setFeedback: 'Feedback',
+        setFeedbackHint: 'Report a bug or send a suggestion by mail from here; the plugin version and runtime details are attached automatically (no chat content)',
+        feedbackOpen: 'Send feedback',
+        feedbackClose: 'Close',
+        feedbackDialogTitle: 'Send feedback',
+        feedbackKind: 'Kind',
+        feedbackKindBug: 'Bug',
+        feedbackKindIdea: 'Idea',
+        feedbackKindQuestion: 'Question',
+        feedbackKindOther: 'Other',
+        feedbackTitle: 'Title',
+        feedbackTitlePlaceholder: 'One line (4–120 characters)',
+        feedbackBody: 'Details',
+        feedbackBodyPlaceholder: 'Steps to reproduce / expected / actual (10–4000 characters)',
+        feedbackContact: 'Your email (optional, used as the reply address)',
+        feedbackContactPlaceholder: 'you@example.com',
+        feedbackContactHint: 'Filled in, a reply reaches you directly; leave it empty to stay anonymous.',
+        feedbackContactInvalid: 'Enter a valid email address, or leave it empty',
+        feedbackSend: 'Send mail',
+        feedbackSending: 'Sending…',
+        feedbackSent: 'Sent — thank you',
+        feedbackMailto: 'Send with my mail app',
+        feedbackCopy: 'Copy text',
+        feedbackCopied: 'Copied to the clipboard',
+        feedbackUnconfigured: 'No mail service is configured; use “Send with my mail app” instead',
+      feedbackMailtoOnly: 'The recipient is set; only the SMTP credentials (environment variables) are missing, so use “Send with my mail app”',
+        feedbackNeedsTitle: 'The title needs at least 4 characters',
+        feedbackNeedsBody: 'The details need at least 10 characters',
+        feedbackContactTooLong: 'The contact line is too long (max {n} characters)',
+        feedbackFailed: 'Send failed: {message}',
+        feedbackEnvNote: 'Attached automatically: plugin version, Node/platform, send time',
+        feedbackSmtpShow: 'Set up mail delivery (SMTP)',
+        feedbackSmtpHide: 'Hide mail delivery settings',
+        feedbackSmtpEnvNote: 'Credentials come from the environment right now (it outranks this page), so the fields below have no effect.',
+        feedbackSmtpHost: 'SMTP server',
+        feedbackSmtpSecure: 'SSL/TLS (port 465)',
+        feedbackSmtpPassSaved: 'Saved — leave empty to keep it',
+        feedbackSmtpPass: 'Password / app code',
+        feedbackSmtpFrom: 'From address (empty = the account)',
+        feedbackSmtpHint: 'QQ/163 need an app-specific code, not the login password. The password is written to this machine\'s config.json only; the page never reads it back and it never ships with the plugin.',
+        feedbackSmtpSaveHint: 'Press “Save” after filling this in (it saves the whole page). Without saving, the code is not remembered and sending keeps failing.',
+        feedbackTooFast: 'One mail just went out — wait half a minute',
+        feedbackTooMany: 'Too many reports for now — try again later',
       },
     }
 
@@ -967,6 +1086,12 @@ window.__ModuleLoader__.load({
       'bad-response': { key: 'errorBadResponseBody' },
       'stream-broken': { key: 'errorStreamBrokenBody' },
       'stream-ended': { key: 'errorStreamEndedBody' },
+      // Feedback endpoints: these four are fully known Client-side, so an
+      // English UI never shows the Host's Chinese line for them.
+      'feedback-invalid': { key: 'errorFeedbackInvalid' },
+      'feedback-unconfigured': { key: 'feedbackUnconfigured' },
+      'feedback-too-fast': { key: 'feedbackTooFast' },
+      'feedback-too-many': { key: 'feedbackTooMany' },
     }
 
     /** One localized line for a wire error; unknown codes keep the Host text. */
@@ -1640,6 +1765,54 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Validate a feedback draft BEFORE posting it, so the Host's 400 never
+     * comes back as a surprise. The bounds are the live Host ones (see
+     * {@link FEEDBACK_DEFAULTS}); the CR/LF rule mirrors the Host's own
+     * header-injection fence.
+     * @param {{kind?: string, title?: string, body?: string, contact?: string}} draft
+     * @param {{titleMin: number, titleMax: number, bodyMin: number, bodyMax: number, contactMax?: number}} [limits]
+     * @returns {{ok: true}|{ok: false, key: string}}
+     */
+    function validateFeedbackDraft(draft, limits) {
+      const bound = limits ?? FEEDBACK_DEFAULTS
+      const title = typeof draft?.title === 'string' ? draft.title.trim() : ''
+      const body = typeof draft?.body === 'string' ? draft.body.trim() : ''
+      const chars = text => Array.from(text).length
+      if (title.includes('\n') || title.includes('\r')) return { ok: false, key: 'feedbackNeedsTitle' }
+      if (chars(title) < bound.titleMin || chars(title) > bound.titleMax) return { ok: false, key: 'feedbackNeedsTitle' }
+      if (chars(body) < bound.bodyMin || chars(body) > bound.bodyMax) return { ok: false, key: 'feedbackNeedsBody' }
+      const contact = typeof draft?.contact === 'string' ? draft.contact.trim() : ''
+      if (bound.contactMax !== undefined && chars(contact) > bound.contactMax) return { ok: false, key: 'feedbackContactTooLong' }
+      // Same pragmatic mailbox rule as the Host: the value becomes `Reply-To:`,
+      // so anything that is not an address would be rejected by the relay.
+      if (contact !== '' && !FEEDBACK_EMAIL_PATTERN.test(contact)) return { ok: false, key: 'feedbackContactInvalid' }
+      return { ok: true }
+    }
+
+    /** One-line subject for the report (also used by the `mailto:` fallback). */
+    function feedbackSubjectFor({ version, draft }) {
+      const title = typeof draft?.title === 'string' ? draft.title.trim() : ''
+      const kind = typeof draft?.kind === 'string' && draft.kind !== '' ? draft.kind : 'other'
+      return `[dsh-sidecard-ask ${version}] ${kind}: ${title === '' ? 'feedback' : title}`
+    }
+
+    /** The report as plain text: what the copy button puts on the clipboard. */
+    function feedbackPlainTextFor({ version, draft, userAgent }) {
+      const contact = typeof draft?.contact === 'string' ? draft.contact.trim() : ''
+      const body = typeof draft?.body === 'string' ? draft.body.trim() : ''
+      return [
+        `kind: ${typeof draft?.kind === 'string' && draft.kind !== '' ? draft.kind : 'other'}`,
+        `title: ${typeof draft?.title === 'string' ? draft.title.trim() : ''}`,
+        `contact: ${contact === '' ? '(not provided)' : contact}`,
+        '',
+        body,
+        '',
+        `plugin: ${version}`,
+        `user agent: ${typeof userAgent === 'string' ? userAgent : ''}`,
+      ].join('\n')
+    }
+
+    /**
      * Validate a settings-page quick-action draft BEFORE posting it, so the
      * Host's all-or-nothing refusal never comes back as a surprise. Also
      * checks that no action shortcut collides with another action or with the
@@ -2155,6 +2328,11 @@ body[data-ds-dark-theme] .dsa-quickbar .dsa-trigger-embedded{color:#0a1428}
 .dsa-btn:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
 .dsa-btn-primary{background:var(--dsw-alias-brand-primary, #4c8dff);border-color:var(--dsw-alias-brand-primary, #4c8dff);
   color:#fff;font-weight:500}
+/* Same reason as the segmented chips and the quick-bar primary: the uiskin dark
+   brand is a light blue (#5b9cf5) where white text measures 2.79:1. Dark ink
+   lands at 6.57:1 and keeps the button reading as "filled". */
+html[data-ds-dark-theme] .dsa-btn-primary,
+body[data-ds-dark-theme] .dsa-btn-primary{color:#0a1428}
 .dsa-btn:disabled{opacity:.55;cursor:default}
 /* Icon-only variant (the floating layer's collapse/hide controls): square and
    quiet so the card title bar stays one line and the title keeps the weight. */
@@ -2315,6 +2493,42 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 .dsa-hist-meta{font-size:11px;color:var(--dsw-alias-label-secondary, #777)}
 .dsa-diag{display:flex;flex-direction:column;gap:2px;font-size:12px;
   color:var(--dsw-alias-label-secondary, #555)}
+/* Feedback (settings page), v1.9.1 rebuild: one compact banner at the very top
+   of the page, and a centered dialog for the form. The form used to be an
+   always-visible inline panel here, which pushed every real setting below the
+   fold; the SMTP transport form is gone from the page entirely — the Host reads
+   it from the environment / user config, so there is nothing for an end user to
+   fill in. The dialog is position:fixed with a high z-index because this
+   section is rendered INSIDE the app's settings modal. */
+.dsa-feedback-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;
+  border-radius:12px;border:1px solid var(--dsw-alias-brand-primary, #4c8dff);
+  background:var(--dsw-alias-bg-layer-1, rgba(127,127,127,.06))}
+.dsa-feedback-bar-text{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 240px}
+.dsa-feedback-bar-title{font-weight:600;color:var(--dsw-alias-label-primary, #111)}
+.dsa-feedback-bar-hint{font-size:12px;line-height:1.5;
+  color:var(--dsw-alias-label-secondary, #666)}
+.dsa-feedback-bar > .dsa-btn{flex:0 0 auto;margin-left:auto}
+.dsa-feedback-backdrop{position:fixed;inset:0;z-index:1200;display:flex;align-items:center;
+  justify-content:center;padding:24px;background:rgba(0,0,0,.45)}
+.dsa-feedback-dialog{display:flex;flex-direction:column;gap:10px;width:min(560px, 100%);
+  max-height:calc(100vh - 48px);overflow:auto;padding:16px 18px;border-radius:14px;
+  border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));
+  background:var(--dsw-alias-bg-overlay, rgba(127,127,127,.03));color:inherit;
+  box-shadow:0 18px 48px rgba(0,0,0,.28)}
+.dsa-feedback-dialog-head{display:flex;align-items:center;gap:8px}
+.dsa-feedback-dialog-head > strong{flex:1;min-width:0;font-size:14px}
+.dsa-feedback-dialog-head > .dsa-feedback-close{flex:0 0 auto;width:28px;height:28px;
+  padding:0;line-height:1;font-size:16px}
+.dsa-feedback-dialog-field{display:flex;flex-direction:column;gap:4px}
+.dsa-feedback-dialog-field > label{font-size:12px;
+  color:var(--dsw-alias-label-secondary, #555)}
+.dsa-feedback-dialog-field > textarea{min-height:120px;resize:vertical}
+.dsa-feedback-dialog-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dsa-feedback-dialog-hint{font-size:12px;line-height:1.5;
+  color:var(--dsw-alias-label-secondary, #666)}
+.dsa-feedback-state{font-size:12px;color:var(--dsw-alias-label-secondary, #666)}
+.dsa-feedback-state[data-state="sent"]{color:var(--dsw-alias-state-success-primary, #1a7f37)}
+.dsa-feedback-state[data-state="error"]{color:var(--dsw-alias-state-error-primary, #c0392b)}
 /* §4.5 legacy coexistence: an unmarked dsa-layer can only be the old
    dsh-selection-followup ≤1.0.x build. When this build is the elected
    leader it hides the old build's whole interaction surface so exactly
@@ -4328,6 +4542,142 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         state.toast !== null ? h('div', { className: 'dsa-toast' }, state.toast) : null)
     }
 
+    /**
+     * The feedback dialog (`role="dialog"`).
+     *
+     * Module scope on purpose: the settings page only mounts it while open, and
+     * the contract test renders it directly — the test React shim has no working
+     * setState, so a click-driven open cannot be exercised through the page.
+     * Everything it needs arrives through props, so it is also the one surface
+     * that can be checked without a Host.
+     */
+    function FeedbackDialog(props) {
+      const {
+        t, limits, draft, onChange, status, error, ready, reason, hasRecipient,
+        onClose, onSubmit, onMailto, onCopy,
+      } = props
+      const sending = status === 'sending'
+      // Escape closes it: a modal without a keyboard exit is a trap.
+      React.useEffect(() => {
+        if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+          return undefined
+        }
+        const onKey = event => { if (event !== null && event?.key === 'Escape') onClose() }
+        document.addEventListener('keydown', onKey)
+        return () => { document.removeEventListener('keydown', onKey) }
+      }, [onClose])
+
+      const field = (label, control) => h('div', { className: 'dsa-feedback-dialog-field' },
+        h('label', null, label),
+        control)
+
+      return h('div', {
+        className: 'dsa-feedback-backdrop',
+        'data-dsa-feedback-dialog': '',
+        onClick: event => {
+          // Only a click on the backdrop itself closes; clicks inside the card
+          // bubble here and must not dismiss a half-written report.
+          if (event !== null && event !== undefined && event.target === event.currentTarget) onClose()
+        },
+      },
+      h('div', {
+        className: 'dsa-feedback-dialog',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': t('feedbackDialogTitle'),
+      },
+      h('div', { className: 'dsa-feedback-dialog-head' },
+        h('strong', null, t('feedbackDialogTitle')),
+        h('button', {
+          type: 'button',
+          className: 'dsa-btn dsa-feedback-close',
+          'data-feedback-close': '',
+          title: t('feedbackClose'),
+          'aria-label': t('feedbackClose'),
+          onClick: onClose,
+        }, '×')),
+      h('div', { className: 'dsa-feedback-dialog-field' },
+        h('label', null, t('feedbackKind')),
+        h('select', {
+          className: 'dsa-input',
+          'data-feedback-field': 'kind',
+          value: draft.kind,
+          onChange: event => onChange({ kind: event.target.value }),
+        }, [
+          ['bug', t('feedbackKindBug')],
+          ['idea', t('feedbackKindIdea')],
+          ['question', t('feedbackKindQuestion')],
+          ['other', t('feedbackKindOther')],
+        ].map(([value, label]) => h('option', { key: value, value }, label)))),
+      field(t('feedbackTitle'), h('input', {
+        className: 'dsa-input',
+        'data-feedback-field': 'title',
+        placeholder: t('feedbackTitlePlaceholder'),
+        maxLength: limits.titleMax,
+        value: draft.title,
+        onChange: event => onChange({ title: event.target.value }),
+      })),
+      field(t('feedbackBody'), h('textarea', {
+        className: 'dsa-textarea',
+        'data-feedback-field': 'body',
+        placeholder: t('feedbackBodyPlaceholder'),
+        maxLength: limits.bodyMax,
+        value: draft.body,
+        onChange: event => onChange({ body: event.target.value }),
+      })),
+      // The reporter's own address becomes the mail's `Reply-To:`, never its
+      // `From:` — the relay authenticates as the owner's account and would
+      // reject a foreign sender.
+      field(t('feedbackContact'), h('input', {
+        className: 'dsa-input',
+        'data-feedback-field': 'contact',
+        type: 'email',
+        inputMode: 'email',
+        autoComplete: 'email',
+        placeholder: t('feedbackContactPlaceholder'),
+        maxLength: limits.contactMax,
+        value: draft.contact,
+        onChange: event => onChange({ contact: event.target.value }),
+      })),
+      h('span', { className: 'dsa-feedback-dialog-hint' }, t('feedbackContactHint')),
+      h('span', { className: 'dsa-feedback-dialog-hint' }, t('feedbackEnvNote')),
+      // Readiness: three states, not two. No recipient at all, recipient but no
+      // usable transport (the mail-app path still works), fully ready. When the
+      // Host explains why, print its sentence verbatim.
+      ready === true
+        ? null
+        : h('span', { className: 'dsa-feedback-dialog-hint', 'data-feedback-readiness': 'unready' },
+          String(reason ?? '') !== ''
+            ? String(reason)
+            : (hasRecipient === true ? t('feedbackMailtoOnly') : t('feedbackUnconfigured'))),
+      h('div', { className: 'dsa-feedback-dialog-actions' },
+        h('button', {
+          type: 'button',
+          className: 'dsa-btn dsa-btn-primary',
+          'data-feedback-submit': '',
+          disabled: sending,
+          title: ready === true ? undefined : t('feedbackUnconfigured'),
+          onClick: onSubmit,
+        }, sending ? t('feedbackSending') : t('feedbackSend')),
+        h('button', {
+          type: 'button',
+          className: 'dsa-btn',
+          'data-feedback-mailto': '',
+          onClick: onMailto,
+        }, t('feedbackMailto')),
+        h('button', {
+          type: 'button',
+          className: 'dsa-btn',
+          'data-feedback-copy': '',
+          onClick: onCopy,
+        }, t('feedbackCopy'))),
+      status === 'sent'
+        ? h('span', { className: 'dsa-feedback-state', 'data-state': 'sent', role: 'status' }, t('feedbackSent'))
+        : status === 'error'
+          ? h('span', { className: 'dsa-feedback-state', 'data-state': 'error', role: 'status' }, error)
+          : null))
+    }
+
     /** The settings page (`settings.section`). */
     function SettingsSection({ actions }) {
       const state = useStoreState()
@@ -4335,6 +4685,24 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const [status, setStatus] = React.useState('idle')
       const [diag, setDiag] = React.useState(null)
       const [historyQuery, setHistoryQuery] = React.useState('')
+      // ── feedback form ──────────────────────────────────────────────────
+      // `idle` → typing; `sending` → one POST in flight (button locked);
+      // `sent` → the draft was cleared; `error` → the draft is KEPT, so a
+      // relay failure never eats what the user just wrote.
+      // Closed by default: the entry must be the first thing on the page and
+      // one click away, but an always-open form pushed every real setting below
+      // the fold (the previous version did exactly that and read as clutter).
+      const [feedbackOpen, setFeedbackOpen] = React.useState(false)
+      const [feedbackDraft, setFeedbackDraft] = React.useState({ kind: 'bug', title: '', body: '', contact: '' })
+      const [feedbackStatus, setFeedbackStatus] = React.useState('idle')
+      const [feedbackError, setFeedbackError] = React.useState('')
+      // Editing is write-only: the saved address is never sent back to this page
+      // (the Host strips it from `/state`), so the form can only replace it.
+      const feedbackInfo = state.capabilities?.feedback ?? null
+      const feedbackSmtp = feedbackInfo?.smtp ?? null
+      const feedbackLimits = feedbackInfo?.limits ?? {
+        titleMin: 4, titleMax: 120, bodyMin: 10, bodyMax: 4000, contactMax: 120,
+      }
       const [notifyPerm, setNotifyPerm] = React.useState(
         typeof notificationPermission === 'function' ? notificationPermission() : 'unsupported')
       const config = state.config
@@ -4361,6 +4729,70 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         h('label', null, label),
         control,
         hint !== undefined ? h('span', { className: 'dsa-muted' }, hint) : null)
+
+      // ── feedback actions ───────────────────────────────────────────────
+      const feedbackUserAgent = typeof navigator === 'undefined' ? '' : String(navigator.userAgent ?? '')
+
+      const submitFeedback = async () => {
+        if (feedbackStatus === 'sending') return
+        const verdict = validateFeedbackDraft(feedbackDraft, feedbackLimits)
+        if (verdict.ok !== true) {
+          setFeedbackStatus('error')
+          setFeedbackError(t(verdict.key, { n: feedbackLimits.contactMax ?? FEEDBACK_DEFAULTS.contactMax }))
+          return
+        }
+        setFeedbackStatus('sending')
+        setFeedbackError('')
+        try {
+          await postJson('feedback', {
+            kind: feedbackDraft.kind,
+            title: feedbackDraft.title.trim(),
+            body: feedbackDraft.body.trim(),
+            contact: feedbackDraft.contact.trim(),
+          })
+          setFeedbackStatus('sent')
+          setFeedbackDraft({ kind: feedbackDraft.kind, title: '', body: '', contact: '' })
+        } catch (error) {
+          setFeedbackStatus('error')
+          setFeedbackError(t('feedbackFailed', { message: localizeError(error) }))
+        }
+      }
+
+      /**
+       * Fallback that needs no credentials: hand the draft to the mail app.
+       *
+       * The URL is built by the Host — deliberately, so the plaintext recipient
+       * is never held or rendered by this page. If the Host has no recipient,
+       * it answers 503 and the failure is shown like any other.
+       */
+      const sendFeedbackByMailApp = async () => {
+        try {
+          const value = await postJson('feedback-mailto', {
+            kind: feedbackDraft.kind,
+            title: feedbackDraft.title.trim(),
+            body: feedbackDraft.body.trim(),
+            contact: feedbackDraft.contact.trim(),
+            userAgent: feedbackUserAgent,
+          })
+          const url = typeof value?.url === 'string' ? value.url : ''
+          if (url === '') throw new Error('no mailto url')
+          if (typeof window !== 'undefined' && typeof window.open === 'function') window.open(url, '_self')
+          else if (typeof location !== 'undefined') location.href = url
+        } catch (error) {
+          setFeedbackStatus('error')
+          setFeedbackError(t('feedbackFailed', { message: localizeError(error) }))
+        }
+      }
+
+      const copyFeedbackDraft = async () => {
+        const text = feedbackPlainTextFor({
+          version: state.version ?? CLIENT_VERSION,
+          draft: feedbackDraft,
+          userAgent: feedbackUserAgent,
+        })
+        const result = await copyText(text, null)
+        toast(result === 'copied' ? t('feedbackCopied') : t('copyFailed'))
+      }
 
       const select = (key, options) => h('select', {
         className: 'dsa-input',
@@ -4588,6 +5020,45 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           ? h('div', { className: 'dsa-family-notice', role: 'status' }, t('familyLegacyToast'))
           : null)
 
+      // ── feedback entry ─────────────────────────────────────────────────
+      // One compact banner at the very top of the page, and a dialog for the
+      // form. Nothing else about feedback lives on this page: the transport is
+      // the Host's business (environment / user config), so an end user has
+      // nothing to fill in before writing a report. The banner also works when
+      // no SMTP endpoint is configured — the `mailto:` path needs nothing but a
+      // recipient — so the dialog says that in one line instead of looking broken.
+      const feedbackConfigured = feedbackInfo !== null && feedbackInfo.configured === true
+      const feedbackBanner = h('div', { className: 'dsa-feedback-bar', 'data-dsa-feedback-section': '' },
+        h('div', { className: 'dsa-feedback-bar-text' },
+          h('div', { className: 'dsa-feedback-bar-title' }, t('setFeedback')),
+          h('div', { className: 'dsa-feedback-bar-hint' }, t('setFeedbackHint'))),
+        h('button', {
+          type: 'button',
+          className: 'dsa-btn dsa-btn-primary',
+          'data-feedback-open': '',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': feedbackOpen ? 'true' : 'false',
+          onClick: () => setFeedbackOpen(true),
+        }, t('feedbackOpen')))
+
+      const feedbackDialog = feedbackOpen !== true
+        ? null
+        : h(FeedbackDialog, {
+          t,
+          limits: feedbackLimits,
+          draft: feedbackDraft,
+          onChange: patch => setFeedbackDraft({ ...feedbackDraft, ...patch }),
+          status: feedbackStatus,
+          error: feedbackError,
+          ready: feedbackConfigured,
+          reason: String(feedbackInfo?.reason ?? ''),
+          hasRecipient: feedbackInfo?.hasRecipient === true,
+          onClose: () => setFeedbackOpen(false),
+          onSubmit: () => { void submitFeedback() },
+          onMailto: sendFeedbackByMailApp,
+          onCopy: () => { void copyFeedbackDraft() },
+        })
+
       // NOT marked `data-dsa-rail-host`: the settings page is not a rail page,
       // and marking it would let the floating layer dock over the settings panel.
       return h('div', { className: 'dsa-settings', 'data-dsa-root': '' },
@@ -4595,6 +5066,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         h('div', null,
           h('div', { className: 'dsa-title' }, t('settingsTitle')),
           h('div', { className: 'dsa-muted' }, t('settingsDesc'))),
+        feedbackBanner,
         familyBanner,
         h('div', { className: 'dsa-grid' },
           field(t('setTrigger'), select('trigger', [
@@ -4753,7 +5225,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 h('div', { key: 'sidecard' }, `${t('diagSidecard')}: ${describeSurfaces()}`),
                 h('div', { key: 'path' }, `${t('settingsTitle')} → ${diag.provenance?.persistedPath ?? ''}`),
               ])
-          : null)
+          : null,
+        feedbackDialog)
     }
 
     /** Session probe: an invisible entry in the composer tool row. */
@@ -5491,6 +5964,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               problems: value.problems ?? [],
               provenance: value.provenance ?? null,
             })
+            // Readiness hints (the feedback card's "缺的只是发信凭据", the surface
+            // list, → live in `capabilities`, which only `/state` reports. Without
+            // this refresh the page kept telling the user the transport was
+            // missing right after they had saved it.
+            try {
+              await refreshState()
+            } catch {
+              // The save itself succeeded; a failed re-read must not undo that.
+            }
             return value
           },
           async resetConfig() {
@@ -6272,6 +6754,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       },
 
       /**
+       * Test seam: components that can be rendered on their own. The feedback
+       * dialog lives here because the settings page mounts it only while open and
+       * the test shim has no working setState, so a simulated click cannot reach
+       * it.
+       */
+      components: Object.freeze({ FeedbackDialog }),
+
+      /**
        * Test seam: pure helpers, frozen. The DSH client runtime only reads
        * `inject`/`apply`; `test/*.mjs` loads this file with a synthetic
        * `window` and exercises these without a browser.
@@ -6294,6 +6784,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           quickActionsOf,
           renderActionQuestion,
           validateQuickActionsDraft,
+          validateFeedbackDraft,
+          feedbackSubjectFor,
+          feedbackPlainTextFor,
+            FEEDBACK_DEFAULTS,
           shortcutFingerprint,
           followUpChips,
           formatElapsed,
