@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.8.3'
+    const CLIENT_VERSION = '1.8.4'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -2052,12 +2052,28 @@ window.__ModuleLoader__.load({
   font-family:inherit;white-space:nowrap}
 .dsa-trigger:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
 .dsa-trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4c8dff);outline-offset:1px}
-/* The one-click action bar: the trigger button plus compact chips, laid out
-   in one wrapping row under the selection. The container is positioned by the
-   component; chips keep their own pointer-events because .dsa-layer is a
-   click-through layer. */
-.dsa-quickbar{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:6px;
-  max-width:min(620px, 92vw);flex-wrap:wrap;z-index:60}
+/* The one-click action bar: the main ask button plus the quick chips, inside ONE
+   rounded surface. Six bordered pills in a row read as six competing actions —
+   no primary, no grouping — so the bar is a single control: a filled brand
+   button for "ask", a hairline separator, then quiet ghost chips. It wraps
+   instead of clipping (the component also caps its width to the viewport). */
+.dsa-quickbar{pointer-events:auto;position:fixed;display:inline-flex;align-items:center;
+  gap:2px;row-gap:2px;padding:3px;border-radius:12px;flex-wrap:wrap;z-index:60;
+  border:1px solid rgba(127,127,127,.5);
+  background:var(--dsw-alias-bg-overlay, #fff);
+  box-shadow:0 6px 20px rgba(0,0,0,.16), 0 1px 3px rgba(0,0,0,.10)}
+.dsa-quickbar .dsa-trigger-embedded{position:static;border:0;border-radius:9px;
+  padding:4px 10px;font-weight:600;box-shadow:none;
+  background:var(--dsw-alias-brand-primary, #4c8dff);color:#fff}
+.dsa-quickbar .dsa-trigger-embedded:hover{border-color:transparent;filter:brightness(1.06)}
+/* Dark brand (#5b9cf5 on the bundled skin) puts white at 2.79:1 — below the 4.5:1
+   body-text floor. Dark ink measures 6.57:1, same remedy as the carrier switch. */
+html[data-ds-dark-theme] .dsa-quickbar .dsa-trigger-embedded,
+body[data-ds-dark-theme] .dsa-quickbar .dsa-trigger-embedded{color:#0a1428}
+/* A hairline between "do the main thing" and "or pick a canned question". */
+.dsa-quickbar-sep{flex:none;align-self:center;width:1px;height:15px;margin:0 2px;
+  background:var(--dsw-alias-border-l1, rgba(127,127,127,.28))}
+.dsa-quickbar-chips{display:contents}
 .dsa-chip{pointer-events:auto;padding:3px 10px;border-radius:999px;
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
@@ -2065,6 +2081,14 @@ window.__ModuleLoader__.load({
   box-shadow:0 2px 8px rgba(0,0,0,.14)}
 .dsa-chip:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
 .dsa-chip:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4c8dff);outline-offset:1px}
+/* Inside the action bar the chips lose their own frame: the bar is the frame.
+   Secondary text colour keeps them quieter than the filled ask button while
+   still clearing 6:1 on the bundled skin (label-secondary 9.36:1 in dark). */
+.dsa-quickbar .dsa-chip{border:0;background:transparent;box-shadow:none;
+  padding:3px 8px;border-radius:7px;color:var(--dsw-alias-label-secondary, #666)}
+.dsa-quickbar .dsa-chip:hover{background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14));
+  color:var(--dsw-alias-label-primary, #111)}
+.dsa-quickbar .dsa-chip:focus-visible{outline-offset:0}
 /* Chips rendered INSIDE the popover need no floating shadow. */
 .dsa-pop-chips{display:flex;gap:6px;flex-wrap:wrap}
 .dsa-pop-chips .dsa-chip{box-shadow:none}
@@ -3440,12 +3464,23 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         (sum, action) => sum + Math.ceil(estimateLabelWidth(action.label) + 24), 0)
       const rowWidth = Math.min(620, mainWidth + (actions.length > 0 ? 6 + chipsWidth : 0))
       const box = clampBox(candidate.rect, rowWidth, 34, 'below')
+      // The estimate above is a clamp input, not a promise: if it is wrong the
+      // bar must wrap, never spill past the frame edge. Cap its width to the
+      // space actually left of it (and still to 620px, which is about as wide
+      // as an action bar stays readable).
+      const viewportWidth = (typeof window !== 'undefined' && Number.isFinite(window.innerWidth))
+        ? window.innerWidth
+        : 0
+      const room = viewportWidth > 0 ? Math.max(220, viewportWidth - box.left - 8) : 620
       return h('div', {
         className: 'dsa-quickbar',
-        style: { left: `${box.left}px`, top: `${box.top}px` },
+        style: { left: `${box.left}px`, top: `${box.top}px`, maxWidth: `${Math.min(620, room)}px` },
         onMouseDown: event => event.stopPropagation(),
       },
         h(TriggerButton, { candidate, onOpen, embedded: true }),
+        actions.length > 0
+          ? h('span', { key: 'sep', className: 'dsa-quickbar-sep', 'aria-hidden': true })
+          : null,
         h(QuickChips, { actions, onPick: onQuick, inline: true }))
     }
 

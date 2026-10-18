@@ -1121,6 +1121,24 @@ report.equal(
   report.equal(byClass(barTree, 'dsa-pop').length, 0, 'the bar renders without opening the popover')
   report.equal(byClass(barTree, 'dsa-trigger').length, 1, 'the bar contains the main trigger button')
   report.equal(byClass(barTree, 'dsa-chip').length, 5, 'the bar offers the five built-in chips')
+  // One bar, one primary action: the container groups the ask button and the
+  // chips behind a hairline separator, and the chips themselves are quiet
+  // (the bar is the frame, not each chip).
+  report.equal(byClass(barTree, 'dsa-quickbar-sep').length, 1, 'one hairline separates the ask button from the chips')
+  report.equal(byClass(barTree, 'dsa-quickbar-chips').length, 1, 'the chips sit in their own group')
+  report.ok(byClass(barTree, 'dsa-trigger-embedded').length === 1, 'the ask button is the embedded variant inside the bar')
+  // The bar must never be wider than the room it has: the component caps its
+  // own width instead of trusting the placement estimate alone.
+  const barNode = byClass(barTree, 'dsa-quickbar')[0]
+  report.ok(typeof barNode?.props?.style?.maxWidth === 'string', 'the bar caps its own width to the available room')
+  // One surface, one primary action: frame on the bar, fill on the ask button,
+  // quiet chips inside it.
+  const barCss = (byTag(barTree, 'style').find(node => node.props['data-dsa-style'] !== undefined)?.children ?? []).join('')
+  report.ok(/\.dsa-quickbar\{[^}]*border-radius:12px/.test(barCss), 'the bar is a single rounded surface')
+  report.ok(/\.dsa-quickbar \.dsa-trigger-embedded\{[^}]*background:var\(--dsw-alias-brand-primary/.test(barCss), 'the ask button is the filled primary action')
+  report.ok(/\.dsa-quickbar \.dsa-chip\{[^}]*border:0/.test(barCss), 'chips inside the bar drop their own frame')
+  report.ok(barCss.includes('.dsa-quickbar-sep{'), 'the stylesheet declares the hairline separator')
+  report.ok(barCss.includes('[data-ds-dark-theme] .dsa-quickbar .dsa-trigger-embedded'), 'dark themes ink the primary label instead of betting on white')
   // Chip title carries the instruction text, so hover reveals what fires.
   const explainChip = byClass(barTree, 'dsa-chip').find(node => textOf(node) === '解释')
   report.ok(typeof explainChip?.props?.title === 'string' && explainChip.props.title.length > 0, 'a chip carries its question as its title')
