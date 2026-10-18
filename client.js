@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.8.1'
+    const CLIENT_VERSION = '1.8.2'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -1919,10 +1919,17 @@ window.__ModuleLoader__.load({
    trigger drops its own fixed positioning, chips join the row directly. */
 .dsa-trigger-embedded{position:static;box-shadow:0 2px 10px rgba(0,0,0,.18)}
 .dsa-quickbar-chips{display:contents}
+/* Contrast pass, driven by a light-theme reference screenshot: every 1px edge
+   inside the popover measured only ≈1.3–1.7:1 against the card surface, which
+   is why the card read as a translucent sticker instead of a framed popover.
+   The frame is therefore drawn explicitly here rather than through border-l2,
+   which the host resolves below that level; mid grey is used instead of a
+   black/white alpha so the stroke stays visible on both themes. The shadow is
+   a two-layer falloff so the card lifts off the page as well. */
 .dsa-pop{pointer-events:auto;position:fixed;width:min(420px, 92vw);display:flex;flex-direction:column;gap:8px;
-  padding:12px;border-radius:12px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  padding:12px;border-radius:12px;border:1px solid rgba(127,127,127,.55);
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
-  box-shadow:0 10px 30px rgba(0,0,0,.24);font-size:13px;line-height:19px}
+  box-shadow:0 14px 36px rgba(0,0,0,.30),0 3px 10px rgba(0,0,0,.14);font-size:13px;line-height:19px}
 .dsa-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsa-title{font-weight:600;font-size:13px}
 .dsa-quote{margin:0;padding:6px 8px;max-height:96px;overflow:auto;white-space:pre-wrap;word-break:break-word;
@@ -1946,11 +1953,43 @@ window.__ModuleLoader__.load({
 /* Icon-only variant (the floating layer's collapse/hide controls): square and
    quiet so the card title bar stays one line and the title keeps the weight. */
 .dsa-btn-icon{padding:4px 7px;line-height:1;font-size:13px;color:var(--dsw-alias-label-secondary, #666)}
-.dsa-seg{display:inline-flex;border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));border-radius:8px;overflow:hidden}
-.dsa-seg button{padding:3px 10px;border:none;background:transparent;color:var(--dsw-alias-label-secondary, #555);
-  font:inherit;font-size:12px;cursor:pointer}
-.dsa-seg button[data-on="true"]{background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14));
-  color:var(--dsw-alias-label-primary, #111);font-weight:500}
+/* Segmented control (main chat / side card). These are the two destinations an
+   answer can land in, so the pair has to read as a radio choice, not as two
+   quiet labels: the group gets a recessed track with an explicit mid-grey edge
+   (border-l1/l2 measured ≈1.3:1 against the popover surface and disappeared),
+   each option carries a 13px label plus an inline glyph, and the selected side
+   is a solid brand chip whose white 600-weight text cannot be confused with the
+   unselected side. The inner white ring keeps the chip from flattening on the
+   brand colour in either theme. */
+.dsa-seg{display:inline-flex;padding:3px;gap:3px;
+  border:1px solid rgba(127,127,127,.5);border-radius:10px;
+  background:var(--dsw-alias-bg-layer-1, rgba(127,127,127,.10));
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.10)}
+.dsa-seg button{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;
+  border:1px solid transparent;border-radius:7px;background:transparent;
+  color:var(--dsw-alias-label-secondary, #666);font:inherit;font-size:13px;font-weight:500;
+  line-height:18px;cursor:pointer;white-space:nowrap;
+  transition:background .12s ease,color .12s ease,box-shadow .12s ease}
+.dsa-seg button svg{flex:none;opacity:.8}
+.dsa-seg button:hover{background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.16));
+  color:var(--dsw-alias-label-primary, #222)}
+.dsa-seg button:hover svg{opacity:1}
+.dsa-seg button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary, #4c8dff);outline-offset:1px}
+.dsa-seg button[data-on="true"]{background:var(--dsw-alias-brand-primary, #4c8dff);
+  border-color:var(--dsw-alias-brand-primary, #4c8dff);color:#fff;font-weight:600;
+  box-shadow:0 1px 4px rgba(0,0,0,.22),inset 0 0 0 1px rgba(255,255,255,.22)}
+.dsa-seg button[data-on="true"] svg{opacity:1}
+.dsa-seg button[data-on="true"]:hover{background:var(--dsw-alias-brand-primary, #4c8dff);color:#fff}
+/* Dark themes lighten the brand accent (the local skin goes #2563c0 -> #5b9cf5),
+   where white 600 text on the chip measures 2.79:1 — below the 4.5:1 floor for
+   body text and below even the 3:1 large-text floor. Invert the on-brand label
+   there instead of betting on one fixed foreground.
+   DSH flags dark mode with [data-ds-dark-theme] on the root element. */
+html[data-ds-dark-theme] .dsa-seg button[data-on="true"],
+body[data-ds-dark-theme] .dsa-seg button[data-on="true"],
+html[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover,
+body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
+  color:#0a1428;text-shadow:0 1px 0 rgba(255,255,255,.25)}
 .dsa-card{pointer-events:auto;display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
@@ -2014,6 +2053,13 @@ window.__ModuleLoader__.load({
 .dsa-code{padding:0 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12));
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .dsa-muted{color:var(--dsw-alias-label-secondary, #666);font-size:11px;line-height:16px}
+/* Same contrast pass, applied to the popover's body copy: label-secondary
+   measures ≈6:1 here and reads washed out at 11–13px. Secondary text inside
+   .dsa-pop is re-derived from the primary label token instead, held one step
+   quieter than the title through opacity so the hierarchy survives. */
+.dsa-pop .dsa-quote,
+.dsa-pop .dsa-muted{color:var(--dsw-alias-label-primary, #111)}
+.dsa-pop .dsa-muted{opacity:.78}
 .dsa-error{color:var(--dsw-alias-state-error-primary, #c0392b);font-size:12px}
 .dsa-toast{pointer-events:auto;position:fixed;left:50%;transform:translateX(-50%);bottom:24px;padding:6px 12px;
   border-radius:999px;font-size:12px;background:var(--dsw-alias-bg-overlay, #222);
@@ -3260,6 +3306,43 @@ window.__ModuleLoader__.load({
         }, h('span', null, action.label))))
     }
 
+    /** Where the answer should land: the main conversation, or an independent
+     *  side card. Rendered as a two-chip switch with an inline glyph per option
+     *  so the pair is scannable at a glance, and the selected chip is painted
+     *  with the brand fill (see .dsa-seg) instead of a whisper-grey tint. The
+     *  hint text moves into title/aria-label rather than a third line, because
+     *  the popover already has quote + chips + composer and a longer hint would
+     *  push the submit row out of view. */
+    function CarrierSeg({ value, onChange }) {
+      const glyph = path => h('svg', {
+        viewBox: '0 0 16 16', width: 13, height: 13, 'aria-hidden': 'true', focusable: 'false',
+      }, h('path', {
+        d: path, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3,
+        strokeLinejoin: 'round', strokeLinecap: 'round',
+      }))
+      const options = [
+        // speech balloon = the main conversation
+        { id: 'main', label: t('carrierMain'), hint: t('carrierMainHint'),
+          icon: glyph('M2.5 3.5h11v8H8.4L5.2 14.3V11.5H2.5z') },
+        // frame with a rail on the right = a card docked in the side panel
+        { id: 'side', label: t('carrierSide'), hint: t('carrierSideHint'),
+          icon: glyph('M2.5 3.5h11v9h-11zM10 3.5v9') },
+      ]
+      return h('div', {
+        className: 'dsa-seg', role: 'group', 'aria-label': t('carrier'),
+      }, options.map(option => {
+        const on = value === option.id
+        return h('button', {
+          key: option.id,
+          type: 'button',
+          'data-on': String(on),
+          'aria-pressed': String(on),
+          title: option.hint,
+          onClick: () => onChange(option.id),
+        }, option.icon, option.label)
+      }))
+    }
+
     /** The question popover. */
     function AskPopover({ candidate, config, onClose, onSubmit, onQuick }) {
       const [question, setQuestion] = React.useState('')
@@ -3341,19 +3424,7 @@ window.__ModuleLoader__.load({
       }),
       h('div', { className: 'dsa-row' },
         h('span', { className: 'dsa-muted' }, t('carrier')),
-        h('div', { className: 'dsa-seg' },
-          h('button', {
-            type: 'button',
-            'data-on': String(carrier === 'main'),
-            title: t('carrierMainHint'),
-            onClick: () => setCarrier('main'),
-          }, t('carrierMain')),
-          h('button', {
-            type: 'button',
-            'data-on': String(carrier === 'side'),
-            title: t('carrierSideHint'),
-            onClick: () => setCarrier('side'),
-          }, t('carrierSide')))),
+        h(CarrierSeg, { value: carrier, onChange: setCarrier })),
       h('div', { className: 'dsa-row', style: { justifyContent: 'flex-end' } },
         h('span', { className: 'dsa-muted', style: { marginRight: 'auto' } },
           t('askShortcutHint', { key: config.shortcut })),

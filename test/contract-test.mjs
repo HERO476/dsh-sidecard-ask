@@ -983,6 +983,63 @@ report.equal(
   for (const label of ['解释', '翻译', '总结', '润色', '纠错']) {
     report.ok(textOf(popoverWithChips).includes(label), `the popover offers the "${label}" chip`)
   }
+
+  // The carrier switch ("主对话 / 侧边卡片"). It used to be two flat labels whose
+  // only selected-state cue was a grey tint on the popover surface, which the
+  // user reported as "看不出选中哪个". The structure is pinned here so a later
+  // restyle cannot quietly regress it back to two unlabelled buttons.
+  {
+    const isButton = child => child?.__element === true && child.type === 'button'
+    const segOptions = tree => (byClass(tree, 'dsa-seg')[0].children ?? []).filter(isButton)
+    const segs = byClass(popoverWithChips, 'dsa-seg')
+    report.equal(segs.length, 1, 'the popover renders exactly one carrier switch')
+    report.equal(segs[0].props.role, 'group', 'the carrier switch exposes a group role')
+
+    const options = segOptions(popoverWithChips)
+    report.equal(options.length, 2, 'the carrier switch offers exactly two destinations')
+    report.equal(
+      options.filter(option => option.props['aria-pressed'] === 'true').length,
+      1,
+      'exactly one carrier destination is exposed as pressed',
+    )
+    for (const option of options) {
+      report.equal(
+        (option.children ?? []).filter(child => child?.__element === true && child.type === 'svg').length,
+        1,
+        'every carrier destination carries an inline glyph',
+      )
+      report.ok(
+        typeof option.props.title === 'string' && option.props.title.length > 0,
+        'every carrier destination explains itself in a title',
+      )
+    }
+
+    // Clicking the unpressed side must move the pressed state. The shim's
+    // useState does not re-render (it hands back a queued setter), so the flip
+    // itself cannot be observed here — what is observable, and what actually
+    // broke for the user, is the wiring and the text/icon inside each option.
+    const flags = options.map(option => option.props['data-on'])
+    report.equal(flags.filter(flag => flag === 'true').length, 1, 'exactly one carrier destination is painted as selected')
+    for (const option of options) {
+      report.ok(typeof option.props.onClick === 'function', 'every carrier destination is clickable')
+    }
+    report.ok(textOf(options[0]).includes('主对话'), 'the first option is the main-chat destination')
+    report.ok(textOf(options[1]).includes('侧边卡片'), 'the second option is the side-card destination')
+    report.ok(!textOf(options[0]).includes('侧边卡片'), 'the two destination labels are not swapped')
+
+    // The selected chip has to be visibly selected, and the on-brand label has
+    // to survive a dark theme where the brand accent is a light tint.
+    const styleNode = byTag(popoverWithChips, 'style').find(node => node.props['data-dsa-style'] !== undefined)
+    const cssText = styleNode?.children?.join('') ?? ''
+    report.ok(
+      /\.dsa-seg button\[data-on="true"\]\{[^}]*background:var\(--dsw-alias-brand-primary/.test(cssText),
+      'the selected carrier chip is filled with the brand colour',
+    )
+    report.ok(
+      cssText.includes('[data-ds-dark-theme] .dsa-seg button[data-on="true"]'),
+      'dark themes invert the on-brand label instead of betting on white text',
+    )
+  }
   mainActions.closePopover()
   const idleAgain = expandTree(overlay.component())
   report.equal(byClass(idleAgain, 'dsa-quickbar').length, 0, 'closing the popover leaves no trigger bar without a selection')
