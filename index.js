@@ -44,7 +44,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.9.1'
+export const PLUGIN_VERSION = '1.9.2'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -2089,6 +2089,36 @@ export function apply(ctx, patchConfig) {
     return Array.isArray(hosts) ? hosts.filter(host => typeof host === 'string') : []
   }
 
+  /**
+   * `/archived` — session ids the Workspace registry currently reports as
+   * archived (1.9.2).
+   *
+   * The Client keeps its durable follow-up history partitioned by session and
+   * must hide a session's records once that session is archived. The Client
+   * session summary has no `archived` field, so this small read-only route is
+   * the only sanctioned way to obtain the set without opening sessions. A Host
+   * whose registry cannot be read returns an empty array, which degrades to
+   * "hide nothing" rather than guessing.
+   */
+  const handleArchived = (res) => {
+    // The engine factory has its own `archivedSessionIds()` probe; this route
+    // lives in `apply()`, so it reads the same registry shape here. A registry
+    // that cannot be read yields an empty list (never a guess).
+    let ids = []
+    try {
+      const registry = ctx.get('workspaceRegistry')
+      const raw = registry?.archivedSessionIds
+      if (raw instanceof Set) ids = [...raw]
+      else if (Array.isArray(raw)) ids = raw
+      else if (raw !== null && typeof raw === 'object' && typeof raw[Symbol.iterator] === 'function') ids = [...raw]
+    } catch { ids = [] }
+    writeOk(res, {
+      archivedSessionIds: ids
+        .filter(id => typeof id === 'string' && id !== '')
+        .sort(),
+    })
+  }
+
   /** `/state` — the Client's single source of truth at boot and after a save. */
   const handleState = (res) => {
     // Two secrets never reach the page: the recipient stays server-side (the page
@@ -2338,7 +2368,7 @@ export function apply(ctx, patchConfig) {
    * The HTTP methods the plugin serves; kept in one place because the route
    * registration has two shapes (see below).
    */
-  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback', 'feedback-mailto']
+  const API_METHODS = ['state', 'archived', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback', 'feedback-mailto']
 
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
@@ -2354,12 +2384,13 @@ export function apply(ctx, patchConfig) {
       writeError(res, 404, 'not-found', `未知接口 "${method}"`)
       return
     }
-    if (method === 'state') {
+    if (method === 'state' || method === 'archived') {
       if (req.method !== 'GET' && req.method !== 'POST') {
         writeError(res, 405, 'method-error', 'method not allowed')
         return
       }
-      handleState(res)
+      if (method === 'state') handleState(res)
+      else handleArchived(res)
       return
     }
     if (req.method !== 'POST') {
