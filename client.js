@@ -1919,13 +1919,18 @@ window.__ModuleLoader__.load({
    trigger drops its own fixed positioning, chips join the row directly. */
 .dsa-trigger-embedded{position:static;box-shadow:0 2px 10px rgba(0,0,0,.18)}
 .dsa-quickbar-chips{display:contents}
-/* Contrast pass, driven by a light-theme reference screenshot: every 1px edge
-   inside the popover measured only ≈1.3–1.7:1 against the card surface, which
-   is why the card read as a translucent sticker instead of a framed popover.
-   The frame is therefore drawn explicitly here rather than through border-l2,
-   which the host resolves below that level; mid grey is used instead of a
-   black/white alpha so the stroke stays visible on both themes. The shadow is
-   a two-layer falloff so the card lifts off the page as well. */
+/* Contrast pass on the popover frame. Measured against the card surface with the
+   bundled skin's tokens (bg-base .55 over white → bg-overlay .98): the inner 1px
+   edges drawn with border-l1 sit at ≈1.40:1, which is why the card read as a
+   translucent sticker rather than a framed popover. The outer frame drawn with
+   border-l2 was already ≈1.95:1 (light) / ≈2.88:1 (dark), so swapping it for mid
+   grey is a *hue* choice, not a contrast gain: mid grey .55 measures ≈1.96:1
+   light / ≈2.12:1 dark — neutral instead of blue-on-blue, and slightly weaker in
+   dark. Explicit mid grey is still used over border-l2 because the host may
+   resolve that alias to the surrounding fill; if a genuinely stronger frame is
+   wanted, grey .85 measures ≈3.03:1. The two-layer shadow is what lifts the card
+   off the page; secondary text inside the popover uses label-primary (6.11:1)
+   rather than label-secondary. */
 .dsa-pop{pointer-events:auto;position:fixed;width:min(420px, 92vw);display:flex;flex-direction:column;gap:8px;
   padding:12px;border-radius:12px;border:1px solid rgba(127,127,127,.55);
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
