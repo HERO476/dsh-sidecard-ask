@@ -988,7 +988,7 @@ report.equal(qaChecks, 5, 'each built-in row carries an enable checkbox')
 
 // P1 settings controls: background notification, context menu, history cap,
 // and the history-manager section shell.
-for (const label of ['完成后桌面通知', '选区右键菜单', '历史卡片保存数量', '历史追问卡片']) {
+for (const label of ['完成后桌面通知', '选区右键菜单', '每个会话保存的历史卡片数', '本会话的历史追问卡片']) {
   report.ok(settingsText.includes(label), `settings page renders the "${label}" control`)
 }
 report.ok(
@@ -1634,7 +1634,7 @@ console.log('\nP2 composer write-back (1.8.0)')
   let insertAccepted = true
   const probeEntry = clientCtx.find('conversation.input.right', pure.IDS.sessionProbe)
   expandTree(loadedClient.shim.React.createElement(probeEntry.component, {
-    sessionId: 'session-alpha',
+    sessionId: 'session-beta',
     inputActions: {
       captureInsertion: () => ({ draftRev: 1, start: 0, end: 0 }),
       insertText: (text) => { inserted.push(text); return insertAccepted },
@@ -2076,14 +2076,22 @@ console.log('\ncard persistence')
 // now mirrored into localStorage and replayed on boot — deterministically,
 // bounded, and degrading to "no history" on quota/corruption instead of
 // breaking startup.
-const PERSIST_KEY = 'dsh-sidecard-ask:cards:v3'
+const PERSIST_KEY = 'dsh-sidecard-ask:cards:v4'
+const PERSIST_V3_KEY = 'dsh-sidecard-ask:cards:v3'
 const PERSIST_V2_KEY = 'dsh-sidecard-ask:cards:v2'
 const PERSIST_LEGACY_KEY = 'dsh-sidecard-ask:cards:v1'
+/** Teach one loaded client its active session (what the composer probe does). */
+const setSession = (loaded, ctx, sessionId) => {
+  const probe = ctx.find('conversation.input.right', pure.IDS.sessionProbe)
+  expandTree(loaded.shim.React.createElement(probe.component, { sessionId }))
+  loaded.shim.flushEffects()
+}
 const sharedStorage = createLocalStorageStub()
 const persistCtx = makeClientCtx({})
 const persistClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
 persistClient.module.apply(persistCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
+setSession(persistClient, persistCtx, 'session-alpha')
 const persistOverlay = persistCtx.find('shell.overlay', pure.IDS.overlay)
 const persistActions = persistOverlay.component().props.actions
 persistActions.submit(
@@ -2099,9 +2107,10 @@ persistActions.submit(
 )
 await new Promise(resolve => setTimeout(resolve, 150))
 let stored = JSON.parse(sharedStorage.getItem(PERSIST_KEY))
-report.equal(stored.version, 3, 'history is written under the v3 schema')
+report.equal(stored.version, 4, 'history is written under the v4 schema')
 report.equal(stored.cards.length, 1, 'a finished card is mirrored into localStorage')
 report.equal(stored.cards[0]?.question, '会留下来吗？', 'the persisted card keeps its question')
+report.equal(stored.cards[0]?.sessionId, 'session-alpha', 'the persisted card records its session')
 report.equal(stored.cards[0]?.text, '**Pro** contract answer', 'the persisted card keeps the full answer')
 report.equal(stored.cards[0]?.status, 'done', 'only terminal cards are persisted')
 report.ok(typeof stored.cards[0]?.createdAt === 'number' && stored.cards[0].createdAt > 0, 'v3 entries carry a createdAt timestamp')
@@ -2134,15 +2143,21 @@ const reloadClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedSto
 const reloadCtx = makeClientCtx({})
 reloadClient.module.apply(reloadCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
+// 1.9.2: replay waits for the session probe instead of showing every stored
+// record on boot.
+report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'replay waits for the session probe')
+report.equal(reloadClient.module.api.snapshot().history.length, 2, 'both durable records are loaded (the closed one survives)')
+setSession(reloadClient, reloadCtx, 'session-alpha')
 const reloaded = reloadClient.module.api.snapshot().cards
-report.equal(reloaded.length, 1, 'a fresh page replays the persisted card once')
+report.equal(reloaded.length, 2, 'a fresh page replays the persisted cards once the session is known')
 report.equal(reloaded[0]?.question, '刷新后还在吗？', 'the replayed card keeps its question')
 report.equal(reloaded[0]?.text, '**Pro** contract answer', 'the replayed card keeps its answer')
 report.equal(reloaded[0]?.surface, 'flow', 'replayed cards come back on the flow stack')
 report.equal(reloaded[0]?.status, 'done', 'replayed cards are terminal, not "streaming"')
+report.equal(reloaded[0]?.sessionId, 'session-alpha', 'the replayed card keeps its session')
 const reloadOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
 const reloadTree = expandTree(reloadOverlay.component())
-report.equal(byClass(reloadTree, 'dsa-card').length, 1, 'the replayed card is visible on the flow stack')
+report.equal(byClass(reloadTree, 'dsa-card').length, 2, 'the replayed cards are visible on the flow stack')
 report.ok(textOf(reloadTree).includes('刷新后还在吗？'), 'the replayed card shows its question')
 
 // #6 manager actions: restore a closed card from history, then delete it
@@ -2151,11 +2166,10 @@ report.ok(textOf(reloadTree).includes('刷新后还在吗？'), 'the replayed ca
 const managerActions = reloadOverlay.component().props.actions
 const restorableId = reloadClient.module.api.snapshot().history[0]?.id
 report.ok(typeof restorableId === 'string' && restorableId !== '', 'history holds the reloaded card id')
-// Close it first so restore actually re-creates a live card.
-const liveReloaded = reloadClient.module.api.snapshot().cards[0]
-if (liveReloaded !== undefined) managerActions.close(liveReloaded)
-report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'the live card is closed')
-report.equal(reloadClient.module.api.snapshot().history.length, 1, 'closing does not drop durable history')
+// Close both so restore actually re-creates a live card.
+for (const card of [...reloadClient.module.api.snapshot().cards]) managerActions.close(card)
+report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'the live cards are closed')
+report.equal(reloadClient.module.api.snapshot().history.length, 2, 'closing does not drop durable history')
 const restoreOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
 report.equal(managerActions.restoreHistoryCard(restorableId), true, 'restoreHistoryCard re-creates the card')
 report.equal(reloadClient.module.api.snapshot().cards.length, 1, 'the restored card is live again')
@@ -2163,23 +2177,24 @@ report.equal(reloadClient.module.api.snapshot().cards[0]?.surface, 'flow', 'the 
 const restoredTree = expandTree(restoreOverlay.component())
 report.ok(textOf(restoredTree).includes('刷新后还在吗？'), 'the restored card renders its question')
 managerActions.deleteHistoryCard(restorableId)
-report.equal(reloadClient.module.api.snapshot().history.length, 0, 'deleteHistoryCard empties durable history')
+report.equal(reloadClient.module.api.snapshot().history.length, 1, 'deleteHistoryCard drops just that entry')
 report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'deleteHistoryCard also removes the live card')
-report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the deletion is persisted immediately')
+report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 1, 'the deletion is persisted immediately')
 
 // clearHistory removes the durable key even without live cards.
 sharedStorage.setItem(PERSIST_KEY, JSON.stringify({
-  version: 3,
-  cards: [{ id: 'only-one', question: 'q', text: 'a', status: 'done', createdAt: 1 }],
+  version: 4,
+  cards: [{ id: 'only-one', question: 'q', text: 'a', status: 'done', createdAt: 1, sessionId: 'session-alpha' }],
 }))
 const clearCtx = makeClientCtx({})
 const clearClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
 clearClient.module.apply(clearCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
+setSession(clearClient, clearCtx, 'session-alpha')
 const clearActions = clearCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
 report.equal(clearClient.module.api.snapshot().history.length, 1, 'the manager sees the seeded card')
 clearActions.clearHistory()
-report.equal(sharedStorage.getItem(PERSIST_KEY), null, 'clearHistory removes the current (v3) key')
+report.equal(sharedStorage.getItem(PERSIST_KEY), null, 'clearHistory removes the current (v4) key')
 report.equal(clearClient.module.api.snapshot().history.length, 0, 'clearHistory empties the manager view')
 
 // P0 (1.8.1): a clear must SURVIVE A RELOAD even when a legacy payload is still
@@ -2211,9 +2226,10 @@ report.equal(clearClient.module.api.snapshot().history.length, 0, 'clearHistory 
   report.equal(reloadedClearClient.module.api.snapshot().cards.length, 0, 'no card is replayed after a clear + reload')
 }
 
-// v1 → v3 migration: with no v3 (or v2) key, a legacy v1 payload is imported
-// once, replayed (createdAt 0 = unknown), and written out under v3; the v1 key
-// is left untouched for downgrades.
+// v1 → v4 migration: with no newer key, a legacy v1 payload is imported
+// once into the unscoped bucket (createdAt 0 = unknown) and written out under
+// v4; the v1 key is left untouched for downgrades. It is not replayed into a
+// session: 1.9.2 never attributes a legacy record to a conversation.
 const migrationStorage = createLocalStorageStub()
 migrationStorage.setItem(PERSIST_LEGACY_KEY, JSON.stringify({
   version: 1,
@@ -2223,17 +2239,18 @@ const migrationClient = loadClientModule({ fetchImpl: hostFetch, storage: migrat
 const migrationCtx = makeClientCtx({})
 migrationClient.module.apply(migrationCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
-report.equal(migrationClient.module.api.snapshot().cards.length, 1, 'a v1 payload is replayed on boot')
-report.equal(migrationClient.module.api.snapshot().cards[0]?.question, '旧版卡片', 'the migrated card keeps its question')
+report.equal(migrationClient.module.api.snapshot().cards.length, 0, 'a v1 payload is not attributed to a session on boot')
+report.equal(migrationClient.module.api.snapshot().history.length, 1, 'the v1 record is imported into history')
+report.equal(migrationClient.module.api.snapshot().history[0]?.question, '旧版卡片', 'the migrated record keeps its question')
 report.equal(migrationClient.module.api.snapshot().history[0]?.createdAt, 0, 'legacy entries carry createdAt 0 (unknown)')
-report.equal(migrationClient.module.api.snapshot().cards[0]?.versions.length, 0, 'a v1 card arrives with an empty version list')
+report.equal(migrationClient.module.api.snapshot().history[0]?.sessionId, null, 'legacy entries land in the unscoped bucket')
 const migratedEnvelope = JSON.parse(migrationStorage.getItem(PERSIST_KEY))
-report.equal(migratedEnvelope.version, 3, 'the import is written under the v3 key')
-report.equal(migratedEnvelope.cards[0]?.id, 'legacy-1', 'the v3 write carries the legacy entry')
+report.equal(migratedEnvelope.version, 4, 'the import is written under the v4 key')
+report.equal(migratedEnvelope.cards[0]?.id, 'legacy-1', 'the v4 write carries the legacy entry')
 report.ok(migrationStorage.getItem(PERSIST_LEGACY_KEY) !== null, 'the v1 key is left in place (non-destructive migration)')
 
-// v2 → v3 migration: the previous-generation key is read (its entries have no
-// `versions`), the payload is rewritten under v3, and the v2 key stays put.
+// v2 → v4 migration: the previous-generation key is read (its entries have no
+// `versions`), the payload is rewritten under v4, and the v2 key stays put.
 const v2Storage = createLocalStorageStub()
 v2Storage.setItem(PERSIST_V2_KEY, JSON.stringify({
   version: 2,
@@ -2245,18 +2262,19 @@ const v2Client = loadClientModule({ fetchImpl: hostFetch, storage: v2Storage, la
 const v2Ctx = makeClientCtx({})
 v2Client.module.apply(v2Ctx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
-report.equal(v2Client.module.api.snapshot().cards.length, 1, 'a v2 payload is replayed on boot')
-report.equal(v2Client.module.api.snapshot().cards[0]?.text, '二代答案', 'the v2 answer survives the upgrade')
-report.equal(v2Client.module.api.snapshot().cards[0]?.versions.length, 0, 'a v2 card arrives with an empty version list')
-report.equal(JSON.parse(v2Storage.getItem(PERSIST_KEY))?.version, 3, 'the v2 import is written under v3')
+report.equal(v2Client.module.api.snapshot().cards.length, 0, 'a v2 payload is not replayed into a session')
+report.equal(v2Client.module.api.snapshot().history[0]?.text, '二代答案', 'the v2 answer survives the upgrade')
+report.equal(v2Client.module.api.snapshot().history[0]?.versions.length, 0, 'a v2 card arrives with an empty version list')
+report.equal(JSON.parse(v2Storage.getItem(PERSIST_KEY))?.version, 4, 'the v2 import is written under v4')
 report.ok(v2Storage.getItem(PERSIST_V2_KEY) !== null, 'the v2 key is left in place (non-destructive migration)')
 
-// A v3 payload that already carries versions keeps them switchable.
+// A v4 payload that already carries versions keeps them switchable.
 const v3Storage = createLocalStorageStub()
 v3Storage.setItem(PERSIST_KEY, JSON.stringify({
-  version: 3,
+  version: 4,
   cards: [{
     id: 'v3-card',
+    sessionId: 'session-alpha',
     question: '三代卡片',
     text: '最新答案',
     status: 'done',
@@ -2270,7 +2288,8 @@ const v3Client = loadClientModule({ fetchImpl: hostFetch, storage: v3Storage, la
 const v3Ctx = makeClientCtx({})
 v3Client.module.apply(v3Ctx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
-report.equal(v3Client.module.api.snapshot().cards[0]?.versions.length, 1, 'a v3 card keeps its stored versions')
+setSession(v3Client, v3Ctx, 'session-alpha')
+report.equal(v3Client.module.api.snapshot().cards[0]?.versions.length, 1, 'a stored card keeps its versions')
 report.equal(
   v3Client.module.api.snapshot().cards[0]?.versions[0]?.text,
   '旧答案',
@@ -2286,8 +2305,8 @@ report.equal(
 // nor surfaces history, while existing on-disk data is left alone.
 const noSaveStorage = createLocalStorageStub()
 noSaveStorage.setItem(PERSIST_KEY, JSON.stringify({
-  version: 3,
-  cards: [{ id: 'kept', question: '磁盘上保留', text: 'x', status: 'done', createdAt: 1 }],
+  version: 4,
+  cards: [{ id: 'kept', question: '磁盘上保留', text: 'x', status: 'done', createdAt: 1, sessionId: 'session-alpha' }],
 }))
 // Isolate DSH_HOME: earlier saveConfig calls in this file persisted a user
 // layer (historyMaxCards:10) into the shared temp home, which would override
@@ -2327,6 +2346,7 @@ const noSaveClient = loadClientModule({ fetchImpl: noSaveFetch, storage: noSaveS
 const noSaveCtx = makeClientCtx({})
 noSaveClient.module.apply(noSaveCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 100))
+setSession(noSaveClient, noSaveCtx, 'session-alpha')
 const noSaveActions = noSaveCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
 report.equal(noSaveClient.module.api.snapshot().config.historyMaxCards, 0, 'the zero cap is effective')
 noSaveActions.submit(
@@ -2343,9 +2363,10 @@ process.env.DSH_HOME = previousDshHome
 // Bounded replay: a tampered/oversized payload must never flood the store.
 sharedStorage.removeItem(PERSIST_KEY)
 sharedStorage.setItem(PERSIST_KEY, JSON.stringify({
-  version: 3,
+  version: 4,
   cards: Array.from({ length: 12 }, (_, index) => ({
     id: `fake-${index}`,
+    sessionId: 'session-alpha',
     question: `问题 ${index}`,
     text: '答案',
     status: 'done',
@@ -2356,10 +2377,11 @@ const floodCtx = makeClientCtx({})
 const floodClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
 floodClient.module.apply(floodCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
+setSession(floodClient, floodCtx, 'session-alpha')
 report.equal(
   floodClient.module.api.snapshot().cards.length,
   10,
-  'replay is capped at the persistence limit even for a hand-written payload',
+  'replay is capped at the per-session persistence limit even for a hand-written payload',
 )
 sharedStorage.setItem(PERSIST_KEY, 'not-json-at-all')
 const corruptCtx = makeClientCtx({})
@@ -2367,6 +2389,97 @@ const corruptClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedSt
 corruptClient.module.apply(corruptCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 report.equal(corruptClient.module.api.snapshot().cards.length, 0, 'corrupt history degrades to no history')
+
+// ── 1.9.2: history is partitioned by session, archived sessions are hidden ──
+console.log('\nsession-scoped history (1.9.2)')
+{
+  const partitionStorage = createLocalStorageStub()
+  partitionStorage.setItem(PERSIST_KEY, JSON.stringify({
+    version: 4,
+    cards: [
+      { id: 'a-done', sessionId: 'session-alpha', question: '阿尔法的问题', text: '阿尔法的答案', status: 'done', createdAt: 200 },
+      { id: 'b-done', sessionId: 'session-beta', question: '贝塔的问题', text: '贝塔的答案', status: 'done', createdAt: 100 },
+      { id: 'legacy', sessionId: null, question: '旧问题', text: '旧答案', status: 'done', createdAt: 50 },
+    ],
+  }))
+  const partitionCtx = makeClientCtx({})
+  const partitionClient = loadClientModule({ fetchImpl: hostFetch, storage: partitionStorage, language: 'zh-CN' })
+  partitionClient.module.apply(partitionCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const partitionOverlay = partitionCtx.find('shell.overlay', pure.IDS.overlay)
+  const partitionSettings = partitionCtx.find('settings.section', pure.IDS.settings)
+
+  setSession(partitionClient, partitionCtx, 'session-alpha')
+  report.equal(partitionClient.module.api.snapshot().cards.length, 1, 'session alpha replays only its own card')
+  report.equal(partitionClient.module.api.snapshot().cards[0]?.id, 'a-done', 'the replayed card belongs to alpha')
+  let tree = expandTree(partitionOverlay.component())
+  report.equal(byClass(tree, 'dsa-card').length, 1, 'only alpha cards are visible on the flow stack')
+  report.ok(textOf(tree).includes('阿尔法的问题'), 'alpha history is shown')
+  report.equal(textOf(tree).includes('贝塔的问题'), false, 'beta history is not leaked into alpha')
+  const alphaSettings = textOf(expandTree(partitionSettings.component()))
+  report.ok(alphaSettings.includes('阿尔法的问题'), 'the manager lists the current session')
+  report.equal(alphaSettings.includes('贝塔的问题'), false, 'the manager does not list another session')
+  report.equal(alphaSettings.includes('旧问题'), false, 'unscoped legacy records stay hidden once a session is known')
+
+  setSession(partitionClient, partitionCtx, 'session-beta')
+  report.equal(partitionClient.module.api.snapshot().cards.length, 2, 'switching sessions keeps the store but replays beta')
+  tree = expandTree(partitionOverlay.component())
+  report.equal(byClass(tree, 'dsa-card').length, 1, 'only beta cards are visible after the switch')
+  report.ok(textOf(tree).includes('贝塔的问题'), 'beta history is shown after the switch')
+  report.equal(textOf(tree).includes('阿尔法的问题'), false, 'alpha history is hidden after the switch')
+  const betaSettings = textOf(expandTree(partitionSettings.component()))
+  report.ok(betaSettings.includes('贝塔的问题'), 'the manager follows the active session')
+  report.equal(betaSettings.includes('阿尔法的问题'), false, 'the manager hides the previous session')
+
+  // Archived sessions: hide without deleting.
+  harness.services.workspaceRegistry = { archivedSessionIds: new Set(['session-alpha']) }
+  const archivedRoute = await callRoute(harness, '/archived', { method: 'GET' })
+  report.equal(archivedRoute.json().value.archivedSessionIds, ['session-alpha'], 'the host exposes archived session ids')
+
+  const archivedStorage = createLocalStorageStub()
+  archivedStorage.setItem(PERSIST_KEY, JSON.stringify({
+    version: 4,
+    cards: [
+      { id: 'archived-card', sessionId: 'session-alpha', question: '归档的问题', text: '归档的答案', status: 'done', createdAt: 10 },
+      { id: 'live-card', sessionId: 'session-beta', question: '未归档的问题', text: '未归档的答案', status: 'done', createdAt: 20 },
+    ],
+  }))
+  const archivedCtx = makeClientCtx({})
+  const archivedClient = loadClientModule({ fetchImpl: hostFetch, storage: archivedStorage, language: 'zh-CN' })
+  archivedClient.module.apply(archivedCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  setSession(archivedClient, archivedCtx, 'session-alpha')
+  await new Promise(resolve => setTimeout(resolve, 40))
+  report.equal(archivedClient.module.api.snapshot().archivedKnown, true, 'the client read the archived set')
+  report.equal(
+    archivedClient.module.api.snapshot().archivedSessionIds.includes('session-alpha'),
+    true,
+    'the archived session is recorded',
+  )
+  const archivedOverlay = archivedCtx.find('shell.overlay', pure.IDS.overlay)
+  const archivedTree = expandTree(archivedOverlay.component())
+  report.equal(byClass(archivedTree, 'dsa-card').length, 0, 'an archived session replays no cards')
+  const archivedSettings = textOf(expandTree(archivedCtx.find('settings.section', pure.IDS.settings).component()))
+  report.equal(archivedSettings.includes('归档的问题'), false, 'the manager hides an archived session')
+  const archivedActions = archivedOverlay.component().props.actions
+  report.equal(archivedActions.restoreHistoryCard('archived-card'), false, 'an archived record cannot be restored')
+  report.equal(
+    JSON.parse(archivedStorage.getItem(PERSIST_KEY)).cards.length,
+    2,
+    'hiding an archived session deletes nothing on disk',
+  )
+  // Unarchive: the same records become visible again on the next refresh.
+  harness.services.workspaceRegistry = { archivedSessionIds: new Set() }
+  archivedActions.refreshHistory()
+  await new Promise(resolve => setTimeout(resolve, 40))
+  report.equal(
+    archivedClient.module.api.snapshot().archivedSessionIds.length,
+    0,
+    'the unarchived set replaces the old one',
+  )
+  delete harness.services.workspaceRegistry
+}
+
 
 console.log('\nsurface fallback chain')
 // The same client module, applied to a composition with NO side-card plugin:

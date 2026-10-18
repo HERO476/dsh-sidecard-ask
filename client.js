@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.9.1'
+    const CLIENT_VERSION = '1.9.2'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -643,20 +643,24 @@ window.__ModuleLoader__.load({
         setContextMenuHint: '在可触发区域右键选中文字时，菜单顶部显示追问与快捷动作；若与宿主自身右键菜单冲突可关闭',
         setFollowUps: '答案末尾给出建议追问',
         setFollowUpsHint: '开启后模型会用 <followups> 块在答案末尾给出 2–3 个可点的下一步问题，点一下即追问（不额外发请求）',
-        setHistoryMax: '历史卡片保存数量',
-        setHistoryMaxHint: '0 = 不保存；上限 50 张，单卡文本最多 64K',
-        historyTitle: '历史追问卡片',
-        historyDesc: '已完成的侧边卡片保存在本浏览器中，可搜索、恢复到浮层或删除；清空浏览器数据会一并删除。',
+        setHistoryMax: '每个会话保存的历史卡片数',
+        setHistoryMaxHint: '0 = 不保存；每个会话上限 50 张，单卡文本最多 64K',
+        historyTitle: '本会话的历史追问卡片',
+        historyDesc: '只显示当前会话已完成的侧边卡片；会话归档后自动隐藏（不会删除），取消归档后重新出现。清空浏览器数据会一并删除。',
         historySearch: '搜索问题或答案…',
-        historyEmpty: '还没有历史卡片',
+        historyEmpty: '当前会话还没有历史卡片',
         historyRestore: '恢复',
         historyDelete: '删除',
         historyClear: '清空全部',
-        historyClearConfirm: '确定清空全部历史卡片吗？此操作不可撤销。',
+        historyClearConfirm: '确定清空全部会话的历史卡片吗？此操作不可撤销。',
         historyClearDone: '历史已清空',
         historyRestored: '已恢复到浮层',
         historyCount: '{n} 条',
         historyDeleted: '已删除',
+        historyArchived: '该会话已归档，这条追问记录已隐藏',
+        historyLegacyNote: '另有 {n} 条旧版本记录未关联会话（已隐藏）',
+        historyLegacyClear: '删除旧记录',
+        historyLegacyCleared: '旧记录已删除',
         cardKeysHint: '键盘：R 重试 · C 复制 · Esc 取消聚焦',
         setAnswerStyle: '回答风格',
         setAnswerStyleHint: '控制答案的详略与展开程度；不会改变“用提问的语言作答”这条规则',
@@ -928,20 +932,24 @@ window.__ModuleLoader__.load({
         setContextMenuHint: 'Right-clicking a qualifying selection shows Ask plus quick actions at the top of the menu; turn off if it conflicts with the host own menu',
         setFollowUps: 'Suggest follow-ups at the end',
         setFollowUpsHint: 'The model ends each answer with a <followups> block of 2–3 next questions, rendered as clickable chips (no extra request)',
-        setHistoryMax: 'Saved history cards',
-        setHistoryMaxHint: '0 = do not save; up to 50 cards, at most 64K text each',
-        historyTitle: 'History cards',
-        historyDesc: 'Finished side cards are kept in this browser; search, restore to the floating layer, or delete them. Clearing browser data removes them too.',
+        setHistoryMax: 'Saved cards per session',
+        setHistoryMaxHint: '0 = do not save; up to 50 cards per session, at most 64K text each',
+        historyTitle: 'This session\u2019s history cards',
+        historyDesc: 'Only finished side cards from the current session. Archiving that session hides them (nothing is deleted); unarchiving brings them back. Clearing browser data removes them too.',
         historySearch: 'Search questions or answers…',
-        historyEmpty: 'No history cards yet',
+        historyEmpty: 'No history cards in this session yet',
         historyRestore: 'Restore',
         historyDelete: 'Delete',
         historyClear: 'Clear all',
-        historyClearConfirm: 'Clear every history card? This cannot be undone.',
+        historyClearConfirm: 'Clear every session\u2019s history cards? This cannot be undone.',
         historyClearDone: 'History cleared',
         historyRestored: 'Restored to the floating layer',
         historyCount: '{n} cards',
         historyDeleted: 'Deleted',
+        historyArchived: 'That session is archived; this record stays hidden',
+        historyLegacyNote: '{n} legacy records are not linked to a session (hidden)',
+        historyLegacyClear: 'Delete legacy records',
+        historyLegacyCleared: 'Legacy records deleted',
         cardKeysHint: 'Keys: R retry · C copy · Esc unfocus',
         setAnswerStyle: 'Answer style',
         setAnswerStyleHint: 'Controls how much detail the answer carries; it never changes "answer in the question\u2019s language"',
@@ -1143,6 +1151,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * GET one small read-only Host route (1.9.2: `/archived`).
+     * @param {string} method - route name after the plugin prefix.
+     */
+    async function getJson(method) {
+      const response = await fetch(`${API}/${method}`, { method: 'GET' })
+      if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { code: `http-${response.status}` })
+      const body = await response.json()
+      if (body?.ok !== true) throw Object.assign(new Error('request failed'), { code: 'bad-response' })
+      return body.value
+    }
+
+    /**
      * Open the SSE ask stream and drive callbacks per event.
      * Split out from the React layer so a card owns no transport details.
      * @param {object} payload - the ask request.
@@ -1243,6 +1263,14 @@ window.__ModuleLoader__.load({
          */
         floatMode: null,
         sessionId: null,
+        /**
+         * Session ids the Host reports as archived (1.9.2). Their cards and
+         * history entries are hidden, not deleted: unarchiving the session
+         * brings the records back. Empty when the Host cannot answer.
+         */
+        archivedSessionIds: [],
+        /** Whether the last `/archived` read succeeded (diagnostics only). */
+        archivedKnown: false,
         trigger: null,
         popover: null,
         /** The custom selection context menu: {candidate, x, y} or null. */
@@ -1289,6 +1317,38 @@ window.__ModuleLoader__.load({
       const [, bump] = React.useReducer(count => count + 1, 0)
       React.useEffect(() => store.subscribe(bump), [])
       return store.state
+    }
+
+    /**
+     * Normalize a session reference to the key history is partitioned by.
+     * `null` is the unscoped bucket: entries created before this version or on
+     * a shell whose composer never exposes `sessionId`.
+     * @param {unknown} value
+     * @returns {string|null}
+     */
+    function sessionKey(value) {
+      return typeof value === 'string' && value !== '' ? value : null
+    }
+
+    /**
+     * Set by `apply()` so the session probe can run the full session switch
+     * (history replay, archive refresh) instead of only writing `sessionId`.
+     */
+    let sessionChangeHandler = null
+
+    /**
+     * Whether a card/history entry belongs to the current session.
+     *
+     * With no session known, the plugin cannot partition anything (older
+     * shells without the composer probe) and deliberately behaves like 1.9.1:
+     * the whole set is shown. That fallback is the only place the old global
+     * behaviour survives; as soon as the probe reports an id, the partition
+     * applies.
+     */
+    function inCurrentSession(item, sessionId) {
+      const current = sessionKey(sessionId)
+      if (current === null) return true
+      return sessionKey(item?.sessionId) === current
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2146,6 +2206,12 @@ window.__ModuleLoader__.load({
         surface: state.surface,
         zoneAnchors: state.zoneAnchors,
         sessionKnown: typeof state.sessionId === 'string' && state.sessionId !== '',
+        // 1.9.2: history is partitioned by session, and archived sessions are
+        // hidden through this Host-reported set. Both fields make a silent
+        // "everything still looks global" regression diagnosable from outside.
+        archivedKnown: state.archivedKnown === true,
+        archivedCount: Array.isArray(state.archivedSessionIds) ? state.archivedSessionIds.length : 0,
+        historyCount: Array.isArray(state.history) ? state.history.length : 0,
         slots: { ...state.slots },
         native: {
           available: surfaces.native.available(),
@@ -4271,7 +4337,18 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const dockRef = React.useRef(null)
       const state = useStoreState()
       const [dock, setDock] = React.useState(null)
-      const visible = cards.filter(card => card.surface === 'flow' && card.open)
+      // 1.9.2: the flow stack is session-scoped. Switching a conversation keeps
+      // the other cards in the store (a running stream must not be lost) but
+      // hides them here; archived sessions stay hidden until unarchived.
+      const archived = new Set(
+        Array.isArray(state.archivedSessionIds) ? state.archivedSessionIds : [],
+      )
+      const visible = cards.filter(card => (
+        card.surface === 'flow'
+        && card.open
+        && inCurrentSession(card, state.sessionId)
+        && !archived.has(sessionKey(card.sessionId))
+      ))
       const total = visible.length
       const mode = state.floatMode ?? state.config.floatMode ?? CLIENT_DEFAULTS.floatMode
       const maxWidth = state.config.floatMaxWidth ?? CLIENT_DEFAULTS.floatMaxWidth
@@ -4709,6 +4786,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 
       React.useEffect(() => { setDraft(config) }, [config])
 
+      // 1.9.2: the history section is session-scoped, so opening settings asks
+      // the Host for the current archived set before the list is trusted.
+      React.useEffect(() => {
+        if (typeof actions.refreshHistory === 'function') actions.refreshHistory()
+      }, [actions])
+
       // #5: enabling the toggle asks for the Notification permission
       // immediately, and the resulting verdict is shown beside the checkbox
       // so a denied toggle never looks silently broken.
@@ -4926,16 +5009,28 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         }
       }
 
-      // ── history manager (#6) ─────────────────────────────────────────
+      // ── history manager (#6, partitioned by session in 1.9.2) ─────────
       const zoneLabelOf = zone => (zone === 'chat' ? t('zoneChat') : zone === 'task' ? t('zoneTask') : t('zoneOther'))
+      const archivedIds = new Set(Array.isArray(state.archivedSessionIds) ? state.archivedSessionIds : [])
+      // Only the current session's completed cards. Unscoped legacy entries
+      // (imported from v1–v3) are deliberately NOT mixed in once a session is
+      // known: attributing them to whatever conversation is open is exactly the
+      // global-history leak this partition removes.
+      const sessionHistory = state.history.filter(entry => (
+        inCurrentSession(entry, state.sessionId)
+        && !archivedIds.has(sessionKey(entry.sessionId))
+      ))
+      const legacyCount = state.sessionId === null
+        ? 0
+        : state.history.filter(entry => sessionKey(entry.sessionId) === null).length
       const query = historyQuery.trim().toLowerCase()
       const filteredHistory = query === ''
-        ? state.history
-        : state.history.filter(entry =>
+        ? sessionHistory
+        : sessionHistory.filter(entry =>
           String(entry.question ?? '').toLowerCase().includes(query)
           || String(entry.text ?? '').toLowerCase().includes(query))
       const historySection = h('div', { className: 'dsa-field' },
-        h('label', null, `${t('historyTitle')}（${t('historyCount', { n: state.history.length })}）`),
+        h('label', null, `${t('historyTitle')}（${t('historyCount', { n: sessionHistory.length })}）`),
         h('span', { className: 'dsa-muted' }, t('historyDesc')),
         h('input', {
           className: 'dsa-input',
@@ -4943,7 +5038,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           placeholder: t('historySearch'),
           onChange: event => setHistoryQuery(event.target.value),
         }),
-        state.history.length === 0
+        sessionHistory.length === 0
           ? h('div', { className: 'dsa-muted' }, t('historyEmpty'))
           : h('div', { className: 'dsa-hist' },
             filteredHistory.length === 0 && query !== ''
@@ -4993,7 +5088,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 className: 'dsa-btn',
                 onClick: () => actions.deleteHistoryCard(entry.id),
               }, t('historyDelete')))),
-            state.history.length > 0
+            sessionHistory.length > 0
               ? h('div', { className: 'dsa-row' },
                 h('button', {
                   type: 'button',
@@ -5010,7 +5105,16 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                     actions.clearHistory()
                   },
                 }, t('historyClear')))
-              : null))
+              : null),
+        legacyCount > 0
+          ? h('div', { className: 'dsa-row' },
+            h('span', { className: 'dsa-muted' }, t('historyLegacyNote', { n: legacyCount })),
+            h('button', {
+              type: 'button',
+              className: 'dsa-btn',
+              onClick: () => actions.clearLegacyHistory(),
+            }, t('historyLegacyClear')))
+          : null)
 
       // §4.5 a non-leader copy explains why its interaction surface is gone.
       const familyBanner = state.familyLeader === false
@@ -5237,8 +5341,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       // action face is captured here rather than guessed at from a service.
       const actions = props?.inputActions
       React.useEffect(() => {
-        if (typeof sessionId === 'string' && sessionId !== '' && store.state.sessionId !== sessionId) {
-          store.set({ sessionId })
+        if (typeof sessionId === 'string' && sessionId !== '') {
+          // 1.9.2: a real session switch also has to re-scope history, replay
+          // this session's own cards and refresh the archived set. `apply()`
+          // installs that handler before any slot can mount; the direct write
+          // is the degraded path for a caller that renders the probe alone.
+          if (sessionChangeHandler !== null) sessionChangeHandler(sessionId)
+          else if (store.state.sessionId !== sessionId) store.set({ sessionId })
         }
         if (actions !== undefined && actions !== null) capturedComposerActions = actions
       }, [sessionId, actions])
@@ -5335,13 +5444,24 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         // retry-edit). The chain v1 → v2 → v3 is read in order; every older
         // key is LEFT IN PLACE (non-destructive migration), so a downgrade
         // still finds its own payload.
-        const PERSIST_KEY = 'dsh-sidecard-ask:cards:v3'
+        // v4 (1.9.2): adds `sessionId`, so the durable history is partitioned
+        // by the conversation that asked. Entries written by v1–v3 have no
+        // session and land in the unscoped bucket; they are never attributed to
+        // a session on the user's behalf. If a shell has no session probe,
+        // `sessionId` stays null and the unscoped bucket is the whole history —
+        // the pre-1.9.2 behaviour, on exactly the shells that cannot do better.
+        const PERSIST_KEY = 'dsh-sidecard-ask:cards:v4'
+        const PERSIST_V3_KEY = 'dsh-sidecard-ask:cards:v3'
         const PERSIST_V2_KEY = 'dsh-sidecard-ask:cards:v2'
         const PERSIST_LEGACY_KEY = 'dsh-sidecard-ask:cards:v1'
         const PERSIST_FALLBACK_CARDS = 10
         const PERSIST_TEXT_LIMIT = 65536
+        /** Newest N sessions kept on disk; older sessions fall off the tail. */
+        const PERSIST_SESSION_LIMIT = 20
+        /** Hard ceiling across every session, so sessions × cap cannot grow forever. */
+        const PERSIST_TOTAL_LIMIT = 200
 
-        /** Configured durable cap, clamped to the Host's 0–50 range. */
+        /** Configured per-session durable cap, clamped to the Host's 0–50 range. */
         const historyCap = () => {
           const value = Number(store.state.config.historyMaxCards)
           if (!Number.isFinite(value)) return PERSIST_FALLBACK_CARDS
@@ -5359,36 +5479,84 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           } catch { return [] }
         }
 
+        /** One entry with the fields every generation shares. */
+        const normalizeEntry = (entry, version) => ({
+          ...entry,
+          sessionId: sessionKey(entry.sessionId),
+          createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
+          versions: Array.isArray(entry.versions) ? entry.versions : [],
+          __legacy: sessionKey(entry.sessionId) === null,
+          __schema: version,
+        })
+
         function readPersisted() {
           let raw = null
           try {
             raw = window.localStorage?.getItem(PERSIST_KEY)
           } catch { return [] }
-          const v3 = parseEnvelope(raw, 3).slice(0, 50)
-          if (v3.length > 0 || (raw !== null && raw !== undefined)) return v3
-          // v2 → v3: v2 entries have no `versions`, so the field is seeded empty.
+          const v4 = parseEnvelope(raw, 4).slice(0, PERSIST_TOTAL_LIMIT).map(entry => normalizeEntry(entry, 4))
+          if (v4.length > 0 || (raw !== null && raw !== undefined)) return v4
+          // v3 → v4: v3 entries carry `versions` but no session.
+          let v3raw = null
+          try {
+            v3raw = window.localStorage?.getItem(PERSIST_V3_KEY)
+          } catch { return [] }
+          if (v3raw !== null && v3raw !== undefined) {
+            return parseEnvelope(v3raw, 3).slice(0, PERSIST_TOTAL_LIMIT).map(entry => normalizeEntry(entry, 3))
+          }
+          // v2 → v4: v2 entries have no `versions`, so the field is seeded empty.
           let v2raw = null
           try {
             v2raw = window.localStorage?.getItem(PERSIST_V2_KEY)
           } catch { return [] }
           if (v2raw !== null && v2raw !== undefined) {
-            return parseEnvelope(v2raw, 2).slice(0, 50).map(entry => ({ ...entry, versions: [] }))
+            return parseEnvelope(v2raw, 2).slice(0, PERSIST_TOTAL_LIMIT).map(entry => normalizeEntry(entry, 2))
           }
-          // v1 → v3: v1 entries carry neither createdAt nor versions.
+          // v1 → v4: v1 entries carry neither createdAt nor versions.
           let legacy = null
           try {
             legacy = window.localStorage?.getItem(PERSIST_LEGACY_KEY)
           } catch { return [] }
-          return parseEnvelope(legacy, 1).slice(0, 50).map(entry => ({ ...entry, createdAt: 0, versions: [] }))
+          return parseEnvelope(legacy, 1).slice(0, PERSIST_TOTAL_LIMIT).map(entry => normalizeEntry(entry, 1))
         }
 
         function writePersisted(cards) {
           try {
-            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards }))
+            // Internal read-time markers must not leak into the envelope.
+            const clean = cards.map(({ __legacy, __schema, ...entry }) => entry)
+            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 4, cards: clean }))
           } catch (error) {
             // Quota or privacy mode — the cards stay on screen, just not durable.
             console.warn(`[${PLUGIN_ID}] card history not persisted:`, error)
           }
+        }
+
+        /**
+         * Bound the durable set: at most `historyMaxCards` entries per session,
+         * at most {@link PERSIST_SESSION_LIMIT} sessions and
+         * {@link PERSIST_TOTAL_LIMIT} entries overall. Entries are newest-first;
+         * sessions are admitted in the order their newest entry appears.
+         */
+        const capHistoryEntries = (entries) => {
+          const cap = historyCap()
+          if (cap <= 0) return []
+          const ordered = [...entries].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+          const perSession = new Map()
+          const admittedSessions = new Set()
+          const out = []
+          for (const entry of ordered) {
+            const key = sessionKey(entry.sessionId) ?? ''
+            const count = perSession.get(key) ?? 0
+            if (count >= cap) continue
+            if (!admittedSessions.has(key)) {
+              if (admittedSessions.size >= PERSIST_SESSION_LIMIT) continue
+              admittedSessions.add(key)
+            }
+            perSession.set(key, count + 1)
+            out.push(entry)
+            if (out.length >= PERSIST_TOTAL_LIMIT) break
+          }
+          return out
         }
 
         /** Recompute the durable set from the live store and write it. */
@@ -5398,10 +5566,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             .filter(card => card.carrier === 'side'
               && (card.status === 'done' || card.status === 'stopped')
               && card.text !== '')
-            .slice(0, cap)
             .map(card => ({
               id: card.id,
               question: card.question,
+              // 1.9.2: the durable entry belongs to the session that asked.
+              sessionId: sessionKey(card.sessionId),
               selected: String(card.selected ?? '').slice(0, PERSIST_TEXT_LIMIT),
               selection: String(card.selection ?? '').slice(0, PERSIST_TEXT_LIMIT),
               text: String(card.text ?? '').slice(0, PERSIST_TEXT_LIMIT),
@@ -5438,59 +5607,41 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             store.set({ history: [] })
             return
           }
-          writePersisted(finished)
-          store.set({ history: finished })
+          // Merge the finished live cards into the durable set instead of
+          // rebuilding it from the live stack: a closed card leaves the stack
+          // (close() removes it) but its durable entry must survive — 1.9.1
+          // rebuilt from `cards` and silently dropped every closed card the
+          // next time any other answer finished.
+          const byId = new Map(store.state.history.map(entry => [entry.id, entry]))
+          for (const entry of finished) byId.set(entry.id, entry)
+          const capped = capHistoryEntries([...byId.values()])
+          writePersisted(capped)
+          store.set({ history: capped })
         }
 
-        /** Replay finished cards from a previous page load into the store. */
+        /**
+         * Load the durable history. 1.9.2 no longer replays every entry on
+         * boot: the set is partitioned by session and the composer probe may
+         * not have reported one yet, so replay happens in
+         * {@link replayHistoryForSession} once the session is known (or, as a
+         * fallback for older shells, for the unscoped bucket after a delay).
+         */
         const restorePersisted = () => {
           // Detect the migration BEFORE reading: when the CURRENT key is
           // absent but an older payload exists, the imported set is written
-          // out under the current version once (non-destructively; v1/v2 are
+          // out under the current version once (non-destructively; v1/v2/v3 are
           // kept, so a downgrade still finds its own key).
           let currentRaw
           try {
             currentRaw = window.localStorage?.getItem(PERSIST_KEY)
           } catch { currentRaw = null }
           const cap = historyCap()
-          const saved = readPersisted().slice(0, cap)
+          const saved = capHistoryEntries(readPersisted())
           store.set({ history: saved })
           if (saved.length === 0) return
           if (cap > 0 && (currentRaw === null || currentRaw === undefined)) {
             writePersisted(saved)
           }
-          const replayed = saved.map(entry => ({
-            id: entry.id,
-            question: entry.question,
-            selected: String(entry.selected ?? ''),
-            selection: String(entry.selection ?? ''),
-            text: String(entry.text ?? ''),
-            reasoning: String(entry.reasoning ?? ''),
-            status: entry.status === 'stopped' ? 'stopped' : 'done',
-            carrier: 'side',
-            zone: entry.zone,
-            truncated: entry.truncated === true,
-            droppedChars: Number(entry.droppedChars ?? 0),
-            streaming: null,
-            error: null,
-            provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
-            elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
-            createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
-            // P2-5b: replayed versions stay switchable after a reload.
-            versions: replayVersions(entry.versions),
-            viewingVersion: null,
-            actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
-            // A native/better tab cannot survive a reload, so history always
-            // comes back on the flow stack where it is visible immediately.
-            surface: 'flow',
-            open: true,
-            history: Array.isArray(entry.history)
-              ? entry.history
-                  .filter(turn => turn !== null && typeof turn === 'object')
-                  .map(turn => ({ question: String(turn.question ?? ''), answer: String(turn.answer ?? '') }))
-              : [],
-          }))
-          store.set({ cards: [...replayed, ...store.state.cards] })
         }
 
         /** Sanitize a persisted `versions` array into the live shape. */
@@ -5511,6 +5662,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         const historyEntryToCard = (entry) => ({
           id: entry.id,
           question: entry.question,
+          // The replayed card stays in the session it was asked from; it is
+          // rendered only while that session is the active one.
+          sessionId: sessionKey(entry.sessionId),
           selected: String(entry.selected ?? ''),
           selection: String(entry.selection ?? ''),
           text: String(entry.text ?? ''),
@@ -5526,6 +5680,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
           createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
           notified: true,
+          // Replayed records are not re-attributed to whichever session the
+          // probe reports later; only cards created live in this page are.
+          fromHistory: true,
           versions: replayVersions(entry.versions),
           viewingVersion: null,
           actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
@@ -5537,6 +5694,111 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 .map(turn => ({ question: String(turn.question ?? ''), answer: String(turn.answer ?? '') }))
             : [],
         })
+
+        /** Sessions whose history has already been replayed in this page. */
+        const replayedSessions = new Set()
+        let unscopedReplayTimer = null
+        let archivedRefreshing = null
+
+        const archivedSet = () => new Set(
+          Array.isArray(store.state.archivedSessionIds)
+            ? store.state.archivedSessionIds.filter(id => typeof id === 'string' && id !== '')
+            : [],
+        )
+
+        /**
+         * Replay the durable cards that belong to one session into the floating
+         * layer. `''` is the unscoped bucket used when no session is known.
+         */
+        const replayHistoryFor = (key) => {
+          if (replayedSessions.has(key)) return
+          if (key !== '' && archivedSet().has(key)) return
+          replayedSessions.add(key)
+          const entries = store.state.history.filter(entry => (sessionKey(entry.sessionId) ?? '') === key)
+          if (entries.length === 0) return
+          const existing = new Set(store.state.cards.map(card => card.id))
+          const replayed = entries.filter(entry => !existing.has(entry.id)).map(historyEntryToCard)
+          if (replayed.length === 0) return
+          // Replayed cards go on top (newest first, matching the entry order).
+          store.set({ cards: [...replayed, ...store.state.cards] })
+        }
+
+        const replayHistoryForSession = () => {
+          const key = sessionKey(store.state.sessionId)
+          if (key === null) return
+          if (unscopedReplayTimer !== null) { clearTimeout(unscopedReplayTimer); unscopedReplayTimer = null }
+          replayHistoryFor(key)
+        }
+
+        /**
+         * Older shells may not mount the composer probe at all. In that case
+         * the unscoped bucket IS the history, and showing it after a short
+         * grace period preserves the pre-1.9.2 behaviour instead of silently
+         * losing every replayed card.
+         */
+        const scheduleUnscopedReplay = () => {
+          if (unscopedReplayTimer !== null) clearTimeout(unscopedReplayTimer)
+          unscopedReplayTimer = setTimeout(() => {
+            unscopedReplayTimer = null
+            if (sessionKey(store.state.sessionId) !== null) return
+            replayHistoryFor('')
+          }, 1200)
+          if (typeof unscopedReplayTimer?.unref === 'function') unscopedReplayTimer.unref()
+        }
+
+        /** Ask the Host which sessions are archived. Never throws. */
+        const refreshArchived = async () => {
+          if (archivedRefreshing !== null) return archivedRefreshing
+          archivedRefreshing = (async () => {
+            try {
+              const value = await getJson('archived')
+              const ids = Array.isArray(value?.archivedSessionIds)
+                ? value.archivedSessionIds.filter(id => typeof id === 'string' && id !== '')
+                : []
+              store.set({ archivedSessionIds: ids, archivedKnown: true })
+              // A session unarchived while this page is open becomes eligible
+              // again; replay is idempotent per session.
+              replayHistoryForSession()
+            } catch {
+              // An older Host has no /archived route: keep the previous set and
+              // say so in the diagnostics rather than hiding arbitrary records.
+              store.set({ archivedKnown: false })
+            } finally {
+              archivedRefreshing = null
+            }
+          })()
+          return archivedRefreshing
+        }
+
+        /** Switch the active session and re-scope every session-bound surface. */
+        const adoptSession = (nextId) => {
+          const key = sessionKey(nextId)
+          if (key === null) return
+          const previous = sessionKey(store.state.sessionId)
+          if (previous !== key) {
+            // A card created between page load and the probe's first report has
+            // no session yet; it belongs to the session now being opened.
+            const adopted = store.state.cards.map(card => (
+              sessionKey(card.sessionId) === null && card.fromHistory !== true
+                ? { ...card, sessionId: key }
+                : card
+            ))
+            store.set({ sessionId: key, cards: adopted })
+          }
+          if (unscopedReplayTimer !== null) { clearTimeout(unscopedReplayTimer); unscopedReplayTimer = null }
+          replayHistoryFor(key)
+          void refreshArchived()
+        }
+
+        /** The current session's visible history (manager and export). */
+        const visibleHistoryEntries = () => {
+          const archived = archivedSet()
+          const current = sessionKey(store.state.sessionId)
+          return store.state.history.filter(entry => (
+            inCurrentSession(entry, current)
+            && !archived.has(sessionKey(entry.sessionId))
+          ))
+        }
 
         const actions = {
           openPopover(candidate) {
@@ -5560,6 +5822,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           restoreHistoryCard(id) {
             const entry = store.state.history.find(item => item.id === id)
             if (entry === undefined) return false
+            // 1.9.2: only the current session's records are addressable, and an
+            // archived session's records stay hidden until it is unarchived.
+            if (!inCurrentSession(entry, store.state.sessionId)) return false
+            if (archivedSet().has(sessionKey(entry.sessionId))) {
+              toast(t('historyArchived'))
+              return false
+            }
             if (store.state.cards.some(card => card.id === id)) {
               patchCard(id, { surface: 'flow', open: true })
             } else {
@@ -5573,9 +5842,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           },
           /** Delete one entry from durable history (and its live card). */
           deleteHistoryCard(id) {
-            const next = store.state.history
-              .filter(item => item.id !== id)
-              .slice(0, historyCap())
+            const next = capHistoryEntries(store.state.history.filter(item => item.id !== id))
             writePersisted(next)
             store.set({
               history: next,
@@ -5587,16 +5854,17 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
            * Empty the durable history without touching running cards.
            *
            * Removes EVERY generation key, not just the current one:
-           * {@link readPersisted} falls back to v2 → v1 whenever the current
-           * key is absent (that fallback is exactly what makes the
-           * non-destructive migration work), so deleting only v3 let a legacy
-           * payload resurrect the "cleared" history on the next page load —
-           * reproduced live, 2026-10-17. An explicit user clear is destructive
-           * by definition: it is the one action allowed to drop the old keys.
+           * {@link readPersisted} falls back v4 → v3 → v2 → v1 whenever the
+           * current key is absent (that fallback is exactly what makes the
+           * non-destructive migration work), so deleting only the current key
+           * let a legacy payload resurrect the "cleared" history on the next
+           * page load — reproduced live, 2026-10-17. An explicit user clear is
+           * destructive by definition: it is the one action allowed to drop the
+           * old keys.
            */
           clearHistory() {
             try {
-              for (const key of [PERSIST_KEY, PERSIST_V2_KEY, PERSIST_LEGACY_KEY]) {
+              for (const key of [PERSIST_KEY, PERSIST_V3_KEY, PERSIST_V2_KEY, PERSIST_LEGACY_KEY]) {
                 window.localStorage?.removeItem(key)
               }
             } catch (error) {
@@ -5605,6 +5873,23 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             store.set({ history: [] })
             toast(t('historyClearDone'))
           },
+          /**
+           * Drop only the unscoped legacy records imported from v1–v3. They are
+           * hidden once a session is known, so this is the user's explicit way
+           * to reclaim that space without touching per-session history.
+           */
+          clearLegacyHistory() {
+            const next = capHistoryEntries(store.state.history.filter(entry => sessionKey(entry.sessionId) !== null))
+            try {
+              writePersisted(next)
+            } catch { /* quota/privacy mode: the view still empties */ }
+            store.set({ history: next })
+            toast(t('historyLegacyCleared'))
+          },
+          /** Re-read the archived set (settings page open / manual refresh). */
+          refreshHistory() {
+            void refreshArchived()
+          },
           async submit(candidate, payload) {
             store.set({ popover: null, trigger: null })
             const config = store.state.config
@@ -5612,6 +5897,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const card = {
               id: `card-${Date.now()}-${nextCardId++}`,
               question: payload.question,
+              // 1.9.2: every card remembers the session it was asked from; the
+              // flow stack and the durable history are filtered by this key.
+              sessionId: sessionKey(currentSessionId(ctx)),
               selection: candidate.text,
               selected: cut.text,
               truncated: cut.truncated,
@@ -5797,9 +6085,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             if (result !== 'ok') toast(t('exportFailed'))
             return result
           },
-          /** 1.8.0 P2-5a: write the whole durable history to one file. */
+          /** 1.8.0 P2-5a: write the current session's durable history to one file. */
           exportHistory() {
-            const entries = store.state.history
+            const entries = visibleHistoryEntries()
             if (!Array.isArray(entries) || entries.length === 0) {
               toast(t('exportEmpty'))
               return 'empty'
@@ -6643,12 +6931,23 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         }
 
         // ── boot ─────────────────────────────────────────────────────────
+        // The probe may mount before or after this block; install the session
+        // handler first so the very first report already re-scopes history.
+        sessionChangeHandler = adoptSession
         try {
           restorePersisted()
         } catch (error) {
           // Corrupt-but-parseable history must never block startup.
           console.warn(`[${PLUGIN_ID}] card history restore failed:`, error)
         }
+        // Session-scoped replay waits for the probe. If this shell never
+        // reports one, the unscoped bucket comes back after a short grace.
+        scheduleUnscopedReplay()
+        void refreshArchived().then(() => replayHistoryForSession())
+        const archivedTimer = setInterval(() => { void refreshArchived() }, 30000)
+        // A browser timer id is a number; a Node timer in the offline harness
+        // must not keep the test process alive after the assertions finish.
+        if (typeof archivedTimer?.unref === 'function') archivedTimer.unref()
 
         // §4.5 family singleton: register this copy, (re)elect on every join
         // or leave, and gate the interaction surface on the verdict.
@@ -6721,6 +7020,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           pendingProofs.clear()
           if (toastTimer !== null) clearTimeout(toastTimer)
           if (reportTimer !== null) clearTimeout(reportTimer)
+          if (unscopedReplayTimer !== null) clearTimeout(unscopedReplayTimer)
+          clearInterval(archivedTimer)
+          sessionChangeHandler = null
           for (const timer of legacyTimers) clearTimeout(timer)
           try {
             if (typeof document !== 'undefined' && document.getElementById) {
@@ -6738,6 +7040,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             history: [],
             toast: null,
             sessionId: null,
+            archivedSessionIds: [],
+            archivedKnown: false,
             surface: 'flow',
           })
         })
@@ -6776,6 +7080,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           CARD_KIND,
           CARD_KIND_BETTER,
           HISTORY_TURNS,
+          sessionKey,
+          inCurrentSession,
           estimateLabelWidth,
           parseSseBlock,
           truncateSelection,
