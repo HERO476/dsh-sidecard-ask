@@ -156,10 +156,11 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 |---|---|---|---|---|
 | `trigger` | `selection` \| `shortcut` \| `both` | `selection` | **触发方式**：选中即浮出按钮 / 只用快捷键 / 两者都要 | 改后立即（客户端读 /state） |
 | `defaultCarrier` | `main` \| `side` | `side` | **默认作答位置**：提问框里仍可临时切换 | 立即 |
-| `sideSurface` | `auto` \| `native-rightbar` \| `better-sidebar` \| `flow` | `auto` | **窗口模式（侧边承载面）**：自动挑选 / 强制 DSH 原生右侧栏 / 强制 dsh-better-sidebar / 强制内置浮层卡片 | 立即 |
+| `sideSurface` | `auto` \| `native-rightbar` \| `better-sidebar` \| `flow` | `auto` | **窗口模式（侧边承载面）**：自动挑选（先 dsh-better-sidebar，再内置浮层卡片）/ 强制 DSH 原生右侧栏（不参与自动）/ 强制 dsh-better-sidebar / 强制内置浮层卡片 | 立即 |
 | `maxChars` | 200–60000 | `4000` | **最大字符数**：超出部分头尾保留、中间截断并标注 | 立即 |
 | `floatMode` | `capsule` \| `full` \| `off` | `capsule` | **内置浮层的默认形态**：胶囊（一行，最小遮挡）/ 完整卡片栈 / 只留一个计数圆点。运行时可即时收起、隐藏，但不写回本项——刷新后仍回到这里设的默认 | 立即 |
 | `floatMaxWidth` | 240–560 | `340` | **内置浮层宽度上限**（px）：实际宽度 = `min(本项, 对话区右侧可用带宽)`，可用带宽不足 240px 时才会压入对话区 | 立即 |
+| `dockRail` | 布尔 | `true` | **右侧栏打开时占满它**：答案卡铺满右栏标签条下方的内容区，读起来像栏内的一页，而不是 340px 的小浮层。收起为胶囊、关闭浮层、右栏宽度 < 280px 或高度 < 240px 时自动回到常规浮层；实现靠测量右栏 DOM 矩形，**没有**走 DSH 的右栏 API（见 §4.2 与 §6.1） | 立即 |
 | `shortcut` | 形如 `Alt+Q`、`Ctrl+Shift+K` | `Alt+Q` | **快捷键**：唤起提问框（`trigger` 允许时） | 立即 |
 | `captureZones` | `auto` \| `chat` \| `task` \| `chat+task` | `auto` | 只在哪些区域触发 | 立即 |
 | `showInUnclassified` | 布尔 | `true` | 无法归类的区域是否也触发 | 立即 |
@@ -202,6 +203,35 @@ bleeds = 对话区右边界 - left > 1          // 只有带宽 < 240px 时才�
 - 挂载时、窗口 resize 时、右栏开合时（`ResizeObserver`）都会重算；流式刷新只重渲染，不动几何。
 - 浮层根节点带 `data-layer-width`（实际宽度）与 `data-dsa-float-mode`：报告问题时可直接读这两个值。
 
+### 4.2 右侧栏打开时「占满它」（`dockRail`，1.8.3）
+
+340px 的浮层在右栏打开时会同时压住两块内容：主对话的最后几行、以及右栏自己的正文。1.8.3 起默认
+（`dockRail: true`）把整张卡铺到右栏里，读起来像栏内的一页：
+
+- 位置 = 右栏**标签条之下**的内容区矩形，宽度取右栏宽度，高度取到底部；右栏自己的标签条仍然露出、可点。
+- 卡片在这个形态下没有圆角/描边/阴影（`.dsa-card` 的装饰被 `[data-dsa-float-mode="dock"]` 覆盖），只有一条左边线与右栏内容区分界。
+- 标题栏（追问 + 徽标 + ⇥ / ×）与底部操作行固定上下两端，中间 `AnswerBody` 独立滚动——长答案不再把操作行推出视野。
+- 收起为胶囊（⇥）、关闭（×）、或把 `dockRail` 关掉，都立即回到常规浮层；右栏宽度 < 280px 或高度 < 240px 时也回退（窄栏里铺满会把正文挤成每行 8–9 字）。
+- 折叠的右栏不会被误用：`railOnScreen()` 会拒绝停在帧外（`left >= frameWidth - 1`）或尺寸不足的面板，量不到就回退，绝不把卡片画到帧外。
+- 矩形从哪来：**优先量本插件自己渲染在右栏里的 `CardHost` 节点**（`[data-dsa-rail-host]`）——它所在的位置按定义就是「一页正文」，不依赖任何未被文档承诺的标记；找不到时再按 `data-sidebar-right-*`、dockkit 世代、`.rightbar`、`sidebar.right` 槽逐代回退。
+- 什么时候重算：窗口改宽、右栏开合（只盯属性的 `MutationObserver`）、右栏自身改宽（`ResizeObserver`），以及挂载后的四次延时重测（罩住右栏的滑入动画）。流式刷新不会触发几何重算。
+
+为什么是「测量」而不是「右栏内的一页」：DSH 的右栏服务确实存在（`sidebarRightTabs` / `sidebarRight`，
+见 §6.1），本插件也有完整注册代码，但在当前构建里 `openTab` 路径实测仍回落到浮层，且没定位到抛错点。
+在它修好之前，`dockRail` 是视觉上等价、失败即回退的兜底层——它盖住右栏内容区的其他面板（那些面板仍在
+下面，取消勾选或收起胶囊即恢复），也会暂时压住右栏的拖拽改宽手柄。
+
+诊断：`data-dsa-float-mode="dock"` 表示处于该形态；`.dsa-stack` 上的 `data-dsa-dock-body="<px>"` 是量到的
+宽度（与卡片宽度一致）。浮层根节点还有 `data-dsa-dock`，它的取值直接说明**为什么**没有铺满：
+
+| 值 | 含义 |
+|---|---|
+| `dock` | 正在铺满 |
+| `no-rail` | 没找到已展开的右栏（右栏关着，或这个构建的标记与预期不同） |
+| `rail-too-small` | 找到了，但宽 < 280px / 高 < 240px，或它停在帧外（折叠态被拒绝） |
+| `off` | 设置里的 `dockRail` 被关掉了 |
+| `mode` | 当前不是完整卡片形态（胶囊 / 隐藏），本来就不该铺满 |
+
 ---
 
 ## 五、侧边承载面与"侧边卡片插件"适配
@@ -210,15 +240,19 @@ bleeds = 对话区右边界 - left > 1          // 只有带宽 < 240px 时才�
 
 | 顺序 | 承载面 | 依赖 | 失败时 |
 |---|---|---|---|
-| 1 | DSH 原生右侧栏 | `ctx.sidebarRightTabs`（注册 tab 类型）+ `ctx.sidebarRight`（`openTab`），并占用槽位 `sidebar.right.pane.tab` / `…tab.title` | 记 `surfaces.native.error`，落到下一层；**类型注册会回滚**（见下） |
-| 2 | **dsh-better-sidebar**（侧边卡片插件） | 客户端服务 `ctx.betterSidebar`：`registerTab` + `openTab(seed, scope)`；卡片 id 走 `tab.meta.cardId`，因此**要求其 `features` 含 `tabMeta`** | 同上（缺 `tabMeta` 时记 `no-tab-meta` 并跳过，而不是开一个空 tab） |
-| 3 | **内置浮层卡片**（默认兜底） | 只需要 `shell.overlay` 槽位 | ——（这是保底面，永远可用） |
+| 1 | **dsh-better-sidebar**（侧边卡片插件） | 客户端服务 `ctx.betterSidebar`：`registerTab` + `openTab(seed, scope)`；卡片 id 走 `tab.meta.cardId`，因此**要求其 `features` 含 `tabMeta`** | 记 `surfaces.better.error`（缺 `tabMeta` 时记 `no-tab-meta` 并跳过，而不是开一个空 tab），落到下一层 |
+| 2 | **内置浮层卡片**（兜底） | 只需要 `shell.overlay` 槽位 | ——（这是保底面，永远可用） |
+| — | DSH 原生右侧栏 | `ctx.sidebarRightTabs`（注册 tab 类型）+ `ctx.sidebarRight`（`openTab`），并占用槽位 `sidebar.right.pane.tab` / `…tab.title` | **不在 `auto` 链里**：只有显式 `sideSurface: 'native-rightbar'` 才用它；注册失败会回滚（见下） |
 
 - 装了 `dsh-better-sidebar`：卡片以它的 tab 形式出现在它的面板里，关闭卡片会同时 `closeTab`，不残留空 tab。
-- 没装：自动使用内置浮层卡片，功能完全一致——**这条路径是本插件的默认与保底路径**。
+  这是 `auto` 的**第一选择**。
+- 没装：自动使用内置浮层卡片，功能完全一致——**这条路径是第二选择，也是保底路径**。
   浮层默认是**贴帧右边缘的胶囊**（一行高，只有状态与问题首句），点击才展开成完整卡片，
   标题栏右侧的「收起 / 隐藏」可随时收回；它的宽度由 `floatPlacement` 计算，
   只会占用**对话区右侧那条预留带**，不会压住正文（细节见 §4.1）。
+- **原生右侧栏为什么退出 `auto`**：卡片被塞进右栏只是一个 tab，而这个 tab 的生命周期不归插件管——
+  卡片关闭后右栏仍留着一条读作「该卡片已关闭」的空标签，和你自己的右栏标签抢位置，
+  落点还取决于我们并不控制的宿主实现细节。它会保留成一个**强制选项**（下拉里标注「强制，不参与自动」）。
 - 强制指定了一个不可用的承载面：回退到内置浮层，并在卡片上标注「已回退」。
 
 ### 5.1 与 dsh-better-sidebar 0.22.1 的适配核对（2026-09-28）
@@ -280,7 +314,7 @@ better-sidebar 会把收到的每个 tab 描述符**镜像注册进同一个原�
 | `sidecard-ask:card` | 本插件的**原生右侧栏**承载面（1.2.1 之前完全缺失） |
 | `dsh-better-sidebar:sidecard-ask:card:workbench` | 经 dsh-better-sidebar 镜像注册的承载面（独立 kind） |
 
-两者共存、均 `active: true` —— 即"同 kind 冲突"已被消除，`auto` 默认走原生右侧栏，强制 `sideSurface: better-sidebar` 仍可用。
+两者共存、均 `active: true` —— 即"同 kind 冲突"已被消除。`auto` 走的是 **dsh-better-sidebar → 内置浮层卡片**这条链（1.8.3 起原生右侧栏只在显式 `sideSurface: native-rightbar` 时使用），两个强制选项都仍可用。
 
 ### 5.3 与 DSH 桌面版（Electron）的适配核对（2026-09-30）
 
@@ -426,7 +460,7 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 
 | 缺口 | 适配实现 | 在真机/测试里的表现 |
 |---|---|---|
-| 0.1.2 / 0.1.3 没有原生右侧栏 | 承载面探测链：原生右侧栏 → `dsh-better-sidebar` → **内置浮层卡片**；不可用的一律不计入 `pickSurface` | `contract-test` 断言 `pickSurface('auto')` 在无插件组合下落到 `flow`；`auto` 在可用时优先原生 |
+| 0.1.2 / 0.1.3 没有原生右侧栏 | 承载面探测链：原生右侧栏 → `dsh-better-sidebar` → **内置浮层卡片**；不可用的一律不计入 `pickSurface` | `contract-test` 断言 `pickSurface('auto')` 在无插件组合下落到 `flow`、两端可用时选 `better-sidebar`；`float-placement` 钉住自动链里不出现原生右侧栏 |
 | ≤0.1.6-alpha.1 没有 `using`/`retain` | 主对话提交**四级阶梯**（调用时逐级探测，不查版本表）：`sessions.using` → `sessions.retain`+`release` → 槽位标准 prop `inputActions`（`setDraft` + `submit`）→ 仅写入输入框并明确提示"请按 Enter" | `contract-test` 逐级断言 `via`：`sessions.using` / `sessions.retain`（并断言 `release()` 被调用）/ `inputActions.submit` / `composer.draft` / 全无时抛 `no-main-carrier` |
 | ≤0.1.6-alpha.2 没有归档门 | 不再因"父会话已归档"直接拒绝：仍优先挑未归档代理，但只有归档候选时**照常尝试**，并在 `start` 事件里带 `parentArchived:true`；真被门拒绝时把空 turn 的 `refusal` 翻译成 `blocked-step` 并说明原因 | `smoke-test`：全归档组合仍能拿到答案；`refusal` 用例断言 `code=blocked-step` 且文案提到归档 |
 | 0.1.2-rc.1 没有进程内帧 | 增加**第二条流式源**：订阅 `session/event` 的持久化 `assistant/chunk`（`{turn,step,chunk}`，形状取自该版本自己的 `chunk-rows.js`），与帧源**互斥**（先说话的那个生效，绝不重复计一次文本） | `smoke-test`：`frameMode:'chunks'` 用例断言 delta 拼出完整答案、`streaming:true`、`streamSource:'chunks'`；同时断言两源并存时文本不重复 |
@@ -564,6 +598,14 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
    **关键判据：胶囊/卡片的左边缘不得越过对话区（`[data-slot^="conversation"]`）的右边界**。
    把窗口从 1920px 拖到 900px、再开关一次右侧栏，浮层应随之变窄而不是往左压住正文；
    只有窗口窄到可用带宽不足 240px 时才允许压入（此时是设计内的降级，不是 bug）。
+9. **占满右侧栏（1.8.3，`dockRail`）**：先把右侧栏打开（任意面板，例如「团队任务板」），再追问一次 →
+   答案卡应铺满**标签条下方**的整块内容区：右边缘贴帧边、下边缘贴窗口底，右栏的标签条仍然露出可点。
+   点卡片标题栏的 ⇥（收起为胶囊）或 × → 卡片立即退出占满、回到常规浮层，右栏内容区恢复。
+   自检：F12 读浮层根节点，`data-dsa-float-mode` 应为 `dock`，`data-dsa-dock` 也应为 `dock`；
+   `.dsa-stack` 上的 `data-dsa-dock-body` 应等于卡片宽度（px）。**没铺满就看 `data-dsa-dock`**：
+   `no-rail` = 没找到右栏，`rail-too-small` = 找到了但太窄或在帧外，`off` = 开关关了，`mode` = 不是完整形态。
+   把右栏拖到 260px 宽 → 应自动回退成常规浮层（低于 280px 不铺满）；再拖回 400px → 应重新铺满。
+   设置页取消「右侧栏打开时占满它」并保存 → 同一操作不再铺满。
 
 **失败信号**：卡片停在「作答中…」不动 = SSE 帧没到达（看 console 是否有 `/sidecard-ask/api/ask` 报错）；`done.streaming=false` = 该版本没有流式帧（属预期降级，卡片会写明）。
 
@@ -604,10 +646,13 @@ node test/smoke-test.mjs        # 端到端：流式/截断/取消/持久化/失
 ```
 
 四个脚本都以 `process.exitCode` 反映结果，失败会列出具体条目；测试会把 `DSH_HOME` 指向临时目录，不会污染真实配置。
-当前规模（1.8.2 本机实测，四项均 exit 0）：verify **57** 项 + contract **972** 项 + float-placement **38** 项 +
-smoke **226** 项 = **1293 项全部通过**（1.8.1 为 1277 项，其中 contract 由 956 → 972：新增 16 项钉住提问框
-「作答位置」分段芯片——唯一 `.dsa-seg`、两个按钮、恰好一个 `aria-pressed`、各带一枚内联图标、
-品牌实底规则与深色覆盖规则；点击切换本身不可测，原因见 1.8.2 的 CHANGELOG）。
+当前规模（1.8.3 本机实测，四项均 exit 0）：verify **57** 项 + contract **989** 项 + float-placement **78** 项 +
+smoke **226** 项 = **1350 项全部通过**（1.8.2 为 1293 项：contract 972 → 989，新增 8 项钉住设置页的「占满
+右侧栏」复选框、3 个新 i18n 键，以及承载面 `auto` 的新顺序；float-placement 38 → 78，新增 40 项覆盖 `railDock` 的夹取/最小尺寸/
+`clipped` 语义、真机上 dock 没生效那次发现的三个缺陷（残留的 `rail` 变量、右栏开合不触发重算、
+右栏锚点必须优先用插件自己的 `[data-dsa-rail-host]` 节点），以及「自动链里不出现原生右侧栏」这条顺序断言）。更早的 1.8.1 为 1277 项，其中 contract
+由 956 → 972 是提问框「作答位置」分段芯片的 16 项——唯一 `.dsa-seg`、两个按钮、恰好一个
+`aria-pressed`、各带一枚内联图标、品牌实底规则与深色覆盖规则；点击切换本身不可测，原因见 1.8.2 的 CHANGELOG。
 
 **真机探针（不属于四套自测）**：`.compat-report/scripts/composer-probe.mjs` 需要
 `playwright-core` 与本机 Edge，对**真实 DSH 页面**回答 composer DOM / 哪条写入路径真能改变

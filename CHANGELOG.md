@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.8.3
+
+**主题：右侧栏打开时，答案卡直接铺满它、读成栏内的一页——而不是 340px 的浮层压在右栏正文上。**
+
+起因是用户截图：右栏开着「团队任务板」，答案卡浮在它上面，正文被挤成一条窄缝，标题与操作行占掉大半。
+
+- **`dockRail`（默认 `true`）**：右栏可见且已展开时，把卡片铺到**标签条下方**的内容区——宽度取右栏宽，
+  高度取到帧底；右栏自己的标签条仍然露出可点。这个形态下卡片去掉圆角、描边与阴影，只留一条左边线
+  与右栏内容区分界；标题栏（追问 + 徽标 + ⇥/×）与底部操作行固定上下两端，`AnswerBody` 独立滚动，
+  长答案不再把操作行推出视野。收起为胶囊（⇥）、关闭（×）或关掉本项，立即回到常规浮层。
+- **几何是量出来的，不是猜的**：`dockedBodyRect(node)` 取右栏面板的 `getBoundingClientRect()`，若它在
+  `[data-dockkit-pane]` 里，再把顶边抬到所有 `[data-dockkit-tab]` 的底边——否则卡片会盖住右栏自己的标签条。
+  `findRail(scope)` 按世代尝试选择器（最具体的在前）：
+  `[data-dsa-rail-host]`（本插件自己渲染在右栏里的 `CardHost` 节点——它所在的位置就是「一页正文」）→
+  `[data-sidebar-right-panel][data-sidebar-right-open] [data-dockkit-pane]` → 面板本身 →
+  `[data-sidebar-right-session][data-sidebar-right-open]` → `[data-dockkit-pane]` / `[data-dockkit-column]`
+  （只渲染 dockkit 标记的构建）→ `.rightbar` → `[data-slot^="sidebar.right"]`；
+  **只接受展开态**（折叠的面板会滑出帧外，它的 rect 不能用；`railOnScreen` 负责拒绝），量不到、
+  宽 < 280px 或高 < 240px 一律回退浮层。
+  这些标记不是文档给的，是从安装包里的 `@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js` 读出来的。
+- **纯函数 `railDock`**：`enabled` 为假、坐标非有限、宽高低于 280/240 → `null`（= 不 dock）；矩形夹进
+  `[0,frameWidth] × [0,frameHeight]`，夹完仍不足最小尺寸也返回 `null`；`clipped` 表示「画出来的不是量到的」——
+  尺寸被夹小，或原点被拉回帧内（右栏入场动画期间可能量到负坐标）。已导出到 `api.pure`，测试与运行时共用一份实现。
+- **渲染**：`docked = mode === 'full' && dock !== null`；容器改 `data-dsa-float-mode="dock"` 并写 inline
+  `left/top/width/height`（同时释放基类的 `right/bottom`，否则会过约束），`.dsa-stack` 带
+  `data-dsa-dock-body="<px>"` 供对照；三种形态复用同一份 `cardNodes`，没有分叉出第二套卡片。
+- **设置页**新增「右侧栏打开时占满它」复选框（只写草稿，点保存才落盘），并给出「收起为胶囊或关闭即恢复原状；
+  右侧栏不在时不生效」的说明；三个 i18n 键（zh/en 各三条）。
+- **为什么不做成"真的注册右栏的一页"（如实）**：`sidebarRightTabs` / `sidebarRight` 两个服务在当前构建里
+  **确实存在**（从 `app.asar` 里读到 `ctx.reflect.provide("sidebarRightTabs", tabs)`），注册形状
+  （`register({id, kind, guide, …})`）与槽派发键（`entryKey = definition?.id ?? tab.kind`，本插件两处都是
+  `sidecard-ask:card`）也逐一核对过；但实测 `controller.openTab` 路径仍回落到浮层，且没定位到抛错点。
+  在它修好之前，`dockRail` 是**视觉等价、失败即回退**的兜底层——README §6.1 仍把它标为占位接口，没有说成官方能力。
+- **已知代价（如实）**：dock 期间会盖住右栏内容区里的其他面板（那些面板仍在下面），也会暂时压住右栏的
+  拖拽改宽手柄；这两点都写进了 README §4.2 与代码注释。
+- 测试：`float-placement` 新增 **40** 项（`railDock` 的夹取、最小尺寸、`clipped` 语义、不修改入参、非有限输入、
+  `dockRail` 默认值、源码钩子、上面三个缺陷的回归断言，以及承载面自动链的顺序断言）；`contract` 新增 **8** 项
+  （设置页复选框：唯一一行、单个 checkbox、默认勾选、带写草稿的 onChange、说明文案；承载面 `auto` 的
+  新偏好）；3 个新 i18n 键由既有词典用例自动覆盖。
+  总项数 1293 → **1350**。
+- **发布前的一次真实回合（用户截图 + 一个「？」）修掉的三个缺陷**——首次交付的 dock 在真机上**没有生效**：
+  卡片仍以约 505px 浮在右栏上，而右栏里留着一个正文写着「该卡片已关闭」的空 tab。
+  1. `apply()` 里残留 `rail` 变量：改用 `railBox` 后旧守卫没删干净，一旦 `ResizeObserver` 回调进来就抛
+     `ReferenceError: rail is not defined`，并且**右栏节点永远不会被 observe**。已删，并加回归断言
+     （源码里不得再出现 `observed.has(rail)`）。
+  2. **右栏开合不触发重算**：effect 依赖只有 `[maxWidth, total, mode, dockWanted]`，而被观察的是挂载时
+     就已存在的节点——右栏是后开的，量不到就永远不 dock。现在的触发源有四个：`window resize`、
+     `ResizeObserver`（对话区 + 当前被接受的那个右栏节点）、**只盯属性的 `MutationObserver`**
+     （`data-sidebar-right-open` / `data-dockkit-pane-active` / `style` / `class`；**不盯 childList**，
+     否则流式 token 每帧都会唤醒几何计算）、以及挂载后 `[80,200,420,800]ms` 四次重测（罩住右栏滑入动画）。
+  3. **不再靠猜右栏标记**：`CardHost` 自己渲染在右栏里的节点就是「一页正文」，它的矩形就是答案。三个
+     `CardHost` 包装节点加 `data-dsa-rail-host`，并作为 `RAIL_SELECTORS` 的**第一优先**锚点（设置页根节点
+     故意不加，否则浮层会停靠到设置面板上）；其后才是 `data-sidebar-right-*`、dockkit 世代、`.rightbar`
+     与 `sidebar.right` 槽。折叠态另由 `railOnScreen()` 拒绝（`left >= frameWidth - 1` 或
+     `top >= frameHeight - 1` 视为不在屏上），不会被 `railDock` 夹进视野。
+- **诊断属性**：浮层根节点新增 `data-dsa-dock`，取值 `dock` / `no-rail` / `rail-too-small` / `off` / `mode`，
+  一眼区分「没找到右栏」「找到了但太窄」「开关关了」「当前不是完整卡片形态」。
+- **承载面 `auto` 的顺序改了：dsh-better-sidebar → 内置浮层卡片；原生右侧栏退出自动链。**
+  原因是那个空 tab：卡片被塞进右栏只是一个 tab，tab 的生命周期不归插件管——卡片关掉后右栏仍留着一条
+  读作「该卡片已关闭」的标签，还和用户自己的右栏标签抢位置，落点又取决于我们不控制的宿主细节。
+  原生右侧栏保留为**强制选项**（下拉里标注「强制，不参与自动」，新增 `surfaceNativeForce` 文案），
+  显式 `sideSurface: 'native-rightbar'` 仍然走它。下拉顺序同步为 auto / 插件 / 内置卡片 / 强制右侧栏。
+  连带把三条依赖「auto 会挑原生」的既有用例改成显式指定 `native-rightbar`（它们测的是原生适配器本身，
+  不该再由 auto 顶上来）。
+- 版本号三处同步到 1.8.3。
+
+本机实测（四项均 exit 0）：verify **57** / contract **989** / float-placement **78** / smoke **226**
+= **1350 项全部通过**（1.8.2 为 1293；float-placement 由 38 → 78，含 `railDock` 用例、上面三个缺陷的回归钩子，
+以及「自动链里不出现原生右侧栏」的顺序断言；contract 972 → 989）。
+
+> 未验证（如实记录）：`design-preview/09-dock-{light,dark,narrow-light}.png` 三张图是**离屏渲染**——
+> 无头 Edge 加载"从 `client.js` 切出的真实样式表 + 本机 uiskin 皮肤令牌真值 + 按 `app.asar` 里读到的
+> 右栏标记搭的静态结构"的页面，**不是**运行中 DSH 窗口的截图。因此它证明的是"这套 CSS 在给定矩形里
+> 摆成什么样"，不证明真实页面里右栏的实测矩形、滚动性能，也不证明 dock 与右栏拖宽手柄的冲突手感。
+> 这些仍需刷新页面人工确认（README §9 A 路径第 9 条给了可执行的判据）。
+
 ## 1.8.2
 
 **主题：提问框底部的「作答位置」从"两枚看不出选中哪一侧的标签"改成一眼可辨的分段芯片；并把 1.8.1 之后写在本地、尚未提交的弹层对比度修补一并发布。**

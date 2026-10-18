@@ -42,7 +42,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.8.2'
+export const PLUGIN_VERSION = '1.8.3'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -83,6 +83,17 @@ export const DEFAULT_CONFIG = {
   floatMode: 'capsule',
   /** Hard cap, in CSS px, for the floating layer's width. */
   floatMaxWidth: 340,
+  /**
+   * Dock the answer card into the right rail when one is on screen, so the
+   * answer gets the whole rail instead of a 340px card floating over it.
+   *
+   * The rail exposes no "add a page" API to plugins on this DSH build (the
+   * `sidebarRightTabs` service is absent; see README §6), so the Client half
+   * measures the rail's rectangle and paints the card inside it. Turning this
+   * off restores the pure floating behaviour; with no rail on screen the
+   * floating layer is used either way.
+   */
+  dockRail: true,
   /**
    * One-click quick actions rendered beside the selection trigger.
    *
@@ -403,7 +414,7 @@ export function sanitizeLayer(raw, problems = []) {
     if (points >= 0 && points <= MAX_CUSTOM_PERSONA_CHARS) out.customPersona = raw.customPersona
     else problems.push(`customPersona: 必须是 ≤${MAX_CUSTOM_PERSONA_CHARS} 字符的字符串，已忽略`)
   }
-  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions']) {
+  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions', 'dockRail']) {
     if (raw[boolKey] === undefined) continue
     if (typeof raw[boolKey] === 'boolean') out[boolKey] = raw[boolKey]
     else problems.push(`${boolKey}: 必须是布尔值，已忽略`)

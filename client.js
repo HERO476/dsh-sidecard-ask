@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.8.2'
+    const CLIENT_VERSION = '1.8.3'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -98,6 +98,10 @@ window.__ModuleLoader__.load({
       sideProvider: 'auto',
       floatMode: 'capsule',
       floatMaxWidth: 340,
+      // Docked presentation (1.8.3): when the right rail is on screen, the
+      // answer paints inside the rail's rectangle instead of floating as a
+      // 340px card over it. See §1b `railDock`.
+      dockRail: true,
       // Mirrors the Host's DEFAULT_CONFIG.quickActions (contract-asserted):
       // `builtin:*` entries are resolved through QUICK_ACTION_BUILTINS, while
       // custom entries (no builtin prefix) carry their own label/question.
@@ -250,6 +254,163 @@ window.__ModuleLoader__.load({
       return { width, avail, capped: width < cap, bleeds: lane - left > 1 }
     }
 
+    const DOCK_MIN_WIDTH = 280
+    const DOCK_MIN_HEIGHT = 240
+
+    /**
+     * How the Client half recognizes the right rail in the live DOM, most
+     * specific generation first.
+     *
+     * The rail has no published DOM contract, so the markers were read out of
+     * the installed build (`@deepseek-ai/dsh-client-ui-sidebar-right`): its panel
+     * is a div carrying `data-sidebar-right-panel="push|fullscreen"` and, while
+     * expanded, `data-sidebar-right-open`; each session surface also carries
+     * `data-sidebar-right-session`. Two older spellings are kept behind those so
+     * a downgraded shell does not silently lose the dock: `.rightbar` (pre-rail
+     * builds) and the `sidebar.right` slot subtree. The OPEN marker matters: the
+     * panel slides off the frame while collapsed, so its rect is off-screen and
+     * must not be docked into.
+     */
+    const RAIL_SELECTORS = [
+      // The plugin's own nodes are the most reliable anchor there is: a tab body
+      // rendered by `CardHost` IS a page body, so wherever it sits is exactly
+      // where a page goes. It also works on builds whose rail markers we have
+      // never seen — including the leftover "card closed" tab, which still
+      // occupies a page body.
+      '[data-dsa-rail-host]',
+      '[data-sidebar-right-panel][data-sidebar-right-open] [data-dockkit-pane]',
+      '[data-sidebar-right-panel][data-sidebar-right-open]',
+      '[data-sidebar-right-session][data-sidebar-right-open]',
+      // Dockkit-only builds: the pane is the page body, and a build that renders
+      // no `data-sidebar-right-*` marker at all would otherwise never dock. These
+      // are last because they say "a pane exists", not "a pane is open" — the
+      // on-screen check in `findRail` is what keeps a collapsed (off-frame) rail
+      // from being docked into.
+      '[data-dockkit-pane]',
+      '[data-dockkit-column]',
+      '.rightbar',
+      '[data-slot^="sidebar.right"]',
+    ]
+
+    /**
+     * The box a tab's BODY occupies inside one rail node.
+     *
+     * The pane's tab strip sits at the top of the same box, so a raw pane rect
+     * would make the card cover the rail's own tabs. The strip's bottom edge is
+     * measured instead (every tab carries `data-dockkit-tab`), which keeps the
+     * rail navigable and places the card exactly where a page's content goes.
+     * Without any tab to measure, the node's own top edge is the answer.
+     */
+    function dockedBodyRect(node) {
+      const rect = node.getBoundingClientRect()
+      let top = rect.top
+      const pane = typeof node.closest === 'function' ? node.closest('[data-dockkit-pane]') : null
+      const tabs = pane !== null && typeof pane.querySelectorAll === 'function'
+        ? pane.querySelectorAll('[data-dockkit-tab]')
+        : null
+      if (tabs !== null) {
+        for (const tab of tabs) {
+          if (typeof tab.getBoundingClientRect !== 'function') continue
+          const tabRect = tab.getBoundingClientRect()
+          if (Number.isFinite(tabRect.bottom) && tabRect.bottom > top) top = tabRect.bottom
+        }
+      }
+      return { left: rect.left, top, width: rect.width, height: rect.bottom - top }
+    }
+
+    /**
+     * Whether a measured rail box is actually on screen.
+     *
+     * The collapsed rail is animated off the frame (its rect sits past the right
+     * edge, or is zero-sized), so "an element matched" is not the same as "the
+     * user can see it". A box that starts outside the frame or is thinner than
+     * the minimum is rejected here rather than clamped into view by `railDock`.
+     */
+    function railOnScreen(box) {
+      if (box === null || box === undefined) return false
+      const frameW = Number.isFinite(document.documentElement?.clientWidth)
+        ? document.documentElement.clientWidth
+        : (typeof window.innerWidth === 'number' ? window.innerWidth : 0)
+      const frameH = Number.isFinite(document.documentElement?.clientHeight)
+        ? document.documentElement.clientHeight
+        : (typeof window.innerHeight === 'number' ? window.innerHeight : 0)
+      if (!Number.isFinite(box.left) || !Number.isFinite(box.top)) return false
+      if (box.width < DOCK_MIN_WIDTH || box.height < DOCK_MIN_HEIGHT) return false
+      // `left >= frameW` is the collapsed-rail case (parked past the edge); a
+      // negative left with a visible body is a rail mid-animation and is fine.
+      if (box.left >= frameW - 1) return false
+      if (box.top >= frameH - 1) return false
+      return true
+    }
+
+    /**
+     * The on-screen rail's dockable box, plus the node it was measured from.
+     *
+     * Every candidate is measured before it is accepted: a hidden or zero-sized
+     * node (a collapsed rail, a slot wrapper that only holds styles) is skipped
+     * instead of being treated as a 0x0 rail. The node is returned because the
+     * caller keeps a ResizeObserver pointed at whatever it accepted — the rail is
+     * re-rendered (new node) on some open/close transitions.
+     *
+     * @returns {{node: Element, box: {left: number, top: number, width: number, height: number}}|null}
+     */
+    function findRail(scope) {
+      if (scope === null || scope === undefined || typeof scope.querySelector !== 'function') return null
+      for (const selector of RAIL_SELECTORS) {
+        let node = null
+        try { node = scope.querySelector(selector) } catch { node = null }
+        if (node === null || typeof node.getBoundingClientRect !== 'function') continue
+        let box = null
+        try { box = dockedBodyRect(node) } catch { box = null }
+        if (railOnScreen(box)) return { node, box }
+      }
+      return null
+    }
+
+    /**
+     * The rectangle a side card occupies when the right rail is on screen.
+     *
+     * Pure (no DOM) so the runtime and the tests share one implementation: the
+     * caller passes the rail's measured box. `null` means "do not dock" — the
+     * rail is missing, unmeasurable, or too small to be worth a page, and the
+     * caller keeps the floating presentation instead.
+     *
+     * Nothing is ever allowed to spill outside the frame: the rectangle is
+     * clamped to `[0, frameWidth] × [0, frameHeight]` and `clipped` reports
+     * whether that clamp actually bit (a rail straddling the frame edge).
+     *
+     * @param {{railLeft: number, railTop: number, railWidth: number, railHeight: number,
+     *   frameWidth?: number|null, frameHeight?: number|null, enabled?: boolean}} input
+     * @returns {{left: number, top: number, width: number, height: number,
+     *   clipped: boolean}|null}
+     */
+    function railDock({ railLeft, railTop, railWidth, railHeight, frameWidth = null, frameHeight = null, enabled = true }) {
+      if (enabled !== true) return null
+      if (!Number.isFinite(railLeft) || !Number.isFinite(railTop)) return null
+      const width = Number.isFinite(railWidth) ? Math.floor(railWidth) : 0
+      const height = Number.isFinite(railHeight) ? Math.floor(railHeight) : 0
+      if (width < DOCK_MIN_WIDTH || height < DOCK_MIN_HEIGHT) return null
+      const frameW = Number.isFinite(frameWidth) ? frameWidth : railLeft + width
+      const frameH = Number.isFinite(frameHeight) ? frameHeight : railTop + height
+      const left = Math.max(0, Math.min(Math.floor(railLeft), Math.floor(frameW)))
+      const top = Math.max(0, Math.min(Math.floor(railTop), Math.floor(frameH)))
+      const dockWidth = Math.max(0, Math.min(width, Math.floor(frameW - left)))
+      const dockHeight = Math.max(0, Math.min(height, Math.floor(frameH - top)))
+      if (dockWidth < DOCK_MIN_WIDTH || dockHeight < DOCK_MIN_HEIGHT) return null
+      // `clipped` means "what was painted is not what was measured": either the
+      // size shrank, or the origin had to be pulled back inside the frame (a rail
+      // still animating in can measure negative). Callers surface it so a
+      // surprising rectangle is explainable instead of mysterious.
+      return {
+        left,
+        top,
+        width: dockWidth,
+        height: dockHeight,
+        clipped: dockWidth < width || dockHeight < height
+          || left !== Math.floor(railLeft) || top !== Math.floor(railTop),
+      }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // §2 i18n
     // ─────────────────────────────────────────────────────────────────────
@@ -327,8 +488,9 @@ window.__ModuleLoader__.load({
         setTriggerBoth: '按钮 + 快捷键',
         setCarrier: '默认作答位置',
         setSurface: '侧边卡片承载面',
-        setSurfaceAuto: '自动选择',
+        setSurfaceAuto: '自动选择（插件 → 内置卡片）',
         setSurfaceFlow: '内置浮层卡片',
+        surfaceNativeForce: '右侧栏卡片（强制，不参与自动）',
         setMaxChars: '最大字符数',
         setMaxCharsHint: '超过部分截断并在提问中标注',
         setFloatMode: '浮层默认形态',
@@ -338,6 +500,9 @@ window.__ModuleLoader__.load({
         setFloatModeHint: '浮层贴右侧边缘，只在空间不足时才可能压到对话区',
         setFloatMaxWidth: '浮层宽度上限（px）',
         setFloatMaxWidthHint: '空间不足时自动收窄，不会硬顶',
+        setDockRail: '右侧栏打开时占满它',
+        setDockRailHint: '答案直接铺满右侧栏（读得像栏内的一页），收起为胶囊或关闭即恢复原状；右侧栏不在时不生效',
+        floatDocked: '已占满右侧栏',
         floatExpand: '展开侧边卡片',
         floatCollapse: '收起为胶囊（不遮挡对话）',
         floatHide: '隐藏浮层（只留小圆点）',
@@ -564,8 +729,9 @@ window.__ModuleLoader__.load({
         setTriggerBoth: 'Button + shortcut',
         setCarrier: 'Default answer carrier',
         setSurface: 'Side-card surface',
-        setSurfaceAuto: 'Automatic',
+        setSurfaceAuto: 'Automatic (plugin, then built-in)',
         setSurfaceFlow: 'Built-in floating card',
+        surfaceNativeForce: 'Right rail (forced, excluded from automatic)',
         setMaxChars: 'Max characters',
         setMaxCharsHint: 'Longer selections are truncated and marked in the question',
         setFloatMode: 'Floating layer default',
@@ -575,6 +741,9 @@ window.__ModuleLoader__.load({
         setFloatModeHint: 'The layer is anchored to the right edge and only overlaps on very narrow frames',
         setFloatMaxWidth: 'Floating layer max width (px)',
         setFloatMaxWidthHint: 'Narrows automatically when there is not enough room',
+        setDockRail: 'Fill the right rail while it is open',
+        setDockRailHint: 'The answer fills the right rail (it reads as one of its pages) and comes back to normal when collapsed to the capsule or closed; ignored while no rail is on screen',
+        floatDocked: 'Filled the right rail',
         floatExpand: 'Expand the side cards',
         floatCollapse: 'Collapse to a capsule (stops covering the conversation)',
         floatHide: 'Hide the layer (leaves a small launcher)',
@@ -1839,12 +2008,20 @@ window.__ModuleLoader__.load({
      * @returns {{adapter: object, fellBack: boolean}}
      */
     function pickSurface(wanted) {
-      const order = [surfaces.native, surfaces.better, surfaces.flow]
+      // `auto` deliberately skips the shipped right rail. A card re-hosted as a
+      // rail tab is a tab the plugin does not own: it outlives the card (the
+      // rail keeps an empty tab reading "this card was closed"), it competes
+      // with the user's own rail tabs, and where it lands depends on a
+      // service-surface detail we do not control. The order asked for is: the
+      // side-card plugin first, the built-in card second. The rail stays
+      // reachable, but only by an explicit `native-rightbar` choice.
+      const autoOrder = [surfaces.better, surfaces.flow]
+      const all = [surfaces.native, surfaces.better, surfaces.flow]
       if (wanted === 'auto' || wanted === undefined) {
-        for (const adapter of order) if (adapter.available()) return { adapter, fellBack: false }
+        for (const adapter of autoOrder) if (adapter.available()) return { adapter, fellBack: false }
         return { adapter: surfaces.flow, fellBack: false }
       }
-      const match = order.find(adapter => adapter.kind === wanted || adapter === surfaces[wanted])
+      const match = all.find(adapter => adapter.kind === wanted || adapter === surfaces[wanted])
       if (match === undefined) return { adapter: surfaces.flow, fellBack: true }
       if (!match.available()) return { adapter: surfaces.flow, fellBack: true }
       return { adapter: match, fellBack: false }
@@ -1995,6 +2172,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"],
 html[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover,
 body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
   color:#0a1428;text-shadow:0 1px 0 rgba(255,255,255,.25)}
+/* The same switch is reused on the settings page, inside a grid cell that can be
+   narrower than the popover: tighten the chips there, never let the pair spill out
+   of its cell, and keep the rail hugging the chips (dsa-field is a stretch
+   column, which would otherwise paint a 400px-wide rail around two small chips). */
+.dsa-field .dsa-seg{max-width:100%;align-self:flex-start}
+.dsa-field .dsa-seg button{padding:4px 10px}
 .dsa-card{pointer-events:auto;display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
@@ -2006,6 +2189,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 .dsa-float{pointer-events:none;position:fixed;right:var(--dsa-gap-right, 8px);bottom:16px;
   display:flex;flex-direction:column;gap:8px;width:var(--dsa-float-w, 340px);max-width:92vw}
 .dsa-float > *{pointer-events:auto}
+/* Docked presentation (1.8.3): the same container, but pinned to the right
+   rail's measured rectangle (inline left/top/width/height) instead of the
+   frame's bottom-right corner. Right/bottom must be released, otherwise the
+   base rule's right:8px/bottom:16px would over-constrain the box. The rail's
+   resize handle is covered while docked — collapsing to the capsule (⇥) or
+   closing gives it back. */
+.dsa-float[data-dsa-float-mode="dock"]{right:auto;bottom:auto;max-width:none;pointer-events:auto;
+  border-left:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  background:var(--dsw-alias-bg-overlay, #fff);overflow:hidden}
+.dsa-float[data-dsa-float-mode="dock"] .dsa-stack{max-height:none;height:100%;min-height:0;overflow:hidden}
+.dsa-float[data-dsa-float-mode="dock"] .dsa-card{height:100%;min-height:0;max-height:none;border:0;border-radius:0;
+  box-shadow:none;background:transparent;padding:10px 12px 8px}
+.dsa-float[data-dsa-float-mode="dock"] .dsa-answer{max-height:none;flex:1 1 auto;min-height:0;overflow:auto}
 .dsa-stack{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow:auto}
 .dsa-capsule{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;text-align:left;
   padding:8px 12px;border-radius:999px;cursor:pointer;font:inherit;font-size:12px;line-height:18px;
@@ -3823,11 +4019,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
      */
     function FloatingLayer({ cards, actions }) {
       const containerRef = React.useRef(null)
+      const dockRef = React.useRef(null)
       const state = useStoreState()
+      const [dock, setDock] = React.useState(null)
       const visible = cards.filter(card => card.surface === 'flow' && card.open)
       const total = visible.length
       const mode = state.floatMode ?? state.config.floatMode ?? CLIENT_DEFAULTS.floatMode
       const maxWidth = state.config.floatMaxWidth ?? CLIENT_DEFAULTS.floatMaxWidth
+      const dockWanted = state.config.dockRail !== false
 
       // Measure the conversation column + right rail, then pin the layer's
       // width to what is left. Recomputed on frame resize and on rail toggles
@@ -3838,6 +4037,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         const node = containerRef.current
         if (node === null || node === undefined) return undefined
         const selector = '[data-slot^="conversation"], .rightbar, [data-slot^="sidebar.right"], [data-dsh-panel-host]'
+        const observed = new Set()
         const all = () => {
           try {
             return typeof document.querySelectorAll === 'function'
@@ -3849,20 +4049,73 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           try { return typeof document.querySelector === 'function' ? document.querySelector(query) : null } catch { return null }
         }
         let frame = 0
+        let observer = null
+        let mutation = null
+        let observedRail = null
+        const timers = []
         const apply = () => {
           if (typeof node.style?.setProperty !== 'function') return
           const lane = one('[data-slot^="conversation"]')
-          const rail = one('.rightbar, [data-slot^="sidebar.right"], [data-dsh-panel-host]')
           const rootWidth = document.documentElement?.clientWidth ?? window.innerWidth
-          const laneRight = lane === null
-            ? rootWidth
-            : lane.getBoundingClientRect().right
-          const railLeft = rail === null ? null : rail.getBoundingClientRect().left
+          const rootHeight = document.documentElement?.clientHeight ?? window.innerHeight
+          const measure = target => {
+            if (target === null || target === undefined) return null
+            try {
+              const rect = typeof target.getBoundingClientRect === 'function'
+                ? target.getBoundingClientRect()
+                : null
+              return rect === null ? null : rect
+            } catch { return null }
+          }
+          const laneRect = measure(lane)
+          const rail = findRail(document)
+          const railBox = rail === null ? null : rail.box
+          const laneRight = laneRect === null ? rootWidth : laneRect.right
+          const railLeft = railBox === null ? null : railBox.left
           const placement = floatPlacement({ frameWidth: rootWidth, laneRight, railLeft, maxWidth })
           node.style.setProperty('--dsa-float-w', `${placement.width}px`)
           node.style.setProperty('--dsa-gap-right', `${FLOAT_GAP_RIGHT}px`)
           // Readable placement, so a user report can say WHERE the layer sat.
           node.dataset.layerWidth = String(placement.width)
+
+          // Docked presentation: the card fills the rail page's body instead of
+          // floating over it. Only measured in `full` mode — a capsule/launcher
+          // is deliberately small and must never take the rail over.
+          const next = railBox === null || mode !== 'full'
+            ? null
+            : railDock({
+              railLeft: railBox.left,
+              railTop: railBox.top,
+              railWidth: railBox.width,
+              railHeight: railBox.height,
+              frameWidth: rootWidth,
+              frameHeight: rootHeight,
+              enabled: dockWanted,
+            })
+          const prev = dockRef.current
+          const same = prev === next || (prev !== null && next !== null
+            && prev.left === next.left && prev.top === next.top
+            && prev.width === next.width && prev.height === next.height
+            && prev.clipped === next.clipped)
+          if (!same) {
+            dockRef.current = next
+            setDock(next)
+          }
+          // Why the layer is (not) docked, readable from DevTools. A rail that
+          // exists but is too narrow reads as `rail-too-small`, which is a
+          // different story from `no-rail` and is what a bug report needs.
+          node.dataset.dsaDock = next !== null
+            ? 'dock'
+            : (mode !== 'full'
+              ? 'mode'
+              : (dockWanted ? (railBox === null ? 'no-rail' : 'rail-too-small') : 'off'))
+          // The rail can appear AFTER this effect ran (opening it mounts new
+          // nodes), and it can be re-created later: keep the observer pointed at
+          // whichever node is currently accepted.
+          if (observer !== null && rail !== null && rail.node !== observedRail) {
+            observedRail = rail.node
+            try { observer.observe(rail.node) } catch { /* not observable */ }
+          }
         }
         const schedule = () => {
           if (typeof window.requestAnimationFrame !== 'function') { apply(); return }
@@ -3873,7 +4126,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           })
         }
         apply()
-        let observer = null
         if (typeof window.ResizeObserver === 'function') {
           observer = new window.ResizeObserver(schedule)
           for (const target of all()) {
@@ -3881,12 +4133,35 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           }
         }
         if (typeof window.addEventListener === 'function') window.addEventListener('resize', schedule)
+        // Opening/closing the rail changes no size this effect already watches,
+        // so the DOM itself has to be the trigger. Attributes only (no
+        // childList): streaming tokens rewrite text nodes continuously and must
+        // not wake the layer on every frame.
+        if (typeof window.MutationObserver === 'function' && document.body !== null && document.body !== undefined) {
+          try {
+            mutation = new window.MutationObserver(schedule)
+            mutation.observe(document.body, {
+              attributes: true,
+              subtree: true,
+              attributeFilter: ['data-sidebar-right-open', 'data-dockkit-pane-active', 'style', 'class'],
+            })
+          } catch { mutation = null }
+        }
+        // The rail slides in; a rect taken mid-animation is wrong. Re-measure a
+        // few times right after a card/mode change, then stop for good.
+        if (typeof window.setTimeout === 'function') {
+          for (const delay of [80, 200, 420, 800]) timers.push(window.setTimeout(schedule, delay))
+        }
         return () => {
           if (typeof window.removeEventListener === 'function') window.removeEventListener('resize', schedule)
           if (observer !== null) { try { observer.disconnect() } catch { /* already gone */ } }
+          if (mutation !== null) { try { mutation.disconnect() } catch { /* already gone */ } }
+          for (const timer of timers) {
+            if (typeof window.clearTimeout === 'function') window.clearTimeout(timer)
+          }
           if (frame !== 0 && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frame)
         }
-      }, [maxWidth, total, mode])
+      }, [maxWidth, total, mode, dockWanted])
 
       if (total === 0) return null
 
@@ -3899,12 +4174,46 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         : t('floatDone', { n: total })
       const firstQuestion = visible[0].question
 
+      // Docked geometry is only meaningful in `full` mode; the effect nulls it
+      // out otherwise, and this guard keeps a stale rect from a previous mode
+      // from being painted for one frame.
+      const docked = mode === 'full' && dock !== null
+
       const container = children => h('div', {
-        className: 'dsa-float',
+        className: docked ? 'dsa-float dsa-dock' : 'dsa-float',
         'data-dsa-root': '',
         ref: containerRef,
-        'data-dsa-float-mode': mode,
+        'data-dsa-float-mode': docked ? 'dock' : mode,
+        ...(docked
+          ? {
+            style: {
+              left: `${dock.left}px`,
+              top: `${dock.top}px`,
+              width: `${dock.width}px`,
+              height: `${dock.height}px`,
+            },
+          }
+          : null),
       }, children)
+
+      const cardNodes = visible.map(card => h(AnswerCard, {
+        key: card.id,
+        card,
+        surfaceLabel: null,
+        onCopy: element => actions.copy(card, element),
+        onFollowUp: text => actions.followUp(card, text),
+        onRetry: () => actions.retry(card),
+        onRetryEdit: text => actions.retryEdit(card, text),
+        onCancel: () => actions.cancel(card),
+        onSendToMain: () => actions.sendToMain(card),
+        onClose: () => actions.close(card),
+        onLocate: target => actions.locateCard(target ?? card),
+        onExport: target => actions.exportCard(target ?? card),
+        onInsert: target => actions.insertAnswer(target ?? card),
+        onReplace: target => actions.insertAnswer(target ?? card, { replace: true }),
+        onViewVersion: index => actions.viewVersion(card, index),
+        onFloatMode: setFloatMode,
+      }))
 
       if (mode === 'off') {
         return container(h('button', {
@@ -3926,25 +4235,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         h('span', { className: 'dsa-capsule-chev' }, '›')))
       }
 
-      return container(h('div', { className: 'dsa-stack' },
-        visible.map(card => h(AnswerCard, {
-          key: card.id,
-          card,
-          surfaceLabel: null,
-          onCopy: element => actions.copy(card, element),
-          onFollowUp: text => actions.followUp(card, text),
-          onRetry: () => actions.retry(card),
-          onRetryEdit: text => actions.retryEdit(card, text),
-          onCancel: () => actions.cancel(card),
-          onSendToMain: () => actions.sendToMain(card),
-          onClose: () => actions.close(card),
-          onLocate: target => actions.locateCard(target ?? card),
-          onExport: target => actions.exportCard(target ?? card),
-          onInsert: target => actions.insertAnswer(target ?? card),
-          onReplace: target => actions.insertAnswer(target ?? card, { replace: true }),
-          onViewVersion: index => actions.viewVersion(card, index),
-          onFloatMode: setFloatMode,
-        }))))
+      // Docked: the card takes the rail's whole rectangle, so it reads as one of
+      // the rail's pages rather than a 340px card hovering over it. The card
+      // keeps its own header (title + badges + collapse/hide controls), which is
+      // what makes the page dismissible without leaving the rail.
+      return container(h('div', {
+        className: 'dsa-stack',
+        'data-dsa-dock-body': docked ? String(dock.width) : undefined,
+      }, cardNodes))
     }
 
     /** The `shell.overlay` entry: styles + trigger + popover + cards + toast. */
@@ -4021,7 +4319,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         else toast(t('notifyGranted'))
       }
 
-      const field = (label, control, hint) => h('div', { className: 'dsa-field' },
+      // `style` is optional: the two-chip carrier switch needs two grid tracks
+      // (`.dsa-grid` fits columns down to 150px, and two nowrap chips need
+      // ~175px), so that field spans two tracks instead of overflowing.
+      const field = (label, control, hint, style) => h('div', { className: 'dsa-field', style },
         h('label', null, label),
         control,
         hint !== undefined ? h('span', { className: 'dsa-muted' }, hint) : null)
@@ -4252,6 +4553,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           ? h('div', { className: 'dsa-family-notice', role: 'status' }, t('familyLegacyToast'))
           : null)
 
+      // NOT marked `data-dsa-rail-host`: the settings page is not a rail page,
+      // and marking it would let the floating layer dock over the settings panel.
       return h('div', { className: 'dsa-settings', 'data-dsa-root': '' },
         h(Styles, null),
         h('div', null,
@@ -4264,15 +4567,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             ['shortcut', t('setTriggerShortcut')],
             ['both', t('setTriggerBoth')],
           ])),
-          field(t('setCarrier'), select('defaultCarrier', [
-            ['side', t('carrierSide')],
-            ['main', t('carrierMain')],
-          ])),
+          field(t('setCarrier'), h(CarrierSeg, {
+            value: draft.defaultCarrier,
+            onChange: id => setDraft({ ...draft, defaultCarrier: id }),
+          }), undefined, { gridColumn: 'span 2' }),
           field(t('setSurface'), select('sideSurface', [
             ['auto', t('setSurfaceAuto')],
-            ['flow', t('setSurfaceFlow')],
-            ['native-rightbar', t('surfaceNative')],
             ['better-sidebar', t('surfaceBetter')],
+            ['flow', t('setSurfaceFlow')],
+            ['native-rightbar', t('surfaceNativeForce')],
           ])),
           field(t('setZones'), select('captureZones', [
             ['auto', t('setZonesAuto')],
@@ -4352,6 +4655,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           }),
           t('setFollowUps')),
         h('span', { className: 'dsa-muted' }, t('setFollowUpsHint')),
+        h('label', { className: 'dsa-check' },
+          h('input', {
+            type: 'checkbox',
+            checked: draft.dockRail !== false,
+            onChange: event => setDraft({ ...draft, dockRail: event.target.checked }),
+          }),
+          t('setDockRail')),
+        h('span', { className: 'dsa-muted' }, t('setDockRailHint')),
         historySection,
         h('div', { className: 'dsa-row' },
           h('button', {
@@ -5779,7 +6090,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             }
           }, [cardId])
           if (card === undefined) {
-            return h('div', { className: 'dsa-settings', 'data-dsa-root': '' },
+            return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '' },
               h(Styles, null),
               h('div', { className: 'dsa-muted' }, t('cardClosed')))
           }
@@ -5790,11 +6101,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             // note for a rail that keeps it.
             try { surfaces.native.close(card) } catch { /* the rail owns its lifecycle */ }
             try { surfaces.better.close(card) } catch { /* the host may already be gone */ }
-            return h('div', { className: 'dsa-settings', 'data-dsa-root': '' },
+            return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '' },
               h(Styles, null),
               h('div', { className: 'dsa-muted' }, t('cardMovedToFlow')))
           }
-          return h('div', { className: 'dsa-settings', 'data-dsa-root': '', style: { padding: '10px' } },
+          return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '', style: { padding: '10px' } },
             h(Styles, null),
             h(AnswerCard, {
               card,
@@ -5972,6 +6283,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           renderRichText,
           pickSurface,
           floatPlacement,
+          railDock,
           compareVersions,
           electFamilyLeader,
           findLegacyLayers,

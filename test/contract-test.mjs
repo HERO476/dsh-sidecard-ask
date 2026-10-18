@@ -894,6 +894,49 @@ for (const label of ['触发方式', '默认作答位置', '最大字符数', '�
   report.ok(settingsText.includes(label), `settings page renders the "${label}" row`)
 }
 report.ok(byTag(settingsTree, 'select').length >= 4, 'settings page renders its dropdowns')
+
+// 1.8.3: the settings page uses the same chip switch as the popover instead of
+// a dropdown, so "默认作答位置" reads at a glance wherever it appears. The click
+// itself cannot be replayed here (the harness's useState never re-renders), so
+// this pins the wiring rather than the transition.
+const settingsSegSwitches = byClass(settingsTree, 'dsa-seg')
+report.equal(settingsSegSwitches.length, 1, 'the settings page renders the carrier chip switch')
+const settingsSegButtons = (settingsSegSwitches[0]?.children ?? []).filter(
+  child => child?.__element === true && child.type === 'button')
+report.equal(settingsSegButtons.length, 2, 'the settings chip switch offers both destinations')
+report.equal(
+  settingsSegButtons.filter(button => button.props['aria-pressed'] === 'true').length, 1,
+  'the settings chip switch marks exactly one destination as current',
+)
+report.equal(
+  settingsSegButtons[1]?.props?.['aria-pressed'], 'true',
+  'the settings switch starts on the configured default (side)',
+)
+report.ok(
+  settingsSegButtons.every(button => typeof button.props.onClick === 'function'),
+  'each settings chip carries a click handler that writes the draft',
+)
+report.ok(
+  byTag(settingsTree, 'select').every(node => !(node.children ?? []).some(
+    option => ['side', 'main'].includes(String(option?.props?.value ?? '')))),
+  'the standalone carrier dropdown is gone',
+)
+
+// 1.8.3: the dock toggle. The switch only decides whether an open right rail is
+// filled by the card, so the page must expose it as a plain checkbox that writes
+// the draft — config is saved by the page's 保存 button, never on tick.
+const dockRows = byClass(settingsTree, 'dsa-check').filter(
+  node => textOf(node).includes('右侧栏打开时占满它'))
+report.equal(dockRows.length, 1, 'settings page renders the dock-rail toggle')
+const dockInput = byTag(dockRows[0] ?? { __element: true, type: null, props: {}, children: [] }, 'input')
+report.equal(dockInput.length, 1, 'the dock toggle is a single checkbox')
+report.equal(dockInput[0]?.props?.type, 'checkbox', 'the dock toggle uses a checkbox control')
+report.equal(dockInput[0]?.props?.checked, true, 'the dock toggle reads the config default (on)')
+report.ok(
+  typeof dockInput[0]?.props?.onChange === 'function',
+  'the dock toggle carries a change handler that writes the draft',
+)
+report.ok(settingsText.includes('收起为胶囊或关闭即恢复原状'), 'the dock toggle explains how to undock')
 report.ok(byTag(settingsTree, 'input').length >= 4, 'settings page renders its numeric fields')
 report.ok(settingsText.includes('划词追问'), 'settings page renders its title')
 
@@ -2302,8 +2345,14 @@ bareClient.module.apply(bareCtx.ctx)
 report.equal(bareClient.module.api.pure.pickSurface('auto').adapter.kind, 'flow', 'auto falls back to the flow card')
 report.equal(bareClient.module.api.pure.pickSurface('better-sidebar').fellBack, true, 'a missing plugin is reported as a fallback')
 report.equal(bareClient.module.api.pure.pickSurface('native-rightbar').adapter.kind, 'flow', 'a missing right rail falls back to flow')
-// With both services present, `auto` prefers the shipped right rail.
-report.equal(pure.pickSurface('auto').adapter.kind, 'native-rightbar', 'auto prefers the native right rail when present')
+// The rail is deliberately OUT of the automatic chain. A card re-hosted as a
+// rail tab is a tab the plugin does not own (it outlives the card and keeps an
+// empty "this card was closed" body), so the order asked for is: the side-card
+// plugin first, the built-in card second. Both adapters are healthy in `pure`,
+// so the plugin must win even though the rail is also available.
+report.equal(pure.pickSurface('auto').adapter.kind, 'better-sidebar', 'auto prefers the side-card plugin over the rail')
+// ...and the rail is still reachable, but only by naming it.
+report.equal(pure.pickSurface('native-rightbar').adapter.kind, 'native-rightbar', 'the rail stays selectable by explicit choice')
 report.equal(pure.pickSurface('better-sidebar').adapter.kind, 'better-sidebar', 'an explicit surface is honoured when available')
 
 console.log('\nzone anchors and slot ladders')
@@ -2617,8 +2666,8 @@ report.equal(
 report.equal(mirroredDescriptors.length, 1, 'better-sidebar received exactly one descriptor')
 report.equal(
   kindClient.module.api.pure.pickSurface('auto').adapter.kind,
-  'native-rightbar',
-  'with both adapters healthy, auto prefers the native right rail',
+  'better-sidebar',
+  'with both adapters healthy, auto still prefers the side-card plugin',
 )
 report.equal(
   kindClient.module.api.pure.pickSurface('better-sidebar').fellBack,
@@ -2633,6 +2682,10 @@ console.log('\nnative tab lifecycle')
 // refuses the close — says the card was closed instead of a bare "(empty)".
 const kindOverlay = kindCtx.find('shell.overlay', pure.IDS.overlay)
 const kindActions = kindOverlay.component().props.actions
+// `auto` no longer reaches the rail (see the preference assertions above), so a
+// test about the NATIVE adapter has to name it. Everything else in this section
+// — the tab lifecycle, the close probe, the leftover-tab body — is unaffected.
+await kindActions.saveConfig({ ...kindClient.module.api.snapshot().config, sideSurface: 'native-rightbar' })
 kindActions.submit(
   {
     text: 'kind 节的选中文本',
@@ -2701,7 +2754,9 @@ const hostTreeFor = cardId => expandTree(
   proofDescriptors[0].component({ tab: { meta: { cardId } } }))
 
 // Scene 1 — the host mounts inside the proof window: mounting settles the
-// proof, so no late timer ever moves the card away from its tab.
+// proof, so no late timer ever moves the card away from its tab. The rail is
+// named explicitly because `auto` no longer selects it.
+await proofActions.saveConfig({ ...proofClient.module.api.snapshot().config, sideSurface: 'native-rightbar' })
 proofActions.submit(
   {
     text: '场景一的选中文本',

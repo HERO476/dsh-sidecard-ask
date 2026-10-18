@@ -132,6 +132,59 @@ report.equal(place({ frameWidth: 1400, laneRight: 400, railLeft: 1200 }).avail, 
   'the budget never goes below the usable minimum, even with a huge rail')
 
 // ────────────────────────────────────────────────────────────────────────────
+// the dock: the card fills the right rail instead of hovering over it (1.8.3)
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nrail dock')
+const dock = pure.railDock
+
+const RAIL = { railLeft: 1000, railTop: 64, railWidth: 380, railHeight: 800 }
+const docked = dock({ ...RAIL, frameWidth: 1400, frameHeight: 900 })
+report.equal(docked.left, 1000, 'the dock starts at the rail\'s left edge')
+report.equal(docked.top, 64, 'the dock starts at the rail\'s top edge')
+report.equal(docked.width, 380, 'the dock is exactly as wide as the rail')
+report.equal(docked.height, 800, 'the dock is exactly as tall as the rail')
+report.equal(docked.clipped, false, 'a rail that fits the frame is not clipped')
+
+report.equal(dock({ ...RAIL, enabled: false }), null,
+  'the dock is off when the setting is off')
+report.equal(dock({ ...RAIL, railLeft: Number.NaN }), null,
+  'an unmeasurable rail falls back to the floating card')
+report.equal(dock({ ...RAIL, railWidth: 279, railHeight: 800 }), null,
+  'a rail too narrow to read the card in is refused')
+report.equal(dock({ ...RAIL, railWidth: 380, railHeight: 239 }), null,
+  'a rail too short to read the card in is refused')
+report.equal(dock({ ...RAIL, railWidth: 280, railHeight: 240 }).width, 280,
+  'the minimum accepted rail is used as-is')
+
+// A rail dragged past the frame edge must be clipped, not trusted: the dock owns
+// the page, so an over-hanging rectangle would put the card's header off-screen.
+const overhang = dock({ railLeft: 1100, railTop: 40, railWidth: 380, railHeight: 800, frameWidth: 1400, frameHeight: 900 })
+report.equal(overhang.left, 1100, 'a rail that starts inside the frame keeps its left edge')
+report.equal(overhang.width, 300, 'the dock is clipped to the frame, never wider')
+report.equal(overhang.clipped, true, 'clipping is reported so the UI can explain it')
+report.equal(dock({ railLeft: 1300, railTop: 40, railWidth: 400, railHeight: 800, frameWidth: 1400, frameHeight: 900 }), null,
+  'a rail clipped below the minimum width is refused instead of painting a sliver')
+
+// Negative origins can happen while a panel animates in; clamping keeps the
+// rectangle inside the viewport instead of letting it escape upward.
+const animated = dock({ railLeft: -20, railTop: -30, railWidth: 380, railHeight: 800, frameWidth: 1400, frameHeight: 900 })
+report.equal(animated.left, 0, 'a rail still sliding in is clamped to the frame')
+report.equal(animated.top, 0, 'a rail still sliding in is clamped to the top edge')
+report.equal(animated.clipped, true, 'the clamp is reported')
+
+// Frame size is optional: without it the rail's own rectangle is the reference.
+const noFrame = dock({ railLeft: 1000, railTop: 64, railWidth: 380, railHeight: 800 })
+report.equal(noFrame.width, 380, 'the frame size is optional')
+report.equal(noFrame.clipped, false, 'without a frame there is nothing to clip against')
+
+// Purity: the caller's measurement object must survive untouched.
+const measured = { ...RAIL, frameWidth: 1400, frameHeight: 900 }
+const measuredBefore = JSON.stringify(measured)
+dock(measured)
+report.equal(JSON.stringify(measured), measuredBefore, 'the measurement object is not mutated')
+
+// ────────────────────────────────────────────────────────────────────────────
 // the shipped defaults: A defaults to the capsule
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -161,5 +214,61 @@ report.ok(!/\.dsa-stack\{[^}]*position:\s*fixed/.test(source) && !/\.dsa-stack\{
   'the old fixed-position 400px stack is gone')
 report.ok(/\.dsa-float\{[^}]*right:var\(--dsa-gap-right/.test(source), 'the layer is anchored to the right edge')
 report.ok(/floatMode:\s*'capsule'/.test(source), 'the client mirror advertises the capsule default')
+
+// The dock is a DOM-measured presentation: no published API exposes the rail's
+// rectangle, so the shipped code has to look the rail up by selector and hand the
+// measurement to the pure function. Assert both halves are actually wired.
+report.ok(/data-dsa-float-mode="dock"/.test(source) || /'dock'/.test(source),
+  'the layer has a dock presentation')
+report.ok(/railDock\(/.test(source), 'the layer calls the pure railDock helper')
+report.ok(/\.dsa-float\[data-dsa-float-mode="dock"\]\{[^}]*right:auto/.test(source),
+  'the docked layer releases the right/bottom anchor it inherits')
+report.ok(/\[data-dsa-float-mode="dock"\]\s*\.dsa-card\{[^}]*height:100%/.test(source),
+  'the docked card fills its page instead of scrolling inside it')
+report.ok(/dockRail:\s*true/.test(source), 'the client mirror ships the dock enabled by default')
+report.ok(/RAIL_SELECTOR/.test(source), 'the rail lookup lives in one named place')
+
+// 1.8.3 live-report regression (2026-10-18, screenshot): a card stayed floating
+// while the rail was open, because (a) the layer cleaned up a variable that no
+// longer existed (`rail`) and (b) nothing re-measured when the rail opened. Both
+// are pinned here: the anchor ladder must start with our own rail-hosted node,
+// the effect must re-run on DOM changes, and the stale identifier must stay gone.
+report.ok(/'\[data-dsa-rail-host\]'/.test(source),
+  'the dock anchors on the plugin own rail-hosted node first')
+const railAnchorAt = source.indexOf("'[data-dsa-rail-host]'")
+const rightbarAt = source.indexOf("'.rightbar'", railAnchorAt)
+report.ok(railAnchorAt > -1 && rightbarAt > railAnchorAt,
+  'the plugin anchor is tried before the legacy .rightbar spelling')
+report.ok(/data-dsa-rail-host/.test(source), 'the in-rail card host is marked for measuring')
+report.ok(/MutationObserver/.test(source),
+  'opening the rail re-measures (DOM mutation, not just window resize)')
+report.ok(/attributeFilter:/.test(source),
+  'the mutation observer is limited to attributes so streaming does not re-measure every frame')
+report.ok(/dataDock|dsaDock/.test(source),
+  'the layer records WHY it is docked (dock / no-rail / rail-too-small / off / mode)')
+report.ok(/railOnScreen\(/.test(source),
+  'a collapsed (off-frame) rail is rejected instead of being clamped into view')
+report.ok(!/observed\.has\(rail\)/.test(source) && !/\brail !== null && !observed/.test(source),
+  'the stale `rail` identifier from the first dock attempt is gone')
+
+// The carrier preference is an ORDER, not a boolean, so a behavioural assertion
+// alone cannot catch a future re-ordering: the automatic ladder itself is pinned.
+// A card re-hosted as a rail tab is a tab the plugin does not own, so `auto`
+// must never reach the rail on its own.
+const autoOrderAt = source.indexOf('const autoOrder = [')
+const autoOrder = autoOrderAt === -1 ? '' : source.slice(autoOrderAt, source.indexOf(']', autoOrderAt))
+report.ok(/surfaces\.better/.test(autoOrder), 'auto tries the side-card plugin first')
+report.ok(/surfaces\.better[\s\S]*surfaces\.flow/.test(autoOrder), 'the built-in card is the second choice')
+report.ok(!/surfaces\.native/.test(autoOrder), 'the right rail is not part of the automatic chain')
+report.ok(/const all = \[surfaces\.native, surfaces\.better, surfaces\.flow\]/.test(source),
+  'the rail stays reachable when the user names it')
+const surfaceSelectAt = source.indexOf("select('sideSurface'")
+const surfaceSelect = surfaceSelectAt === -1 ? '' : source.slice(surfaceSelectAt, surfaceSelectAt + 420)
+const optionOrder = ['auto', 'better-sidebar', 'flow', 'native-rightbar'].map(key => surfaceSelect.indexOf(`'${key}'`))
+report.ok(optionOrder.every(index => index > -1)
+  && optionOrder.every((index, position) => position === 0 || index > optionOrder[position - 1]),
+  'the settings options are listed in the same preference order')
+report.ok(/surfaceNativeForce/.test(surfaceSelect),
+  'the rail option says it is forced and outside `auto`')
 
 report.summary()
