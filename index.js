@@ -44,7 +44,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '1.9.1'
+export const PLUGIN_VERSION = '2.0.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -77,10 +77,12 @@ export const DEFAULT_CONFIG = {
   sideProvider: 'auto',
   /**
    * Floating-layer (A) surface. `capsule` = one-line pill that never covers
-   * the conversation, `full` = the classic card stack, `off` = hidden behind a
-   * small launcher. The geometry for all three lives in `client.js`:
-   * the layer is anchored to the frame's right edge and never crosses the
-   * conversation column's right boundary (see `FLOAT_*` there).
+   * the conversation, `full` = the classic card stack. (The former `off`
+   * "hidden behind a small launcher" shape was removed in 2.0.0; a stored
+   * `off` now fails validation and falls back to this default.) The geometry
+   * for both shapes lives in `client.js`: the layer is anchored to the frame's
+   * right edge and never crosses the conversation column's right boundary
+   * (see `FLOAT_*` there).
    */
   floatMode: 'capsule',
   /** Hard cap, in CSS px, for the floating layer's width. */
@@ -208,7 +210,7 @@ const ENUMS = {
   sideSurface: ['auto', 'native-rightbar', 'better-sidebar', 'flow'],
   captureZones: ['auto', 'chat', 'task', 'chat+task'],
   sideTools: ['readonly', 'inherit'],
-  floatMode: ['capsule', 'full', 'off'],
+  floatMode: ['capsule', 'full'],
   answerStyle: ['concise', 'standard', 'detailed'],
 }
 
@@ -586,7 +588,7 @@ export function buildSidePrompt(input) {
 //   2. No dependency is added: the SMTP dialogue below runs on `node:net` and
 //      `node:tls` only, because the Host half may import nothing but node:
 //      built-ins (see the module header). A plugin that cannot reach an SMTP
-//      relay still works: the Client offers a `mailto:` fallback.
+//      relay still works: the Client offers to copy the report text.
 // ────────────────────────────────────────────────────────────────────────────
 
 /** Bounds for one feedback mail, mirrored by the Client's own form checks. */
@@ -769,8 +771,7 @@ export function readSmtpFromEnv(env = process.env) {
 /**
  * Resolve the plaintext recipient. SERVER-SIDE ONLY: this value must never be
  * put into a response body or rendered by the Client — the settings page only
- * ever receives `toMasked` plus the `hasRecipient` flag, and asks for a finished
- * `mailto:` URL when the user actually clicks the mail-app button.
+ * ever receives `toMasked` plus the `hasRecipient` flag.
  * @param {Record<string, unknown>} config - the effective config.
  * @param {Record<string, string|undefined>} [env] - the process environment.
  * @returns {string} the address, or '' when unconfigured.
@@ -842,7 +843,7 @@ export function describeSmtpSettings(config = {}, env = process.env) {
 export function describeFeedback(config = {}, env = process.env) {
   const to = feedbackRecipient(config, env)
   const base = {
-    transport: 'mailto',
+    transport: 'none',
     configured: false,
     hasRecipient: to !== '',
     toMasked: maskEmail(to),
@@ -854,7 +855,7 @@ export function describeFeedback(config = {}, env = process.env) {
   if (to === '') return { ...base, reason: '未配置收件邮箱：设置 feedbackAddress 或 DSH_SIDECARD_FEEDBACK_TO / DSH_CRB_FEEDBACK_TO' }
   if (!looksLikeEmail(to)) return { ...base, reason: '收件邮箱格式不合法' }
   const smtp = resolveSmtp(config, env)
-  if (smtp.ok !== true) return { ...base, reason: `${smtp.reason}（可用“用邮件客户端发送”）` }
+  if (smtp.ok !== true) return { ...base, reason: smtp.reason }
   return { ...base, transport: 'smtp', configured: true, fromMasked: maskEmail(smtp.endpoint.from), reason: '' }
 }
 
@@ -918,26 +919,6 @@ export function describeEnvironment({ version, dshVersion = '', now = new Date()
     `platform: ${process.platform} ${process.arch}`,
     `at: ${now.toISOString()}`,
   ].join('\n')
-}
-
-/**
- * Build the `mailto:` URL the mail-app button navigates to.
- *
- * Lives on the Host on purpose: the plaintext recipient must not be rendered or
- * held by the page. The Client asks for a finished URL and only follows it.
- * @returns {string} a `mailto:` URL with encoded subject and body.
- */
-export function buildMailtoUrl({ to, version, input, userAgent = '' }) {
-  const subject = `[dsh-sidecard-ask ${version}] ${input.kind}: ${input.title}`
-  const text = [
-    `plugin: ${version}`,
-    `kind: ${input.kind}`,
-    input.body,
-    '',
-    `contact: ${input.contact === '' ? '(not provided)' : input.contact}`,
-  ]
-  if (userAgent !== '') text.push(`user agent: ${userAgent}`)
-  return `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text.join('\n'))}`
 }
 
 /**
@@ -2092,8 +2073,8 @@ export function apply(ctx, patchConfig) {
   /** `/state` — the Client's single source of truth at boot and after a save. */
   const handleState = (res) => {
     // Two secrets never reach the page: the recipient stays server-side (the page
-    // gets `hasRecipient` and asks for a finished `mailto:` URL), and the SMTP
-    // password is write-only (the page only learns whether one is stored).
+    // gets `hasRecipient` and `toMasked` only), and the SMTP password is
+    // write-only (the page only learns whether one is stored).
     const publicConfig = { ...state.config }
     delete publicConfig.feedbackAddress
     delete publicConfig.feedbackSmtpPass
@@ -2151,9 +2132,8 @@ export function apply(ctx, patchConfig) {
    * `/feedback` — mail one settings-page report to the configured recipient.
    *
    * Failure codes are the Client's contract: `feedback-unconfigured` (no
-   * recipient or no SMTP — the Client then offers `mailto:`),
-   * `feedback-invalid` (bounds), `feedback-too-fast` / `feedback-too-many`
-   * (gate), `feedback-send-failed` (relay refused). The report body is never
+   * recipient or no SMTP), `feedback-invalid` (bounds), `feedback-too-fast` /
+   * `feedback-too-many` (gate), `feedback-send-failed` (relay refused). The report body is never
    * logged; only kind, masked recipient and outcome are.
    */
   const handleFeedback = async (req, res) => {
@@ -2206,44 +2186,6 @@ export function apply(ctx, patchConfig) {
       ctx.logger?.warn?.(`[sidecard-ask] feedback failed to ${maskEmail(to)}: ${wire.code} ${wire.message}`)
       writeError(res, 502, 'feedback-send-failed', wire.message)
     }
-  }
-
-  /**
-   * `/feedback-mailto` — hand the Client a finished `mailto:` URL.
-   *
-   * This exists so the plaintext recipient never has to enter the page: the
-   * settings form shows a mask, and when the user clicks "send with my mail app"
-   * the Host builds the URL and the Client only navigates to it.
-   */
-  const handleFeedbackMailto = async (req, res) => {
-    let body
-    try {
-      body = await readJsonBody(req)
-    } catch (error) {
-      writeError(res, 400, toWireError(error, 'bad-request').code, toWireError(error).message)
-      return
-    }
-    const input = sanitizeFeedbackInput(body)
-    if (input.ok !== true) {
-      writeError(res, 400, 'feedback-invalid', input.message)
-      return
-    }
-    const to = feedbackRecipient(state.config)
-    if (to === '') {
-      writeError(res, 503, 'feedback-unconfigured', '未配置收件邮箱：在设置页填写，或设置 DSH_SIDECARD_FEEDBACK_TO')
-      return
-    }
-    if (!looksLikeEmail(to)) {
-      writeError(res, 503, 'feedback-unconfigured', '收件邮箱格式不合法')
-      return
-    }
-    const url = buildMailtoUrl({
-      to,
-      version: PLUGIN_VERSION,
-      input: input.value,
-      userAgent: typeof body.userAgent === 'string' ? body.userAgent : '',
-    })
-    writeOk(res, { url, toMasked: maskEmail(to) })
   }
 
   /** `/ask` — one SSE stream per side answer. */
@@ -2338,7 +2280,7 @@ export function apply(ctx, patchConfig) {
    * The HTTP methods the plugin serves; kept in one place because the route
    * registration has two shapes (see below).
    */
-  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback', 'feedback-mailto']
+  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
 
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
@@ -2373,7 +2315,6 @@ export function apply(ctx, patchConfig) {
       else if (method === 'reset') handleReset(req, res)
       else if (method === 'diagnose') await handleDiagnose(req, res)
       else if (method === 'feedback') await handleFeedback(req, res)
-      else if (method === 'feedback-mailto') await handleFeedbackMailto(req, res)
       else writeError(res, 404, 'not-found', `未知接口 "${method}"`)
     } catch (error) {
       const wire = toWireError(error)

@@ -204,10 +204,19 @@ const { readFileSync } = await import('node:fs')
 const { CLIENT_ENTRY } = await import('./harness.mjs')
 const source = readFileSync(CLIENT_ENTRY, 'utf8')
 report.ok(/data-dsa-float-mode/.test(source), 'the layer exposes its mode for diagnostics')
-// The card's controls go through its `onFloatMode` prop (the layer passes
-// `setFloatMode`), so assert the call sites rather than a function name.
-report.ok(/floatControl\(\s*'capsule'/.test(source) && /floatControl\(\s*'off'/.test(source),
-  'the card offers collapse/hide controls')
+// The card's controls go through its props (the layer passes `setFloatMode` and
+// `actions.deleteCard`), so assert the call sites rather than a function name.
+// 2.0.0: the header's × stopped being a "hide the layer" toggle and became the
+// delete action, and the `off` shape went with it — pin both halves so a future
+// edit cannot quietly reintroduce the launcher or drop the delete wiring.
+report.ok(/floatControl\(\s*'capsule'/.test(source), 'the card offers the collapse control')
+report.ok(!/floatControl\(\s*'off'/.test(source), 'the card no longer offers a hide-the-layer control')
+report.ok(!/\bdsa-launcher\b/.test(source) && !/\bfloatRestore\b/.test(source),
+  'the hidden-layer launcher is gone from the stylesheet and the dictionary')
+report.ok(/onDelete:\s*\(\)\s*=>\s*actions\.deleteCard\(card\)/.test(source),
+  'the floating layer wires the card × to the delete action')
+report.ok(/['"]off['"]/.test(source) === false || !/mode === 'off'/.test(source),
+  'no render branch reacts to the retired `off` shape')
 report.ok(/--dsa-float-w/.test(source), 'the width is a CSS variable, not a hardcoded 400px')
 // `[^}]` (not `.`) on purpose: CSS rules wrap across lines in the stylesheet.
 report.ok(!/\.dsa-stack\{[^}]*position:\s*fixed/.test(source) && !/\.dsa-stack\{[^}]*width:\s*min\(400px/.test(source),

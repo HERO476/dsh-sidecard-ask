@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '1.9.1'
+    const CLIENT_VERSION = '2.0.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -476,6 +476,12 @@ window.__ModuleLoader__.load({
         answerEmpty: '（没有内容）',
         cardClosed: '该卡片已关闭',
         cardMovedToFlow: '该卡片已移至浮层显示',
+        cardDelete: '删除这条追问对话',
+        cardDeleteTitle: '删除这条追问对话？',
+        cardDeleteBody: '会同时从浮层和追问历史里移除，且不可撤销。',
+        cardDeleteRounds: '含 {n} 轮追问',
+        cardDeleteConfirm: '删除',
+        cardDeleted: '已删除这条追问对话',
         reasoningTitle: '思考过程',
         copy: '复制',
         copied: '已复制',
@@ -528,7 +534,6 @@ window.__ModuleLoader__.load({
         setFloatMode: '浮层默认形态',
         setFloatModeCapsule: '胶囊（不遮挡对话，可随时展开）',
         setFloatModeFull: '直接展开成卡片',
-        setFloatModeOff: '关闭浮层（只留小圆点）',
         setFloatModeHint: '浮层贴右侧边缘，只在空间不足时才可能压到对话区',
         setFloatMaxWidth: '浮层宽度上限（px）',
         setFloatMaxWidthHint: '空间不足时自动收窄，不会硬顶',
@@ -537,9 +542,6 @@ window.__ModuleLoader__.load({
         floatDocked: '已占满右侧栏',
         floatExpand: '展开侧边卡片',
         floatCollapse: '收起为胶囊（不遮挡对话）',
-        floatHide: '隐藏浮层（只留小圆点）',
-        floatRestore: '恢复浮层',
-        floatCount: '{n} 条追问回答',
         floatStreaming: '正在作答…',
         floatDone: '已完成 {n} 条',
         setShortcut: '快捷键',
@@ -709,26 +711,15 @@ window.__ModuleLoader__.load({
         feedbackSend: '发送邮件',
         feedbackSending: '发送中…',
         feedbackSent: '已发送，谢谢反馈',
-        feedbackMailto: '用邮件客户端发送',
         feedbackCopy: '复制内容',
         feedbackCopied: '已复制到剪贴板',
-        feedbackUnconfigured: '没有可用的发信服务，可用“用邮件客户端发送”自行寄出',
-        feedbackMailtoOnly: '收件人已填好，只缺发信凭据（SMTP 账号与授权码，由环境变量或用户层配置提供）；现在也可以“用邮件客户端发送”',
+        feedbackUnconfigured: '没有可用的发信服务，暂时不能直接寄出；可用“复制内容”自己发给我',
+        feedbackNoCredentials: '收件人已填好，只缺发信凭据（SMTP 账号与授权码，由环境变量或用户层配置提供）；可用“复制内容”自己发给我',
         feedbackNeedsTitle: '标题至少 4 个字',
         feedbackNeedsBody: '详细描述至少 10 个字',
         feedbackContactTooLong: '联系方式太长（≤{n} 字）',
         feedbackFailed: '发送失败：{message}',
         feedbackEnvNote: '自动附带：插件版本、Node/平台、发送时间',
-        feedbackSmtpShow: '设置邮件发送（SMTP）',
-        feedbackSmtpHide: '收起邮件发送设置',
-        feedbackSmtpEnvNote: '当前凭证来自环境变量（优先级高于用户层配置）',
-        feedbackSmtpHost: 'SMTP 服务器',
-        feedbackSmtpSecure: 'SSL/TLS（465 端口）',
-        feedbackSmtpPassSaved: '已保存，留空则不改动',
-        feedbackSmtpPass: '密码 / 授权码',
-        feedbackSmtpFrom: '发件邮箱（留空＝同账号）',
-        feedbackSmtpHint: 'QQ、163 等邮箱要用「授权码」而不是登录密码；密码只写进本地 config.json，页面读不回来，也不会随插件发布',
-        feedbackSmtpSaveHint: '填完点「保存」（会把本页设置一起保存）；不保存就点发送，密码不会被记住',
         feedbackTooFast: '刚发过一封，请稍等半分钟',
         feedbackTooMany: '发送过于频繁，请稍后再试',
       },
@@ -761,6 +752,12 @@ window.__ModuleLoader__.load({
         answerEmpty: '(empty)',
         cardClosed: 'This card was closed',
         cardMovedToFlow: 'This card moved to the floating stack',
+        cardDelete: 'Delete this follow-up conversation',
+        cardDeleteTitle: 'Delete this follow-up conversation?',
+        cardDeleteBody: 'It will be removed from both the floating layer and the follow-up history. This cannot be undone.',
+        cardDeleteRounds: 'Includes {n} follow-up turn(s)',
+        cardDeleteConfirm: 'Delete',
+        cardDeleted: 'Deleted this follow-up conversation',
         reasoningTitle: 'Reasoning',
         copy: 'Copy',
         copied: 'Copied',
@@ -813,7 +810,6 @@ window.__ModuleLoader__.load({
         setFloatMode: 'Floating layer default',
         setFloatModeCapsule: 'Capsule (never covers the conversation)',
         setFloatModeFull: 'Expanded card stack',
-        setFloatModeOff: 'Hidden (small launcher only)',
         setFloatModeHint: 'The layer is anchored to the right edge and only overlaps on very narrow frames',
         setFloatMaxWidth: 'Floating layer max width (px)',
         setFloatMaxWidthHint: 'Narrows automatically when there is not enough room',
@@ -822,9 +818,6 @@ window.__ModuleLoader__.load({
         floatDocked: 'Filled the right rail',
         floatExpand: 'Expand the side cards',
         floatCollapse: 'Collapse to a capsule (stops covering the conversation)',
-        floatHide: 'Hide the layer (leaves a small launcher)',
-        floatRestore: 'Restore the floating layer',
-        floatCount: '{n} follow-up answers',
         floatStreaming: 'Answering…',
         floatDone: '{n} done',
         setShortcut: 'Shortcut',
@@ -994,26 +987,15 @@ window.__ModuleLoader__.load({
         feedbackSend: 'Send mail',
         feedbackSending: 'Sending…',
         feedbackSent: 'Sent — thank you',
-        feedbackMailto: 'Send with my mail app',
         feedbackCopy: 'Copy text',
         feedbackCopied: 'Copied to the clipboard',
-        feedbackUnconfigured: 'No mail service is configured; use “Send with my mail app” instead',
-      feedbackMailtoOnly: 'The recipient is set; only the SMTP credentials (environment variables) are missing, so use “Send with my mail app”',
+        feedbackUnconfigured: 'No mail service is configured, so the report cannot be sent from here; use “Copy text” and send it yourself',
+        feedbackNoCredentials: 'The recipient is set; only the SMTP credentials (environment variables or the user config) are missing, so use “Copy text” and send it yourself',
         feedbackNeedsTitle: 'The title needs at least 4 characters',
         feedbackNeedsBody: 'The details need at least 10 characters',
         feedbackContactTooLong: 'The contact line is too long (max {n} characters)',
         feedbackFailed: 'Send failed: {message}',
         feedbackEnvNote: 'Attached automatically: plugin version, Node/platform, send time',
-        feedbackSmtpShow: 'Set up mail delivery (SMTP)',
-        feedbackSmtpHide: 'Hide mail delivery settings',
-        feedbackSmtpEnvNote: 'Credentials come from the environment right now (it outranks this page), so the fields below have no effect.',
-        feedbackSmtpHost: 'SMTP server',
-        feedbackSmtpSecure: 'SSL/TLS (port 465)',
-        feedbackSmtpPassSaved: 'Saved — leave empty to keep it',
-        feedbackSmtpPass: 'Password / app code',
-        feedbackSmtpFrom: 'From address (empty = the account)',
-        feedbackSmtpHint: 'QQ/163 need an app-specific code, not the login password. The password is written to this machine\'s config.json only; the page never reads it back and it never ships with the plugin.',
-        feedbackSmtpSaveHint: 'Press “Save” after filling this in (it saves the whole page). Without saving, the code is not remembered and sending keeps failing.',
         feedbackTooFast: 'One mail just went out — wait half a minute',
         feedbackTooMany: 'Too many reports for now — try again later',
       },
@@ -1238,8 +1220,8 @@ window.__ModuleLoader__.load({
         surface: 'flow',
         surfaceNote: null,
         /**
-         * In-session override of `config.floatMode`, set by the layer's own
-         * collapse/hide buttons. `null` = follow the configured default.
+         * In-session override of `config.floatMode`, set by the card header's
+         * collapse button. `null` = follow the configured default.
          */
         floatMode: null,
         sessionId: null,
@@ -1384,10 +1366,10 @@ window.__ModuleLoader__.load({
      * NOT persisted: the settings page owns the durable default, and a reload
      * should return to it (a pill hidden by accident must not stay hidden
      * across sessions).
-     * @param {string} mode - `capsule` | `full` | `off`.
+     * @param {string} mode - `capsule` | `full`.
      */
     function setFloatMode(mode) {
-      if (mode !== 'capsule' && mode !== 'full' && mode !== 'off') return
+      if (mode !== 'capsule' && mode !== 'full') return
       store.set({ floatMode: mode })
     }
 
@@ -1789,7 +1771,7 @@ window.__ModuleLoader__.load({
       return { ok: true }
     }
 
-    /** One-line subject for the report (also used by the `mailto:` fallback). */
+    /** One-line subject for the report. */
     function feedbackSubjectFor({ version, draft }) {
       const title = typeof draft?.title === 'string' ? draft.title.trim() : ''
       const kind = typeof draft?.kind === 'string' && draft.kind !== '' ? draft.kind : 'other'
@@ -2216,7 +2198,7 @@ window.__ModuleLoader__.load({
    (\`html[data-platform] body>[data-dsh-better-sidebar]{-webkit-app-region:initial}\`
    plus \`[data-dsh-panel-host]>*{-webkit-app-region:no-drag}\`).
    Every surface we draw declares it. The property is inert in a browser. */
-.dsa-layer,.dsa-trigger,.dsa-quickbar,.dsa-pop,.dsa-ctxmenu,.dsa-float,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings{-webkit-app-region:no-drag}
+.dsa-layer,.dsa-trigger,.dsa-quickbar,.dsa-pop,.dsa-ctxmenu,.dsa-float,.dsa-stack,.dsa-card,.dsa-toast,.dsa-settings,.dsa-confirm{-webkit-app-region:no-drag}
 .dsa-layer{pointer-events:none;position:relative;z-index:60}
 .dsa-trigger{pointer-events:auto;position:fixed;display:flex;align-items:center;gap:4px;
   padding:4px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
@@ -2334,9 +2316,16 @@ body[data-ds-dark-theme] .dsa-quickbar .dsa-trigger-embedded{color:#0a1428}
 html[data-ds-dark-theme] .dsa-btn-primary,
 body[data-ds-dark-theme] .dsa-btn-primary{color:#0a1428}
 .dsa-btn:disabled{opacity:.55;cursor:default}
-/* Icon-only variant (the floating layer's collapse/hide controls): square and
-   quiet so the card title bar stays one line and the title keeps the weight. */
+/* Icon-only variant (the floating layer's collapse / delete controls): square
+   and quiet so the card title bar stays one line and the title keeps the weight. */
 .dsa-btn-icon{padding:4px 7px;line-height:1;font-size:13px;color:var(--dsw-alias-label-secondary, #666)}
+/* Destructive confirmation only: the irreversible button carries the error token
+   so it can never be mistaken for the safe one rendered next to it. Placed after
+   .dsa-btn-icon on purpose — same specificity, so source order decides. */
+.dsa-btn-danger{border-color:var(--dsw-alias-state-error-primary, #c0392b);
+  background:var(--dsw-alias-state-error-primary, #c0392b);color:#fff;font-weight:500}
+.dsa-btn-danger:hover{border-color:var(--dsw-alias-state-error-primary, #c0392b);
+  background:var(--dsw-alias-state-error-primary, #c0392b)}
 /* Segmented control (main chat / side card). These are the two destinations an
    answer can land in, so the pair has to read as a radio choice, not as two
    quiet labels: the group gets a recessed track with an explicit mid-grey edge
@@ -2422,11 +2411,18 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 .dsa-capsule-q{min-width:0;flex:1;color:var(--dsw-alias-label-secondary, #666);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsa-capsule-chev{flex:none;color:var(--dsw-alias-label-secondary, #888)}
-.dsa-launcher{display:inline-flex;align-items:center;gap:6px;align-self:flex-start;padding:6px 11px;
-  border-radius:999px;cursor:pointer;font:inherit;font-size:12px;line-height:18px;
-  border:1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.45));
-  background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-secondary, #666)}
-.dsa-launcher:hover{border-color:var(--dsw-alias-brand-primary, #4c8dff)}
+/* Delete confirmation (2.0.0). Fixed, not inline: a card docked into the right
+   rail lives inside an overflow:hidden page, which would clip a sheet anchored
+   to the card. Same backdrop recipe as the feedback dialog. */
+.dsa-confirm-backdrop{position:fixed;inset:0;z-index:1100;display:flex;align-items:center;
+  justify-content:center;padding:24px;background:rgba(0,0,0,.42)}
+.dsa-confirm{display:flex;flex-direction:column;gap:8px;width:min(360px, 100%);padding:14px 16px;
+  border-radius:12px;border:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3));
+  background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
+  box-shadow:0 18px 48px rgba(0,0,0,.28)}
+.dsa-confirm-title{font-size:13px;font-weight:600}
+.dsa-confirm-body{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary, #666)}
+.dsa-confirm > .dsa-row{justify-content:flex-end}
 .dsa-answer{max-height:44vh;overflow:auto;word-break:break-word}
 .dsa-answer .dsa-p{margin:0 0 6px}
 .dsa-answer .dsa-ul{margin:0 0 6px;padding-left:18px}
@@ -4008,14 +4004,69 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
     }
 
     /**
+     * The confirmation gate for an irreversible action.
+     *
+     * A component rather than an inline block for two reasons: every
+     * destructive control can reuse it, and the test harness cannot drive a
+     * click-driven state change, so rendering it directly is the only way this
+     * markup gets asserted (same seam as {@link FeedbackDialog}).
+     *
+     * The safe choice is the default: Cancel takes focus, Escape aborts, and
+     * only a click on the backdrop itself dismisses — a click that lands on the
+     * dialog must not throw away the decision the user is making.
+     */
+    function DeleteConfirmDialog({ title, body, detail, cancelLabel, confirmLabel, onCancel, onConfirm }) {
+      return h('div', {
+        className: 'dsa-confirm-backdrop',
+        onClick: event => {
+          if (event.target === event.currentTarget) onCancel()
+        },
+        onKeyDown: event => {
+          if (event.key !== 'Escape') return
+          // Escape is the safe exit, so it stops here: the card's own Esc
+          // handler and the global shortcut layer must not also react.
+          event.stopPropagation()
+          onCancel()
+        },
+      },
+      h('div', {
+        className: 'dsa-confirm',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': title,
+      },
+      h('strong', { className: 'dsa-confirm-title' }, title),
+      h('div', { className: 'dsa-confirm-body' }, body),
+      detail !== null && detail !== undefined && detail !== '' ? h('div', { className: 'dsa-muted' }, detail) : null,
+      h('div', { className: 'dsa-row' },
+        h('button', {
+          type: 'button',
+          className: 'dsa-btn',
+          // Safe default: a stray Enter on an unreviewed dialog must not
+          // destroy anything.
+          autoFocus: true,
+          onClick: onCancel,
+        }, cancelLabel),
+        h('button', {
+          type: 'button',
+          className: 'dsa-btn dsa-btn-danger',
+          onClick: onConfirm,
+        }, confirmLabel))))
+    }
+
+    /**
      * One answer card; `embedded` is true inside a host's tab.
      *
-     * `onFloatMode` is passed ONLY by the floating layer: it renders the
-     * collapse/hide controls that let the user get the layer out of the way
-     * (the layer is the only surface that can cover the conversation). A host
-     * tab that embeds the same card passes no callback and gets no buttons.
+     * `onFloatMode` / `onDelete` are passed ONLY by the floating layer. The
+     * first renders the "collapse to a capsule" control that gets the layer out
+     * of the way (the layer is the only surface that can cover the
+     * conversation); the second renders the × that DELETES this follow-up
+     * conversation — its live card *and* its durable history entry — after a
+     * confirmation. A host tab that embeds the same card passes neither and
+     * keeps its own tab close plus the footer Close button, which by design
+     * detaches the card without touching the history.
      */
-    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain, onFloatMode, onLocate, onExport, onInsert, onReplace, onViewVersion }) {
+    function AnswerCard({ card, surfaceLabel, onCopy, onFollowUp, onRetry, onRetryEdit, onClose, onCancel, onSendToMain, onFloatMode, onDelete, onLocate, onExport, onInsert, onReplace, onViewVersion }) {
       const [followOpen, setFollowOpen] = React.useState(false)
       const [draft, setDraft] = React.useState('')
       // Edit-&-retry editor: prefilled with the card's CURRENT question and
@@ -4023,6 +4074,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       // edit-retry regenerates THIS turn, keeping the card's earlier turns).
       const [editOpen, setEditOpen] = React.useState(false)
       const [editDraft, setEditDraft] = React.useState('')
+      // Deleting a follow-up conversation is irreversible, so it goes through an
+      // in-plugin confirmation — EXCEPT for a card that holds nothing: no
+      // follow-up turn, no answer text, no reasoning, no run in flight. There is
+      // nothing to lose there, and prompting on an empty card only trains the
+      // user to dismiss the prompt that matters.
+      const [deleteOpen, setDeleteOpen] = React.useState(false)
       const answerRef = React.useRef(null)
       const config = store.state.config
       // P2-5b: an older version is READ-ONLY content swapped into the same
@@ -4057,6 +4114,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       // without modifiers and never while composing or inside an editor.
       const onCardKeyDown = (event) => {
         if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return
+        // The confirmation is modal: R/C must not act on a card the user is
+        // currently deciding to delete.
+        if (deleteOpen) return
         const tag = String(event.target?.tagName ?? '')
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON'
           || event.target?.closest?.('[contenteditable=""],[contenteditable="true"]') !== null) {
@@ -4085,6 +4145,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       if (typeof card.elapsedMs === 'number' && Number.isFinite(card.elapsedMs) && formatElapsed(card.elapsedMs) !== '') {
         metaBits.push(`${t('metaElapsed')} ${formatElapsed(card.elapsedMs)}`)
       }
+      // "Empty" is judged on the card's own content, never on how it got here.
+      const turns = Array.isArray(card.history) ? card.history.length : 0
+      const busy = card.status === 'pending' || card.status === 'streaming'
+      const nothingToLose = turns === 0
+        && String(card.text ?? '').trim() === ''
+        && String(card.reasoning ?? '').trim() === ''
+      const requestDelete = () => {
+        if (!busy && nothingToLose) {
+          onDelete?.()
+          return
+        }
+        setDeleteOpen(true)
+      }
       return h('section', {
         className: 'dsa-card',
         'aria-label': t('answerTitle'),
@@ -4097,10 +4170,20 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           h('span', { className: 'dsa-badge' }, zoneLabel(card)),
           surfaceLabel !== null ? h('span', { className: 'dsa-badge' }, surfaceLabel) : null,
           card.truncated ? h('span', { className: 'dsa-badge dsa-badge-warn' }, t('truncatedBadge', { n: card.droppedChars })) : null,
-          typeof onFloatMode === 'function'
+          typeof onFloatMode === 'function' || typeof onDelete === 'function'
             ? h('span', { className: 'dsa-row', style: { marginLeft: 'auto' } },
-              floatControl('capsule', 'floatCollapse', '⇥'),
-              floatControl('off', 'floatHide', '×'))
+              typeof onFloatMode === 'function'
+                ? floatControl('capsule', 'floatCollapse', '⇥')
+                : null,
+              typeof onDelete === 'function'
+                ? h('button', {
+                  type: 'button',
+                  className: 'dsa-btn dsa-btn-icon',
+                  title: t('cardDelete'),
+                  'aria-label': t('cardDelete'),
+                  onClick: () => requestDelete(),
+                }, '×')
+                : null)
             : null),
         h('pre', { className: 'dsa-quote' }, shown.question),
         versions.length > 0
@@ -4251,17 +4334,34 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           onFollowUp: () => setFollowOpen(open => !open),
           onClose,
         }),
-        surfaceLabel === null ? h('div', { className: 'dsa-muted' }, `${t('carrierSide')} · max ${config.maxChars}`) : null)
+        surfaceLabel === null ? h('div', { className: 'dsa-muted' }, `${t('carrierSide')} · max ${config.maxChars}`) : null,
+        deleteOpen
+          ? h(DeleteConfirmDialog, {
+            title: t('cardDeleteTitle'),
+            body: t('cardDeleteBody'),
+            detail: turns > 0 ? t('cardDeleteRounds', { n: turns }) : null,
+            cancelLabel: t('askCancel'),
+            confirmLabel: t('cardDeleteConfirm'),
+            onCancel: () => setDeleteOpen(false),
+            onConfirm: () => {
+              setDeleteOpen(false)
+              onDelete?.()
+            },
+          })
+          : null)
     }
 
     /**
      * The flow surface, i.e. the floating layer (A).
      *
-     * Three shapes, all sharing one right-anchored container:
+     * Two shapes, both sharing one right-anchored container:
      *   - `capsule`: a single ~34px pill (status + truncated question). The
      *     default, because a one-line pill cannot bury the conversation.
      *   - `full`: the classic card stack, collapsed on demand.
-     *   - `off`: only a small launcher, so nothing covers the page until asked.
+     *
+     * The former `off` shape (hide the layer behind a small launcher) is gone
+     * as of 2.0.0: the card header's × deletes that follow-up conversation
+     * instead, and "hide everything" was never a state this layer needed.
      *
      * The width comes from {@link floatPlacement}, so the layer stops growing
      * left as soon as it would cross the conversation column's right boundary.
@@ -4462,16 +4562,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         onReplace: target => actions.insertAnswer(target ?? card, { replace: true }),
         onViewVersion: index => actions.viewVersion(card, index),
         onFloatMode: setFloatMode,
+        onDelete: () => actions.deleteCard(card),
       }))
-
-      if (mode === 'off') {
-        return container(h('button', {
-          type: 'button',
-          className: 'dsa-launcher',
-          title: t('floatRestore'),
-          onClick: () => setFloatMode('full'),
-        }, dot, t('floatCount', { n: total })))
-      }
 
       if (mode === 'capsule') {
         return container(h('button', {
@@ -4486,8 +4578,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 
       // Docked: the card takes the rail's whole rectangle, so it reads as one of
       // the rail's pages rather than a 340px card hovering over it. The card
-      // keeps its own header (title + badges + collapse/hide controls), which is
-      // what makes the page dismissible without leaving the rail.
+      // keeps its own header (title + badges + collapse / delete controls),
+      // which is what makes the page dismissible without leaving the rail.
       return container(h('div', {
         className: 'dsa-stack',
         'data-dsa-dock-body': docked ? String(dock.width) : undefined,
@@ -4554,7 +4646,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
     function FeedbackDialog(props) {
       const {
         t, limits, draft, onChange, status, error, ready, reason, hasRecipient,
-        onClose, onSubmit, onMailto, onCopy,
+        onClose, onSubmit, onCopy,
       } = props
       const sending = status === 'sending'
       // Escape closes it: a modal without a keyboard exit is a trap.
@@ -4641,15 +4733,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       })),
       h('span', { className: 'dsa-feedback-dialog-hint' }, t('feedbackContactHint')),
       h('span', { className: 'dsa-feedback-dialog-hint' }, t('feedbackEnvNote')),
-      // Readiness: three states, not two. No recipient at all, recipient but no
-      // usable transport (the mail-app path still works), fully ready. When the
-      // Host explains why, print its sentence verbatim.
+      // Readiness: two states, not one. No recipient at all, or a recipient
+      // but no usable transport. When the Host explains why, print its
+      // sentence verbatim.
       ready === true
         ? null
         : h('span', { className: 'dsa-feedback-dialog-hint', 'data-feedback-readiness': 'unready' },
           String(reason ?? '') !== ''
             ? String(reason)
-            : (hasRecipient === true ? t('feedbackMailtoOnly') : t('feedbackUnconfigured'))),
+            : (hasRecipient === true ? t('feedbackNoCredentials') : t('feedbackUnconfigured'))),
       h('div', { className: 'dsa-feedback-dialog-actions' },
         h('button', {
           type: 'button',
@@ -4659,12 +4751,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           title: ready === true ? undefined : t('feedbackUnconfigured'),
           onClick: onSubmit,
         }, sending ? t('feedbackSending') : t('feedbackSend')),
-        h('button', {
-          type: 'button',
-          className: 'dsa-btn',
-          'data-feedback-mailto': '',
-          onClick: onMailto,
-        }, t('feedbackMailto')),
         h('button', {
           type: 'button',
           className: 'dsa-btn',
@@ -4752,32 +4838,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           })
           setFeedbackStatus('sent')
           setFeedbackDraft({ kind: feedbackDraft.kind, title: '', body: '', contact: '' })
-        } catch (error) {
-          setFeedbackStatus('error')
-          setFeedbackError(t('feedbackFailed', { message: localizeError(error) }))
-        }
-      }
-
-      /**
-       * Fallback that needs no credentials: hand the draft to the mail app.
-       *
-       * The URL is built by the Host — deliberately, so the plaintext recipient
-       * is never held or rendered by this page. If the Host has no recipient,
-       * it answers 503 and the failure is shown like any other.
-       */
-      const sendFeedbackByMailApp = async () => {
-        try {
-          const value = await postJson('feedback-mailto', {
-            kind: feedbackDraft.kind,
-            title: feedbackDraft.title.trim(),
-            body: feedbackDraft.body.trim(),
-            contact: feedbackDraft.contact.trim(),
-            userAgent: feedbackUserAgent,
-          })
-          const url = typeof value?.url === 'string' ? value.url : ''
-          if (url === '') throw new Error('no mailto url')
-          if (typeof window !== 'undefined' && typeof window.open === 'function') window.open(url, '_self')
-          else if (typeof location !== 'undefined') location.href = url
         } catch (error) {
           setFeedbackStatus('error')
           setFeedbackError(t('feedbackFailed', { message: localizeError(error) }))
@@ -5025,8 +5085,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       // form. Nothing else about feedback lives on this page: the transport is
       // the Host's business (environment / user config), so an end user has
       // nothing to fill in before writing a report. The banner also works when
-      // no SMTP endpoint is configured — the `mailto:` path needs nothing but a
-      // recipient — so the dialog says that in one line instead of looking broken.
+      // no SMTP endpoint is configured — the dialog says so in one line and
+      // points at the copy path instead of looking broken.
       const feedbackConfigured = feedbackInfo !== null && feedbackInfo.configured === true
       const feedbackBanner = h('div', { className: 'dsa-feedback-bar', 'data-dsa-feedback-section': '' },
         h('div', { className: 'dsa-feedback-bar-text' },
@@ -5055,7 +5115,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           hasRecipient: feedbackInfo?.hasRecipient === true,
           onClose: () => setFeedbackOpen(false),
           onSubmit: () => { void submitFeedback() },
-          onMailto: sendFeedbackByMailApp,
           onCopy: () => { void copyFeedbackDraft() },
         })
 
@@ -5094,7 +5153,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           field(t('setFloatMode'), select('floatMode', [
             ['capsule', t('setFloatModeCapsule')],
             ['full', t('setFloatModeFull')],
-            ['off', t('setFloatModeOff')],
           ]), t('setFloatModeHint')),
           field(t('setFloatMaxWidth'), number('floatMaxWidth', 240, 560), t('setFloatMaxWidthHint')),
           field(t('setMinChars'), number('minChars', 0, 200)),
@@ -5565,7 +5623,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             } else {
               store.set({ cards: [historyEntryToCard(entry), ...store.state.cards] })
             }
-            // A hidden (off/capsule) layer would swallow the restored card;
+            // A collapsed (capsule) layer would swallow the restored card;
             // this is a session-only override, exactly like clicking expand.
             setFloatMode('full')
             toast(t('historyRestored'))
@@ -5582,6 +5640,57 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               cards: store.state.cards.filter(card => card.id !== id),
             })
             toast(t('historyDeleted'))
+          },
+          /**
+           * Delete ONE follow-up conversation: the live card AND its durable
+           * history entry. This is the card header's ×.
+           *
+           * Deliberately stronger than {@link actions.close}: closing only
+           * detaches the card from the live surface and keeps the history entry
+           * on purpose (#6), while this removes the same id from both stores and
+           * persists immediately, so a reload cannot resurrect it.
+           *
+           * An in-flight run is released first: the browser stream is aborted,
+           * the Host child is told to cancel, and the card's buffered deltas are
+           * dropped — a late flush would otherwise re-append text to a card that
+           * no longer exists.
+           */
+          deleteCard(card) {
+            const id = card?.id
+            if (typeof id !== 'string' || id === '') return false
+            const controller = controllers.get(id)
+            if (controller !== undefined) {
+              controller.abort()
+              void postJson('cancel', { id }).catch(() => {})
+            }
+            controllers.delete(id)
+            pendingDeltas.delete(id)
+            pendingReasonings.delete(id)
+            // Every surface gets the same chance to close its own container as
+            // it does on close(): an orphaned tab reads to the user as a card
+            // that refused to die.
+            if (card.surface === 'better-sidebar') {
+              try {
+                surfaces.better.close(card)
+              } catch { /* the host may already be gone */ }
+            } else if (card.surface === 'native-rightbar') {
+              try {
+                surfaces.native.close(card)
+              } catch { /* the right rail owns its lifecycle */ }
+            }
+            const next = store.state.history
+              .filter(item => item.id !== id)
+              .slice(0, historyCap())
+            // cap === 0 means "nothing is persisted": leave the stored key alone
+            // rather than writing an empty payload over it (same rule as
+            // syncPersisted).
+            if (historyCap() > 0) writePersisted(next)
+            store.set({
+              history: next,
+              cards: store.state.cards.filter(item => item.id !== id),
+            })
+            toast(t('cardDeleted'))
+            return true
           },
           /**
            * Empty the durable history without touching running cards.
@@ -6755,11 +6864,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 
       /**
        * Test seam: components that can be rendered on their own. The feedback
-       * dialog lives here because the settings page mounts it only while open and
-       * the test shim has no working setState, so a simulated click cannot reach
-       * it.
+       * dialog and the delete confirmation both live here because their host
+       * mounts them only while open and the test shim has no working setState,
+       * so a simulated click cannot reach them.
        */
-      components: Object.freeze({ FeedbackDialog }),
+      components: Object.freeze({ FeedbackDialog, DeleteConfirmDialog }),
 
       /**
        * Test seam: pure helpers, frozen. The DSH client runtime only reads

@@ -681,6 +681,29 @@ console.log('\nP2 pure helpers (1.8.0)')
   const badStyle = host.sanitizeLayer({ answerStyle: 'shouty' }, badStyleProblems)
   report.equal(badStyle.answerStyle, undefined, 'sanitizeLayer drops an illegal style')
   report.ok(badStyleProblems.some(line => line.includes('answerStyle')), 'the dropped style is reported in problems')
+
+  // 2.0.0: the "hide the whole layer" mode is GONE. A stored `floatMode: 'off'`
+  // from an older profile must not resurrect a launcher this client no longer
+  // renders, so the enum refuses it and normalizeConfig falls back to the
+  // default capsule — visibly, through `problems`, not silently.
+  const retiredModeProblems = []
+  const retiredMode = host.sanitizeLayer({ floatMode: 'off' }, retiredModeProblems)
+  report.equal(retiredMode.floatMode, undefined, 'sanitizeLayer drops the retired "off" float mode')
+  report.ok(
+    retiredModeProblems.some(line => line.includes('floatMode')),
+    'the retired float mode is reported rather than silently swallowed',
+  )
+  for (const mode of ['capsule', 'full']) {
+    const modeProblems = []
+    report.equal(host.sanitizeLayer({ floatMode: mode }, modeProblems).floatMode, mode, `sanitizeLayer still accepts "${mode}"`)
+    report.equal(modeProblems.length, 0, `"${mode}" records no problem`)
+  }
+  const retiredNormalized = host.normalizeConfig({ floatMode: 'off' }, { floatMode: 'off' })
+  report.equal(retiredNormalized.config.floatMode, 'capsule', 'a stale "off" config falls back to the capsule default')
+  report.ok(
+    retiredNormalized.problems.some(line => line.includes('floatMode')),
+    'the stale-config fallback is reported, not silent',
+  )
   const personaProblems = []
   report.equal(
     host.sanitizeLayer({ customPersona: '😀'.repeat(500) }, personaProblems).customPersona,
@@ -909,6 +932,22 @@ for (const label of ['触发方式', '默认作答位置', '最大字符数', '�
   report.ok(settingsText.includes(label), `settings page renders the "${label}" row`)
 }
 report.ok(byTag(settingsTree, 'select').length >= 4, 'settings page renders its dropdowns')
+
+// 2.0.0: "隐藏浮层" is gone, so the 浮层默认形态 dropdown must offer exactly the
+// two shapes that still exist. Assert on the option VALUES, not the labels.
+const floatModeSelect = byTag(settingsTree, 'select').find(
+  node => (node.children ?? []).some(child => String(child?.props?.value ?? '') === 'capsule'))
+report.ok(floatModeSelect !== undefined, 'settings page renders the float-mode dropdown')
+report.equal(
+  (floatModeSelect?.children ?? []).map(child => String(child?.props?.value ?? '')),
+  ['capsule', 'full'],
+  'the float-mode dropdown offers only the two remaining shapes',
+)
+report.equal(
+  (floatModeSelect?.children ?? []).filter(child => String(child?.props?.value ?? '') === 'off').length,
+  0,
+  'the retired "off" option is no longer offered',
+)
 
 // 1.8.3: the settings page uses the same chip switch as the popover instead of
 // a dropdown, so "默认作答位置" reads at a glance wherever it appears. The click
@@ -2167,6 +2206,223 @@ report.equal(reloadClient.module.api.snapshot().history.length, 0, 'deleteHistor
 report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'deleteHistoryCard also removes the live card')
 report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the deletion is persisted immediately')
 
+console.log('\ndelete this follow-up conversation (2.0.0)')
+// 2.0.0 (user decision): the × in the card header no longer hides the layer —
+// it deletes THIS follow-up conversation, from the live surface AND from the
+// durable history, in one step. The old "hide the layer" mode is retired.
+{
+  const deleteStorage = createLocalStorageStub()
+  deleteStorage.setItem(PERSIST_KEY, JSON.stringify({
+    version: 3,
+    cards: [{
+      id: 'delete-me',
+      question: '删掉还会回来吗？',
+      selected: '被选中的原文',
+      text: '这条答案要被删除',
+      status: 'done',
+      createdAt: 1,
+      history: [
+        { question: '上一轮问', answer: '上一轮答' },
+        { question: '这一轮问', answer: '这一轮答' },
+      ],
+    }],
+  }))
+  const deleteCtx = makeClientCtx({})
+  const deleteClient = loadClientModule({ fetchImpl: hostFetch, storage: deleteStorage, language: 'zh-CN' })
+  deleteClient.module.apply(deleteCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const deleteSnapshot = () => deleteClient.module.api.snapshot()
+  report.equal(deleteSnapshot().cards.length, 1, 'the seeded card boots onto the flow stack')
+  report.equal(deleteSnapshot().history.length, 1, 'the seeded card boots into the durable history')
+
+  // The card header carries the delete affordance, and it is NOT the retired
+  // launcher/hide control.
+  const deleteOverlay = deleteCtx.find('shell.overlay', pure.IDS.overlay)
+  const deleteTree = expandTree(deleteOverlay.component())
+  const headerDeleteButtons = hostNodes(deleteTree).filter(
+    node => node.type === 'button'
+      && node.props['aria-label'] === pure.dict.zh.cardDelete)
+  report.equal(headerDeleteButtons.length, 1, 'the card header offers exactly one delete control')
+  report.equal(headerDeleteButtons[0]?.props?.title, pure.dict.zh.cardDelete, 'the delete control is labelled, not a bare glyph')
+  report.equal(headerDeleteButtons[0]?.children?.[0], '×', 'the delete control keeps the familiar × glyph')
+  report.equal(
+    hostNodes(deleteTree).filter(node => node.props['aria-label'] === '隐藏浮层（只留小圆点）').length,
+    0,
+    'the retired "hide the layer" control is gone from the header',
+  )
+  // The confirmation dialog only exists after the click, and the harness's
+  // useState never re-renders, so a freshly rendered card carries none.
+  report.equal(byClass(deleteTree, 'dsa-confirm-backdrop').length, 0, 'no confirmation backdrop renders before the click')
+
+  // The retired i18n keys must be gone from BOTH dictionaries: verify.mjs fails
+  // on a key that is defined but never referenced, and a leftover half-pair is
+  // exactly the drift that ships a Chinese string to English users.
+  for (const retired of ['floatHide', 'floatRestore', 'floatCount', 'setFloatModeOff']) {
+    report.equal(pure.dict.zh[retired], undefined, `zh no longer defines "${retired}"`)
+    report.equal(pure.dict.en[retired], undefined, `en no longer defines "${retired}"`)
+  }
+  report.equal(pure.dict.zh.cardDeleteConfirm, '删除', 'the dangerous action is labelled 删除')
+  report.equal(typeof pure.dict.zh.cardDeleteBody, 'string', 'the dialog explains its consequence')
+  report.ok(
+    String(pure.dict.en.cardDeleteBody ?? '').includes('cannot be undone'),
+    'the dialog states the deletion is irreversible',
+  )
+
+  // Guard rails first: a bad id must be refused without touching anything.
+  const deleteActions = deleteOverlay.component().props.actions
+  report.equal(deleteActions.deleteCard(undefined), false, 'deleteCard refuses an undefined card')
+  report.equal(deleteActions.deleteCard({ id: '' }), false, 'deleteCard refuses an empty id')
+  report.equal(deleteSnapshot().cards.length, 1, 'a refused delete leaves the live card alone')
+  report.equal(deleteSnapshot().history.length, 1, 'a refused delete leaves the history alone')
+
+  // The real thing: one call clears the live surface, the durable set and disk.
+  const deletedCard = deleteSnapshot().cards[0]
+  report.equal(deleteActions.deleteCard(deletedCard), true, 'deleteCard accepts a real card')
+  report.equal(deleteSnapshot().cards.length, 0, 'the card leaves the live surface')
+  report.equal(deleteSnapshot().history.length, 0, 'the card leaves the durable history')
+  report.equal(JSON.parse(deleteStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the deletion is written to disk immediately')
+  report.equal(
+    deleteClient.module.api.snapshot().toast,
+    pure.dict.zh.cardDeleted,
+    'the user gets an explicit confirmation toast',
+  )
+  // Deleting an id that is already gone is a no-op, not a resurrection.
+  report.equal(deleteActions.deleteCard(deletedCard), true, 're-deleting the same id is harmless')
+  report.equal(deleteSnapshot().cards.length, 0, 'a repeated delete does not resurrect the card')
+  report.equal(deleteSnapshot().history.length, 0, 'a repeated delete does not resurrect the history entry')
+
+  // The confirmation gate is rendered directly, because the test shim has no
+  // working setState: a click-driven open cannot be reached, so the only way to
+  // assert the modal's contract is to render it (same seam as FeedbackDialog).
+  {
+    const DeleteConfirm = deleteClient.module.components?.DeleteConfirmDialog
+    report.ok(typeof DeleteConfirm === 'function', 'the delete confirmation is exported for direct rendering')
+    const calls = []
+    const renderConfirm = overrides => expandTree(deleteClient.shim.React.createElement(DeleteConfirm, {
+      title: pure.dict.zh.cardDeleteTitle,
+      body: pure.dict.zh.cardDeleteBody,
+      detail: null,
+      cancelLabel: pure.dict.zh.askCancel,
+      confirmLabel: pure.dict.zh.cardDeleteConfirm,
+      onCancel: () => calls.push('cancel'),
+      onConfirm: () => calls.push('confirm'),
+      ...overrides,
+    }))
+    const confirmTree = renderConfirm({ detail: pure.dict.zh.cardDeleteRounds.replace('{n}', '2') })
+    const confirmNodes = hostNodes(confirmTree)
+    const dialog = confirmNodes.find(node => node.props?.role === 'dialog')
+    report.ok(dialog !== undefined, 'the confirmation is a dialog')
+    report.equal(dialog?.props?.['aria-modal'], 'true', 'the confirmation is announced as modal')
+    report.equal(dialog?.props?.['aria-label'], pure.dict.zh.cardDeleteTitle, 'the dialog is labelled by its title')
+    report.ok(textOf(confirmTree).includes(pure.dict.zh.cardDeleteBody), 'the consequence is spelled out before the click')
+    report.ok(textOf(confirmTree).includes('2 轮追问'), 'the round count is shown when there is something to lose')
+
+    const confirmButtons = byTag(confirmTree, 'button')
+    report.equal(confirmButtons.length, 2, 'exactly two choices: cancel or delete')
+    const cancelButton = confirmButtons.find(node => textOf(node) === pure.dict.zh.askCancel)
+    const dangerButton = confirmButtons.find(node => String(node.props?.className ?? '').includes('dsa-btn-danger'))
+    report.ok(cancelButton !== undefined, 'a cancel button is offered')
+    report.equal(cancelButton?.props?.autoFocus, true, 'focus lands on the safe choice, not on delete')
+    report.ok(dangerButton !== undefined, 'the destructive choice carries the danger styling')
+    report.equal(textOf(dangerButton), pure.dict.zh.cardDeleteConfirm, 'the destructive button is labelled 删除')
+    report.equal(dangerButton?.props?.autoFocus, undefined, 'the destructive button never takes focus by default')
+
+    // No detail line when the card holds nothing.
+    const bareTree = renderConfirm({})
+    report.equal(
+      byClass(bareTree, 'dsa-muted').filter(node => textOf(node).includes('轮追问')).length,
+      0,
+      'a card with no follow-up turns shows no round count',
+    )
+
+    // Backdrop click closes; a click INSIDE the dialog does not.
+    const backdrop = byClass(confirmTree, 'dsa-confirm-backdrop')[0]
+    report.ok(backdrop !== undefined, 'the dialog sits on a backdrop')
+    const inside = { marker: 'inside' }
+    backdrop.props.onClick({ target: inside, currentTarget: backdrop })
+    report.equal(calls.length, 0, 'a click inside the dialog does not dismiss it')
+    backdrop.props.onClick({ target: backdrop, currentTarget: backdrop })
+    report.equal(calls.length, 1, 'a click on the backdrop itself cancels')
+    report.equal(calls[0], 'cancel', 'and it cancels, never confirms')
+
+    // Escape aborts and stops there; anything else is left alone.
+    let stopped = false
+    backdrop.props.onKeyDown({ key: 'Enter', stopPropagation: () => { stopped = true } })
+    report.equal(calls.length, 1, 'a non-Escape key does not dismiss the dialog')
+    report.equal(stopped, false, 'a non-Escape key is not swallowed')
+    backdrop.props.onKeyDown({ key: 'Escape', stopPropagation: () => { stopped = true } })
+    report.equal(calls.length, 2, 'Escape cancels the dialog')
+    report.equal(calls[1], 'cancel', 'Escape is the safe exit')
+    report.equal(stopped, true, 'Escape stops here instead of also closing the card')
+
+    // Only the explicit destructive button confirms.
+    dangerButton.props.onClick()
+    report.equal(calls[calls.length - 1], 'confirm', 'only the danger button confirms')
+    report.equal(calls.filter(call => call === 'confirm').length, 1, 'the dialog confirms exactly once')
+  }
+}
+
+// Deleting mid-stream must abort the transport, tell the Host, and drop the
+// buffered-but-unflushed deltas — a card the user deleted may not come back
+// when the pending flush tick fires.
+{
+  const abortCalls = []
+  const streamDeleteHost = makeHostCtx({})
+  host.apply(streamDeleteHost.ctx, {})
+  const encoder = new TextEncoder()
+  const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+  const streamDeleteFetch = (url, init = {}) => {
+    const path = String(url).replace('/sidecard-ask/api/', '')
+    const body = init.body === undefined ? null : JSON.parse(init.body)
+    const method = init.method ?? 'POST'
+    abortCalls.push({ path, body })
+    return (async () => {
+      const res = await callRoute(streamDeleteHost, `/${path}`, { method, body })
+      if (!path.startsWith('ask')) {
+        return { ok: res.status < 400, status: res.status, json: async () => res.json() }
+      }
+      const stream = new ReadableStream({
+        async start(controller) {
+          controller.enqueue(encoder.encode(
+            frame('start', { id: 'delete-stream-1' })
+            + ['甲', '乙', '丙'].map(text => frame('delta', { id: 'delete-stream-1', text })).join('')))
+        },
+      })
+      return { ok: true, status: 200, body: stream, json: async () => JSON.parse(res.text()) }
+    })()
+  }
+  const streamDeleteCtx = makeClientCtx({})
+  const streamDeleteClient = loadClientModule({ fetchImpl: streamDeleteFetch, language: 'zh-CN' })
+  streamDeleteClient.module.apply(streamDeleteCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const streamDeleteOverlay = streamDeleteCtx.find('shell.overlay', pure.IDS.overlay)
+  streamDeleteOverlay.component().props.actions.submit(
+    {
+      text: '流式中删除的选中文本',
+      rect: { left: 10, top: 10, right: 300, bottom: 32, width: 290, height: 22 },
+      zone: 'chat',
+      cross: false,
+      slotPath: ['conversation.chat.node'],
+      kind: 'text',
+    },
+    { question: '删到一半会留下什么？', carrier: 'side' },
+  )
+  await new Promise(resolve => setTimeout(resolve, 15))
+  const streamingBeforeDelete = streamDeleteClient.module.api.snapshot().cards
+  report.equal(streamingBeforeDelete[0]?.status, 'streaming', 'the card is streaming when it is deleted')
+  report.equal(streamingBeforeDelete[0]?.text, '', 'its deltas are still buffered at delete time')
+  report.equal(streamDeleteOverlay.component().props.actions.deleteCard(streamingBeforeDelete[0]), true, 'a streaming card can be deleted')
+  report.equal(streamDeleteClient.module.api.snapshot().cards.length, 0, 'the streaming card leaves the surface at once')
+  await new Promise(resolve => setTimeout(resolve, 60))
+  const cancelCall = abortCalls.find(call => call.path === 'cancel')
+  report.ok(cancelCall !== undefined, 'deleting mid-stream also POSTs /cancel')
+  report.equal(cancelCall?.body?.id, streamingBeforeDelete[0]?.id, 'the cancel names the deleted card')
+  // Wait past the 50ms flush tick: a resurrected card would reappear here.
+  await new Promise(resolve => setTimeout(resolve, 100))
+  report.equal(streamDeleteClient.module.api.snapshot().cards.length, 0, 'the pending flush cannot resurrect a deleted card')
+  report.equal(streamDeleteClient.module.api.snapshot().history.length, 0, 'a streaming card was never in the durable history')
+}
+
 // clearHistory removes the durable key even without live cards.
 sharedStorage.setItem(PERSIST_KEY, JSON.stringify({
   version: 3,
@@ -3005,9 +3261,9 @@ report.equal(pure.electFamilyLeader([], 'solo'), 'solo', 'a lone member elects i
 
 // ────────────────────────────────────────────────────────────────────────────
 // F28: the settings-page feedback form. The draft is checked on the Client so
-// the Host's 400 never surprises anybody, and the `mailto:` fallback must work
-// with no credentials at all — those two are pure and tested directly. The
-// transport itself is exercised against a real socket pair (see below).
+// the Host's 400 never surprises anybody, and the copy path needs no transport
+// at all — those two are pure and tested directly. The transport itself is
+// exercised against a real socket pair (see below).
 // ────────────────────────────────────────────────────────────────────────────
 console.log('\nfeedback: draft helpers')
 {
@@ -3054,14 +3310,6 @@ console.log('\nfeedback: draft helpers')
   const plainText = pure.feedbackPlainTextFor({ version: '9.9.9', draft: { ...good, contact: '' }, userAgent: 'UA/1.0' })
   report.ok(plainText.includes('contact: (not provided)'), 'a blank contact field says so instead of staying empty')
   report.ok(plainText.includes('plugin: 9.9.9') && plainText.includes('user agent: UA/1.0'), 'the text carries the environment')
-  // The `mailto:` URL is built by the Host now (the page never holds the
-  // address), so that is where its encoding is asserted.
-  const hostMailto = host.buildMailtoUrl({ to: 'ops@example.test', version: '9.9.9', input: good, userAgent: 'UA/1.0' })
-  report.ok(hostMailto.startsWith('mailto:ops@example.test?subject='), 'the host mailto builder addresses the recipient')
-  report.ok(
-    hostMailto.includes(encodeURIComponent(subject)),
-    'the host mailto builder encodes the same subject the SMTP path sends',
-  )
 }
 
 console.log('\nfeedback: host transport')
@@ -3144,7 +3392,7 @@ console.log('\nfeedback: host transport')
 
   const noAddress = feedback.describeFeedback({}, {})
   report.equal(noAddress.configured, false, 'no recipient means unconfigured')
-  report.equal(noAddress.transport, 'mailto', 'an unconfigured transport degrades to mailto')
+  report.equal(noAddress.transport, 'none', 'an unconfigured host advertises no transport at all')
   const noSmtp = feedback.describeFeedback({ feedbackAddress: 'ops@example.test' }, {})
   report.equal(noSmtp.configured, false, 'no SMTP means the SMTP path is unavailable')
   report.ok(String(noSmtp.reason).length > 0, 'the reason says what is missing')
@@ -3191,12 +3439,6 @@ console.log('\nfeedback: host transport')
   report.ok(withContact.raw.includes('From: bot@example.test'), 'From: stays the authenticated account')
   const withContactBody = Buffer.from(withContact.raw.split('\r\n\r\n')[1].replace(/\r\n/g, ''), 'base64').toString('utf8')
   report.ok(withContactBody.includes('Contact: me@example.com'), 'the reporter address travels in the body')
-  const hostMailto = host.buildMailtoUrl({ to: 'ops@example.test', version: '9.9.9', input: { kind: 'idea', title: '加暗色', body: '希望支持暗色主题。', contact: 'me@example.com' } })
-  report.ok(
-    decodeURIComponent(hostMailto).includes('contact: me@example.com'),
-    'the mailto body carries the reporter contact instead of a From: loop',
-  )
-  report.equal(decodeURIComponent(hostMailto).includes('from: '), false, 'the mailto body no longer carries a from: line')
 
   let clock = 1_000
   const gate = feedback.createFeedbackGate({ minGapMs: 1_000, windowMs: 10_000, maxPerWindow: 2 }, () => clock)
@@ -3275,12 +3517,18 @@ console.log('\nfeedback: /feedback route over a real socket')
   report.equal(coldRes.json().error?.code, 'feedback-unconfigured', 'the refusal names feedback-unconfigured')
   const coldState = (await callRoute(coldHost, '/state', { body: {} })).json()
   report.equal(coldState.value?.capabilities?.feedback?.configured, false, '/state reports feedback as unconfigured')
-  report.equal(coldState.value?.capabilities?.feedback?.transport, 'mailto', '/state offers the mailto fallback')
+  report.equal(coldState.value?.capabilities?.feedback?.transport, 'none', '/state advertises no transport without one')
+  // The mail-app option is gone: there is no route behind it any more, so a
+  // stale client cannot reach a URL builder the Host no longer has.
   const coldMailto = await callRoute(coldHost, '/feedback-mailto', {
     body: { title: '卡片不显示', body: '追问之后卡片没有出现，控制台无报错。' },
   })
-  report.equal(coldMailto.status, 503, 'without a recipient the mailto route refuses too')
-  report.equal(coldMailto.json().error?.code, 'feedback-unconfigured', 'the mailto refusal names the same code')
+  report.equal(coldMailto.status, 404, 'the retired mail-app route is gone, even without a recipient')
+  report.equal(coldMailto.json().error?.code, 'not-found', 'the retired route answers not-found')
+  report.ok(
+    String(coldMailto.json().error?.message ?? '').includes('feedback-mailto'),
+    'the not-found message names the retired method, so a stale page fails loudly',
+  )
 
   const relay = await startRelay()
   const previousUrl = process.env.DSH_SIDECARD_SMTP_URL
@@ -3306,16 +3554,13 @@ console.log('\nfeedback: /feedback route over a real socket')
       '/state strips feedbackAddress from the config blob',
     )
 
-    // The mail-app fallback is built here, so the browser only ever receives a
-    // finished URL — never the address on its own.
+    // The mail-app fallback is gone on purpose: with a recipient but no SMTP
+    // credentials the Host has no way to send, and the dialog says so instead of
+    // handing the page a `mailto:` URL.
     const mailtoRes = await callRoute(fbHost, '/feedback-mailto', {
       body: { kind: 'idea', title: '顺手提个建议', body: '希望反馈表单能记住上次填的内容。', contact: '' },
     })
-    const mailtoBody = mailtoRes.json().value
-    report.equal(mailtoRes.status, 200, 'the mailto route answers with a URL')
-    report.ok(String(mailtoBody?.url ?? '').startsWith('mailto:ops@example.test?subject='), 'the URL addresses the configured recipient')
-    report.ok(String(mailtoBody?.url ?? '').includes(encodeURIComponent('顺手提个建议')), 'the URL encodes the title into the subject')
-    report.equal(mailtoBody?.toMasked, 'o***@example.test', 'the mailto response still masks the recipient')
+    report.equal(mailtoRes.status, 404, 'the mail-app route is not served even with a recipient')
 
     const badRes = await callRoute(fbHost, '/feedback', { body: { title: 'x', body: '追问之后卡片没有出现，控制台无报错。' } })
     report.equal(badRes.status, 400, 'a too-short title is refused with 400')
@@ -3460,7 +3705,6 @@ console.log('\nfeedback: settings surface')
     hasRecipient: true,
     onClose: () => {},
     onSubmit: () => {},
-    onMailto: () => {},
     onCopy: () => {},
     ...overrides,
   }))
@@ -3486,8 +3730,12 @@ console.log('\nfeedback: settings surface')
   report.ok(textOf(dialogTree).includes('回信'), 'the label says the address is the reply address')
 
   report.ok(dialogNodes.some(node => node.props?.['data-feedback-submit'] !== undefined), 'the dialog offers the send button')
-  report.ok(dialogNodes.some(node => node.props?.['data-feedback-mailto'] !== undefined), 'the dialog offers the mail-app path')
   report.ok(dialogNodes.some(node => node.props?.['data-feedback-copy'] !== undefined), 'the dialog offers the copy path')
+  report.equal(
+    dialogNodes.some(node => node.props?.['data-feedback-mailto'] !== undefined),
+    false,
+    'the dialog offers no mail-app path any more',
+  )
   const idleSubmit = dialogNodes.find(node => node.props?.['data-feedback-submit'] !== undefined)
   report.equal(idleSubmit?.props?.disabled, false, 'the send button is enabled while idle')
 
@@ -3498,13 +3746,27 @@ console.log('\nfeedback: settings surface')
   report.ok(textOf(renderDialog({ status: 'sent' })).includes('已发送'), 'a successful send says so')
   report.ok(textOf(renderDialog({ status: 'error', error: 'relay said no' })).includes('relay said no'), 'a failed send prints the reason')
   report.ok(
-    textOf(renderDialog({ ready: false, hasRecipient: true })).includes('用邮件客户端发送'),
-    'without a transport the dialog points at the mail-app path',
+    textOf(renderDialog({ ready: false, hasRecipient: true })).includes('只缺发信凭据'),
+    'without a transport the dialog names what is missing and points at the copy path',
   )
   report.ok(
     textOf(renderDialog({ ready: false, hasRecipient: false })).includes('没有可用的发信服务'),
     'without a recipient the dialog says nothing can be sent',
   )
+  // The retired i18n keys must be gone from BOTH dictionaries: verify.mjs fails
+  // on a literal that only one of them carries, and a leftover key would keep a
+  // dead "send with my mail app" label alive for translators. The `feedbackSmtp*`
+  // labels were the SMTP form removed in 1.9.1 — no t() call site renders them,
+  // so they are dead strings, not a feature.
+  for (const retired of [
+    'feedbackMailto', 'feedbackMailtoOnly',
+    'feedbackSmtpShow', 'feedbackSmtpHide', 'feedbackSmtpEnvNote', 'feedbackSmtpHost',
+    'feedbackSmtpSecure', 'feedbackSmtpPassSaved', 'feedbackSmtpPass', 'feedbackSmtpFrom',
+    'feedbackSmtpHint', 'feedbackSmtpSaveHint',
+  ]) {
+    report.equal(pure.dict.zh[retired], undefined, `zh no longer defines "${retired}"`)
+    report.equal(pure.dict.en[retired], undefined, `en no longer defines "${retired}"`)
+  }
   report.ok(
     textOf(renderDialog({ ready: false, reason: 'the host says why' })).includes('the host says why'),
     'the host reason is printed verbatim',

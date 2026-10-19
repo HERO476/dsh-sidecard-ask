@@ -1,5 +1,83 @@
 # Changelog
 
+## 2.0.0
+
+**主题：追问卡片标题栏的 `×` 从「隐藏整个浮层」改成「删除这条追问对话」——一次 Breaking 的语义重定义，顺带把「隐藏浮层」这套能力整体下线，并移除反馈表单里「用邮件客户端发送」这条出口。**
+
+`×` 原来是全局开关：点一下整个浮层缩成一个带计数的圆点，再点圆点恢复。用户实际想要的是**删掉眼前这条追问**，
+而当时删除只能绕两条路走（卡片底部按钮 / 设置页历史管理器），且 `×` 的「隐藏」在多卡场景下会连着别的卡片一起收走。
+2.0.0 把 `×` 直接对齐到用户心智，并**不再保留**「隐藏整个浮层」这套能力（不是挪位置，是不留替代入口）。
+
+### Breaking
+
+- **`×` 语义变更**：卡片标题栏最右侧的 `×` 由「隐藏整个浮层」改为「**删除这条追问对话**」，`title` / `aria-label`
+  改用新键 `cardDelete`。删除会同时从活动卡片列表与持久历史里移除该卡片，**不可撤销**。
+- **`floatMode` 移除 `off`**：枚举从 `['capsule', 'full', 'off']` 收窄为 `['capsule', 'full']`，设置页该下拉只剩两项。
+  旧配置里存过 `'off'` 的**无需手工迁移**：宿主 `sanitizeLayer` 判定为非法值 → 忽略并在 `problems` 里提示，
+  回退默认 `capsule`（不写迁移代码，也不静默改写用户配置）。
+- **小圆点 launcher 删除**：浮层不再有「只剩一个计数圆点」的形态，相关渲染分支、样式与恢复入口一并删除。
+  浮层只剩 `capsule`（一行高胶囊）与 `full`（完整卡片栈，铺满右栏 dock 时为 `dock`）。
+- **删除 4 个 i18n 键**：`setFloatModeOff`（设置页「隐藏」项）、`floatHide`（`×` 的旧 title）、
+  `floatRestore`（从圆点恢复浮层的入口）、`floatCount`（圆点计数）。`floatStreaming` / `floatDone` 保留（胶囊仍在用）。
+
+### 新增：删除交互
+
+- **空卡直接删**：该卡无任何已完成追问轮（`history.length === 0`）且主回答正文与思考过程都为空、且不在作答中
+  （非 `pending` / `streaming`）时，点 `×` **直接删除，不弹确认**。
+- **其余情况弹插件内轻量确认层**（`DeleteConfirmDialog`，不使用 `window.confirm`）：标题「删除这条追问对话？」，
+  正文说明会同时从浮层与追问历史里移除、不可撤销；已有追问轮次时追加一行「含 {n} 轮追问」；
+  两个按钮「取消」/「删除」（删除为危险色 `.dsa-btn-danger`）。
+- **无障碍与误触防护**：`role="dialog"` / `aria-modal="true"` / `aria-label` 取标题；默认焦点固定在被标记 `autoFocus`
+  的「取消」上（不落在危险按钮，防连按 Enter）；`Esc` 取消（`stopPropagation`，不冒泡到卡片自身的 Esc 处理）、
+  点遮罩取消（仅当 `event.target === event.currentTarget`）；确认层打开时卡片的 `R` / `C` / `Esc` 快捷键全部失效。
+- **流式中删除**：先 `abort()` 中止请求 + 通知宿主 `cancel`，丢弃该卡进行中的增量缓冲（`pendingDeltas` / `pendingReasonings`），再执行删除。
+- **删除动作顺序固定**：按同一 `id` 从 `history` 与 `cards` 双移除 → 立即写盘持久化 → 关闭该卡已打开的侧栏 / host tab 表面
+  → 浮层 toast「已删除这条追问对话」（2600ms 自动消失）。
+- **删除后重排**：剩余卡片按原顺序塌缩补位；删掉最后一张时 `total === 0` → 浮层整体不渲染（无空态）。
+- **上下文隔离**：每张卡的追问上下文本就按卡隔离，删除不影响其它卡片；后续生成只读取剩余卡片自身历史。
+
+### 移除：反馈表单的「用邮件客户端发送」出口
+
+- **UI**：反馈弹窗从三条出口减到两条（`发送` / `复制内容`），删掉 `data-feedback-mailto` 按钮与
+  `sendFeedbackByMailApp()`；没有发信服务时弹窗仍按两种就绪状态说明缺什么，并指向「复制内容」。
+- **Host**：删掉 `POST /feedback-mailto` 路由、`buildMailtoUrl()` 构造器与 `API_METHODS` 里的条目。
+  未命中的方法由既有兜底返回 `404 not-found`（`error.message` 带方法名），旧页面调用会明确失败而不是静默。
+- **`/state`**：`capabilities.feedback.transport` 在未配置时由 `'mailto'` 改为 `'none'`；`reason` 只回 SMTP 的原因。
+- **i18n**：`feedbackMailto` 删除，`feedbackMailtoOnly` 重命名为 `feedbackNoCredentials`（文案改指向「复制内容」），
+  `feedbackUnconfigured` 同步改写；zh/en 两侧键集仍然完全一致。
+- **理由**：这条出口只是把同一封邮件交给系统邮件应用，与「复制内容」的实际效果重叠，却让 Host 多出一个
+  任何人都能调的 URL 构造接口（还会把明文收件地址拼进 URL）。删掉它，反馈的发送面只剩 SMTP 一条。
+- **测试**：`test/contract-test.mjs` 删除 `buildMailtoUrl` / 路由 200 / 按钮存在三类断言，改为断言
+  `transport === 'none'`、`/feedback-mailto` 两次 404（有/无收件人）、`data-feedback-mailto` 不存在、
+  两个退役 i18n 键在 zh/en 都是 `undefined`（`node test/verify.mjs` 的 `t()` 键扫描同时覆盖新键名）。
+
+### 清理：1.9.1 遗留的 10 个死 i18n 键
+
+- **删掉 10 个 `feedbackSmtp*` 标签键**：`feedbackSmtpShow` / `feedbackSmtpHide` / `feedbackSmtpEnvNote` /
+  `feedbackSmtpHost` / `feedbackSmtpSecure` / `feedbackSmtpPassSaved` / `feedbackSmtpPass` / `feedbackSmtpFrom` /
+  `feedbackSmtpHint` / `feedbackSmtpSaveHint`。它们只属于 1.9.1 删掉的设置页 SMTP 表单，全仓已无任何
+  `t('feedbackSmtp…')` 调用点，留着只是让翻译者以为这些输入框还在。
+- **配置键不动**：`feedbackSmtpHost` / `feedbackSmtpPort` / `feedbackSmtpSecure` / `feedbackSmtpUser` /
+  `feedbackSmtpPass` / `feedbackSmtpFrom` 作为 `config.json` 字段与 `client.js` 的 `CLIENT_DEFAULTS` 继续存在，
+  按环境变量或用户层配置生效；删的只是同名的**界面标签**。
+- **zh/en 同步删**，键集仍完全一致；`test/contract-test.mjs` 的退役键断言扩到 12 个键（含上一节的两个），
+  两个字典都必须取到 `undefined`。
+
+### 兼容性与边界
+
+- **不涉及**：无服务端会话存储、无多端同步、无遥测埋点（这些维度 N/A）；删除不进「回收站」，**不提供撤销**
+  （无 Undo、无快照、无 5 秒窗口）。
+- **承载面差异**：`×` 只出现在**浮层 / 内嵌浮层**（含 dock 到右侧栏的浮层卡片）上。被宿主 tab 承载的同一张卡
+  （`better-sidebar` / `native-rightbar` 独立标签页）**不提供 `×`**，沿用它自己的标签关闭 + 底部「关闭」——
+  「关闭」只把卡片摘离浮层、**历史仍保留**在设置页历史管理器里，与「删除」是两种真实需求。
+- **版本号**：`1.9.1 → 2.0.0`，三处同步（`package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`、`client.js` 的 `CLIENT_VERSION`）。
+- **测试**：`test/float-placement.mjs` 增补 2.0.0 行为断言（无 `dsa-launcher` / `floatRestore`、`floatControl('capsule')` 存在、
+  `onDelete` 已接线、无 `mode === 'off'` 渲染分支、`floatMode` 默认 `capsule`）；`test/contract-test.mjs` 增补
+  `sanitizeLayer` 丢弃 `'off'`、设置页 option 序列为 `['capsule','full']`、卡片头恰有一枚 `aria-label === cardDelete` 的按钮、
+  `deleteCard` 的四类行为、4 个已删键为 `undefined`。
+- **文档**：README 的配置表 / dock 形态说明 / 自测第 8–9 条同步改写，反馈章节的「三条出口」表改为两条并记下移除理由；
+  `docs/PRD-followup-delete.md` 出 v3 修订（D0 定稿 + 隐藏能力下线 + 规格逐条对齐已交付代码，路由清单去掉 `feedback-mailto`）。
+
 ## 1.9.1
 
 **主题：反馈入口重做——从「设置页里一整块常驻表单」改成「顶部一行横幅 + 居中弹窗」。**
