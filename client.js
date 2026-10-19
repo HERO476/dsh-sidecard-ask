@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.0.0'
+    const CLIENT_VERSION = '2.0.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -466,8 +466,6 @@ window.__ModuleLoader__.load({
         zoneCross: '跨区选择',
         chars: '{n} 字',
         truncatedBadge: '已截断 {n} 字',
-        selectionEmpty: '没有选中文本',
-        selectionTooShort: '选中文本太短，未触发追问',
         answerTitle: '追问',
         answerStreaming: '作答中…',
         answerDone: '已完成',
@@ -539,7 +537,6 @@ window.__ModuleLoader__.load({
         setFloatMaxWidthHint: '空间不足时自动收窄，不会硬顶',
         setDockRail: '右侧栏打开时占满它',
         setDockRailHint: '答案直接铺满右侧栏（读得像栏内的一页），收起为胶囊或关闭即恢复原状；右侧栏不在时不生效',
-        floatDocked: '已占满右侧栏',
         floatExpand: '展开侧边卡片',
         floatCollapse: '收起为胶囊（不遮挡对话）',
         floatStreaming: '正在作答…',
@@ -565,7 +562,6 @@ window.__ModuleLoader__.load({
         saved: '已保存',
         saveFailed: '保存失败：{msg}',
         reset: '重置为 patch 配置',
-        resetDone: '已重置',
         diagnostics: '运行自检',
         diagTitle: '能力自检',
         diagHost: '宿主接口',
@@ -591,8 +587,6 @@ window.__ModuleLoader__.load({
         surfaceUnavailable: '所选侧边承载面不可用',
         familySuppressed: '检测到同系列更新版本（{version}）已在本页运行，本实例已自动停用划词触发与快捷键，界面由更新版本接管。建议在插件页卸载本旧版本。',
         familyLegacyToast: '检测到旧版 dsh-selection-followup 同时启用，已由本版本接管；建议卸载旧包',
-        familyLegacyDiag: '旧版共载',
-        familyPeers: '同页实例',
         retryEdit: '改问',
         editQuestionPlaceholder: '修改问题后重新提问…',
         retryAskSubmit: '重新提问',
@@ -688,8 +682,6 @@ window.__ModuleLoader__.load({
         versionLatest: '返回最新',
         versionViewing: '正在查看历史版本（只读）',
         suggestionsLabel: '建议追问',
-        familyLegacyDiag: '旧版共载',
-        familyPeers: '同页实例',
         setFeedback: '反馈',
         setFeedbackHint: '遇到问题或有建议，在这里直接发邮件给我；邮件会自动附带插件版本与运行环境（不含聊天内容）',
         feedbackOpen: '反馈问题',
@@ -742,8 +734,6 @@ window.__ModuleLoader__.load({
         zoneCross: 'Cross-region',
         chars: '{n} chars',
         truncatedBadge: 'truncated {n} chars',
-        selectionEmpty: 'Nothing selected',
-        selectionTooShort: 'Selection too short to trigger',
         answerTitle: 'Follow-up',
         answerStreaming: 'Answering…',
         answerDone: 'Done',
@@ -815,7 +805,6 @@ window.__ModuleLoader__.load({
         setFloatMaxWidthHint: 'Narrows automatically when there is not enough room',
         setDockRail: 'Fill the right rail while it is open',
         setDockRailHint: 'The answer fills the right rail (it reads as one of its pages) and comes back to normal when collapsed to the capsule or closed; ignored while no rail is on screen',
-        floatDocked: 'Filled the right rail',
         floatExpand: 'Expand the side cards',
         floatCollapse: 'Collapse to a capsule (stops covering the conversation)',
         floatStreaming: 'Answering…',
@@ -841,7 +830,6 @@ window.__ModuleLoader__.load({
         saved: 'Saved',
         saveFailed: 'Save failed: {msg}',
         reset: 'Reset to patch config',
-        resetDone: 'Reset',
         diagnostics: 'Run diagnostics',
         diagTitle: 'Capability check',
         diagHost: 'Host API',
@@ -867,8 +855,6 @@ window.__ModuleLoader__.load({
         surfaceUnavailable: 'The chosen side surface is unavailable',
         familySuppressed: 'A newer family build ({version}) is already running on this page; this copy has disabled its trigger and shortcut so only one UI answers. Uninstall this older package.',
         familyLegacyToast: 'Legacy dsh-selection-followup detected alongside this plugin; this build took over. Uninstall the old package.',
-        familyLegacyDiag: 'Legacy co-load',
-        familyPeers: 'Copies on page',
         retryEdit: 'Edit & retry',
         editQuestionPlaceholder: 'Edit the question, then ask again…',
         retryAskSubmit: 'Ask again',
@@ -964,8 +950,6 @@ window.__ModuleLoader__.load({
         versionLatest: 'Back to latest',
         versionViewing: 'Viewing an older version (read-only)',
         suggestionsLabel: 'Suggested follow-ups',
-        familyLegacyDiag: 'Legacy co-load',
-        familyPeers: 'Copies on page',
         setFeedback: 'Feedback',
         setFeedbackHint: 'Report a bug or send a suggestion by mail from here; the plugin version and runtime details are attached automatically (no chat content)',
         feedbackOpen: 'Send feedback',

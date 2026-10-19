@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.1
+
+**主题：清掉 6 个死 i18n 键。无行为变化，无 API / 配置变化，升级无需任何操作。**
+
+- **删除 4 个纯死字符串**：`selectionEmpty`、`selectionTooShort`、`floatDocked`、`resetDone`。它们对应的界面在早期版本
+  就已下线，此后没有任何 `t()` 调用点，只是留在字典里被 `locale/*.json` 与打包产物带着走。
+- **删除 2 个重复定义的界面标签**：`familyLegacyDiag`（旧版共载 / Legacy co-load）、`familyPeers`（同页实例 / Copies on page）。
+  它们在 zh、en 两个字典里各被**重复定义两次**（后一份静默覆盖前一份），且都没有调用点。同一功能的
+  `familyLegacyToast` / `familySuppressed` 仍在使用，保留；**运行时状态字段** `familyPeers`（family 接管详情里的同页实例列表）
+  是数据而非标签，同样保留。
+- **字典规模**：`client.js` 每个语言从 272 键降到 266 键，zh / en 键集仍完全一致。
+- **防回流**：`test/contract-test.mjs` 的「退役键必须在两个字典里都是 undefined」断言从 4 个键扩到 10 个。
+
 ## 2.0.0
 
 **主题：追问卡片标题栏的 `×` 从「隐藏整个浮层」改成「删除这条追问对话」——一次 Breaking 的语义重定义，顺带把「隐藏浮层」这套能力整体下线，并移除反馈表单里「用邮件客户端发送」这条出口。**

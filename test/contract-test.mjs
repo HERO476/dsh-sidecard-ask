@@ -2256,8 +2256,16 @@ console.log('\ndelete this follow-up conversation (2.0.0)')
 
   // The retired i18n keys must be gone from BOTH dictionaries: verify.mjs fails
   // on a key that is defined but never referenced, and a leftover half-pair is
-  // exactly the drift that ships a Chinese string to English users.
-  for (const retired of ['floatHide', 'floatRestore', 'floatCount', 'setFloatModeOff']) {
+  // exactly the drift that ships a Chinese string to English users. The last six
+  // were never carried by a t() call site at all (dead since their UI was
+  // dropped), and `familyLegacyDiag` / `familyPeers` were even defined twice per
+  // dictionary — the later copy silently shadowed the earlier one. The runtime
+  // state field `familyPeers` is unrelated and stays.
+  for (const retired of [
+    'floatHide', 'floatRestore', 'floatCount', 'setFloatModeOff',
+    'selectionEmpty', 'selectionTooShort', 'floatDocked', 'resetDone',
+    'familyLegacyDiag', 'familyPeers',
+  ]) {
     report.equal(pure.dict.zh[retired], undefined, `zh no longer defines "${retired}"`)
     report.equal(pure.dict.en[retired], undefined, `en no longer defines "${retired}"`)
   }
