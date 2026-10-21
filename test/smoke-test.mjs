@@ -9,7 +9,7 @@
  * Run: `node test/smoke-test.mjs`.
  */
 
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HOST_ENTRY, createReporter, makeHostCtx, makeSubagentEngine, callRoute, hostModuleUrl } from './harness.mjs'
@@ -18,6 +18,11 @@ import { HOST_ENTRY, createReporter, makeHostCtx, makeSubagentEngine, callRoute,
 // test never writes into a real profile.
 const HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-smoke-'))
 process.env.DSH_HOME = HOME
+// The persisted file is profile-scoped, so an inherited $DSH_PROFILE (a test
+// run under a real harness) would point every assertion at the wrong file.
+// Pin it away; the profile-scoped path has its own test below.
+const INHERITED_PROFILE = process.env.DSH_PROFILE
+delete process.env.DSH_PROFILE
 const CONFIG_FILE = join(HOME, 'sidecard-ask', 'config.json')
 
 const report = createReporter('smoke')
@@ -132,6 +137,29 @@ report.ok(
 )
 report.equal(events[0].data.toolFilter, 'applied', 'the start event reports the read-only guard as applied')
 report.equal(events[0].data.persona, 'section', 'the start event reports the persona carrier')
+// Prompt-side budget cost is reported too, so a selection that survived the
+// client-side cut but lost characters to the total prompt budget is not silent.
+report.equal(events[0].data.promptTruncated, false, 'an in-budget prompt reports no prompt-side truncation')
+report.equal(events[0].data.promptDroppedChars, 0, 'an in-budget prompt drops nothing')
+report.equal(events[0].data.promptHistoryDropped, 0, 'an in-budget prompt keeps every history turn')
+
+// A prompt that has to squeeze does surface what it cost. `maxChars` is raised
+// so the selection survives the CLIENT-side cut and the loss happens on the
+// total prompt budget instead.
+const squeezed = await boot({ patch: { maxChars: 20000 } })
+const squeezedAsk = await callRoute(squeezed.harness, '/ask', {
+  body: {
+    id: 'ask-squeezed',
+    question: 'q'.repeat(19000),
+    selection: 'x'.repeat(20000),
+    history: Array.from({ length: 6 }, () => ({ question: 'q'.repeat(4000), answer: 'a'.repeat(4000) })),
+  },
+})
+const squeezedStart = squeezedAsk.events()[0]
+report.equal(squeezedAsk.status, 200, 'a maximal request is still accepted')
+report.equal(squeezedStart.data.promptTruncated, true, 'a squeezed prompt admits it was truncated')
+report.ok(squeezedStart.data.promptDroppedChars > 0, 'a squeezed prompt reports how much it dropped')
+report.ok(squeezedStart.data.promptHistoryDropped >= 0, 'the history cost is reported as a number')
 
 // A provider that advertises NO capabilities must receive no optional field at
 // all — an unsupported field fails `subagents.start` outright — so the persona
@@ -768,5 +796,122 @@ report.equal(afterFamily.value.client.family.peers.length, 2, 'non-object peers 
 report.equal(afterFamily.value.client.family.peers[0].version, '1.6.0', 'the peer version is kept')
 report.ok(afterFamily.value.client.family.peers[1].id.length <= 64, 'peer ids are bounded')
 report.ok(afterFamily.value.client.family.peers[1].version.length <= 24, 'peer versions are bounded')
+
+// The channel is ONE slot fed by every page. A report that observed less must
+// not erase what another page already told us, and an empty POST must not look
+// like a valid observation.
+const partialReport = await callRoute(fresh.harness, '/diagnose', { body: { sessionKnown: false } })
+report.equal(partialReport.status, 200, 'a one-field report is accepted')
+const afterPartial = (await callRoute(fresh.harness, '/state', { method: 'GET' })).json()
+report.equal(afterPartial.value.client.surface, 'native-rightbar', 'a partial report keeps earlier observations')
+report.equal(afterPartial.value.client.sessionKnown, false, 'the field it did observe is updated')
+report.equal(afterPartial.value.client.better.version, '0.22.1', 'untouched nested observations survive')
+
+const emptyReport = await callRoute(fresh.harness, '/diagnose', { body: {} })
+report.equal(emptyReport.status, 400, 'a report with no observations is refused')
+report.equal(emptyReport.json().error.code, 'bad-request', 'the refusal carries a code')
+const afterEmpty = (await callRoute(fresh.harness, '/state', { method: 'GET' })).json()
+report.equal(afterEmpty.value.client.surface, 'native-rightbar', 'an empty report does not erase the state')
+
+// ────────────────────────────────────────────────────────────────────────────
+// 10. host session gate (the plugin route is outside the host's index gate)
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nhost session gate')
+// A composition with no `connection` service has no browser session to check,
+// so the loopback/Origin fence stays the whole model (covered above).
+const unauthenticated = await boot({ services: { connection: { requestRejection: () => 401 } } })
+const gateDenied = await callRoute(unauthenticated.harness, '/state', { method: 'GET' })
+report.equal(gateDenied.status, 401, 'an unauthenticated request is refused when the host can tell')
+report.equal(gateDenied.json().error.code, 'unauthorized', 'the refusal names the missing login')
+const gateConfig = await callRoute(unauthenticated.harness, '/config', { body: { maxChars: 100 } })
+report.equal(gateConfig.status, 401, 'a settings write is refused too, not just reads')
+const gateAsk = await callRoute(unauthenticated.harness, '/ask', { body: { id: 'x', question: 'q', selection: 's' } })
+report.equal(gateAsk.status, 401, 'an ask that would spawn a child is refused too')
+
+const untrusted = await boot({ services: { connection: { requestRejection: () => 403 } } })
+const gateForbidden = await callRoute(untrusted.harness, '/state', { method: 'GET' })
+report.equal(gateForbidden.status, 403, 'a host-level trust rejection keeps its 403')
+report.equal(gateForbidden.json().error.code, 'forbidden', 'the 403 keeps its code')
+
+const authenticated = await boot({ services: { connection: { requestRejection: () => undefined } } })
+const gateAllowed = await callRoute(authenticated.harness, '/state', { method: 'GET' })
+report.equal(gateAllowed.status, 200, 'an authenticated request passes the gate')
+
+const broken = await boot({
+  services: {
+    connection: {
+      requestRejection: () => { throw new Error('auth exploded') },
+    },
+  },
+})
+const gateBroken = await callRoute(broken.harness, '/state', { method: 'GET' })
+report.equal(gateBroken.status, 401, 'an auth service that throws fails closed')
+
+// ────────────────────────────────────────────────────────────────────────────
+// 11. unknown endpoints answer the method name, not the verb
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nunknown endpoint')
+const unknownGet = await callRoute(a.harness, '/nope', { method: 'GET' })
+report.equal(unknownGet.status, 404, 'an unknown endpoint is a 404 even for a GET')
+report.equal(unknownGet.json().error.code, 'not-found', 'the GET 404 keeps the not-found code')
+const unknownHead = await callRoute(a.harness, '/nope', { method: 'HEAD' })
+report.equal(unknownHead.status, 404, 'an unknown endpoint is a 404 for every verb')
+
+// ────────────────────────────────────────────────────────────────────────────
+// 12. the persisted file is per profile
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nprofile-scoped persistence')
+const { configFilePath } = await import(hostModuleUrl())
+process.env.DSH_HOME = HOME
+process.env.DSH_PROFILE = 'web'
+report.equal(
+  configFilePath(),
+  join(HOME, 'sidecard-ask', 'config.web.json'),
+  'a profile names its own persisted file',
+)
+// Earlier sections saved through the shared path (no profile was set), so the
+// shared file exists here: the point is that a save with a profile does not
+// touch it.
+const sharedFile = join(HOME, 'sidecard-ask', 'config.json')
+const sharedBefore = readFileSync(sharedFile, 'utf8')
+const profileHost = await boot()
+const profileSave = await callRoute(profileHost.harness, '/config', { body: { maxChars: 1234 } })
+report.equal(profileSave.status, 200, 'the profile host saves')
+const profileFile = join(HOME, 'sidecard-ask', 'config.web.json')
+report.ok(existsSync(profileFile), 'the save lands in the profile-scoped file')
+report.equal(
+  JSON.parse(readFileSync(profileFile, 'utf8')).maxChars,
+  1234,
+  'the profile file carries the saved value',
+)
+report.equal(readFileSync(sharedFile, 'utf8'), sharedBefore, 'a save with a profile leaves the shared file alone')
+
+// A shell that sets no profile keeps the historical path exactly.
+delete process.env.DSH_PROFILE
+report.equal(configFilePath(), join(HOME, 'sidecard-ask', 'config.json'), 'no profile means the shared path')
+// A profile that has never saved inherits the shared file once (upgrade path).
+writeFileSync(sharedFile, JSON.stringify({ maxChars: 4321 }), 'utf8')
+process.env.DSH_PROFILE = 'desktop'
+const inheritedHost = await boot()
+const inheritedState = (await callRoute(inheritedHost.harness, '/state', { method: 'GET' })).json()
+report.equal(inheritedState.value.config.maxChars, 4321, 'a new profile inherits the shared settings once')
+report.equal(inheritedState.value.provenance.persistedInheritedFrom, sharedFile, 'the inheritance is reported, not silent')
+report.equal(
+  inheritedState.value.provenance.persistedPath,
+  join(HOME, 'sidecard-ask', 'config.desktop.json'),
+  'the next save targets the profile file',
+)
+report.ok(
+  !existsSync(join(HOME, 'sidecard-ask', 'config.desktop.json')),
+  'inheriting does not write a file behind the user\'s back',
+)
+// A profile name that is not path-safe falls back instead of escaping.
+process.env.DSH_PROFILE = '../../etc'
+report.equal(configFilePath(), join(HOME, 'sidecard-ask', 'config.json'), 'an unsafe profile name is not a path')
+delete process.env.DSH_PROFILE
+if (INHERITED_PROFILE !== undefined) process.env.DSH_PROFILE = INHERITED_PROFILE
 
 report.summary()

@@ -35,7 +35,33 @@ window.__ModuleLoader__.load({
     // ─────────────────────────────────────────────────────────────────────
 
     const PLUGIN_ID = 'dsh-sidecard-ask'
-    const API = '/sidecard-ask/api'
+    /**
+     * Base path of this plugin's Host API.
+     *
+     * Resolved against `document.baseURI` rather than hard-coded as the
+     * root-absolute `/sidecard-ask/api`, which is what the Host's own Client
+     * does for its transport base (`dsh-client-connection/lib/client.browser.js`:
+     * `const base = baseUrl ?? document.baseURI`). A root-absolute path drops
+     * the deployment prefix, so a DSH served under a path prefix
+     * (`dsh web --public-url https://host/dsh/`) sent every request to
+     * `/sidecard-ask/api/*` and got a 404. The Electron shell also loads the app
+     * from `dsh-app://app/`, where only a document-relative path is meaningful.
+     *
+     * At the document root (both the default Web deployment and the Electron
+     * shell) this evaluates to exactly the previous `/sidecard-ask/api`, so no
+     * existing deployment changes behaviour. `document.baseURI` already carries
+     * the trailing slash the Host normalises its public root to; the explicit
+     * `replace` below keeps that true even if a `<base>` without one is used.
+     */
+    const API = (() => {
+      try {
+        const base = typeof document === 'undefined' ? undefined : document.baseURI
+        if (typeof base !== 'string' || base === '') return '/sidecard-ask/api'
+        return `${new URL('.', base).pathname.replace(/\/$/, '')}/sidecard-ask/api`
+      } catch {
+        return '/sidecard-ask/api'
+      }
+    })()
     /** Slot ids contributed by this plugin (also the overlay entry ids). */
     const IDS = {
       overlay: 'sidecard-ask',
@@ -47,7 +73,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.0.1'
+    const CLIENT_VERSION = '2.0.2'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -76,6 +102,12 @@ window.__ModuleLoader__.load({
      * so sending more would only be dead wire weight.
      */
     const HISTORY_TURNS = 6
+
+    // Per-turn wire caps mirroring the Host's prompt-side limits: a long earlier
+    // answer must neither bloat the request body past the 1 MiB limit nor push
+    // the current question out of the child prompt.
+    const HISTORY_TURN_Q_CHARS = 500
+    const HISTORY_TURN_A_CHARS = 4000
 
     /**
      * Client-side mirror of the Host `DEFAULT_CONFIG`. The client needs values
@@ -508,6 +540,8 @@ window.__ModuleLoader__.load({
         errorNoParentBody: '当前没有活动的会话代理，无法发起独立作答',
         errorAborted: '作答被取消或超时',
         errorUnreachableBody: '宿主接口不可达',
+        errorUnauthorizedBody: '需要先通过 DSH 登录（宿主会话未认证）',
+        errorForbiddenBody: '请求来源不受信任（Host / Origin 不匹配）',
         errorBadResponseBody: '宿主返回了无法解析的响应',
         errorStreamBrokenBody: '流式连接中断',
         errorStreamEndedBody: '流式连接意外结束',
@@ -776,6 +810,8 @@ window.__ModuleLoader__.load({
         errorNoParentBody: 'No active session agent to answer independently',
         errorAborted: 'The answer was cancelled or timed out',
         errorUnreachableBody: 'The host API is unreachable',
+        errorUnauthorizedBody: 'Sign in to DSH first (the host session is not authenticated)',
+        errorForbiddenBody: 'Untrusted request origin (Host / Origin mismatch)',
         errorBadResponseBody: 'The host returned an unreadable response',
         errorStreamBrokenBody: 'The stream connection broke',
         errorStreamEndedBody: 'The stream ended without a terminal event',
@@ -1049,6 +1085,11 @@ window.__ModuleLoader__.load({
       'no-parent': { key: 'errorNoParentBody' },
       aborted: { key: 'errorAborted' },
       unreachable: { key: 'errorUnreachableBody' },
+      // The Host now gates these routes on the DSH browser session, so both are
+      // fully known Client-side: "log in" and "untrusted origin" are actionable
+      // in a way a generic unreachable message is not.
+      unauthorized: { key: 'errorUnauthorizedBody' },
+      forbidden: { key: 'errorForbiddenBody' },
       'bad-response': { key: 'errorBadResponseBody' },
       'stream-broken': { key: 'errorStreamBrokenBody' },
       'stream-ended': { key: 'errorStreamEndedBody' },
@@ -1102,10 +1143,24 @@ window.__ModuleLoader__.load({
 
     /** GET the plugin state (`/state` also answers POST, GET keeps it cacheable-free). */
     async function getState() {
-      const response = await fetch(`${API}/state`, { method: 'GET' })
-      const body = await response.json()
-      if (body?.ok !== true) throw Object.assign(new Error('state failed'), { code: 'bad-response' })
-      return body.value
+      let response
+      try {
+        response = await fetch(`${API}/state`, { method: 'GET' })
+      } catch (error) {
+        throw Object.assign(new Error(String(error?.message ?? error)), { code: 'unreachable' })
+      }
+      let body
+      try {
+        body = await response.json()
+      } catch {
+        throw Object.assign(new Error(`HTTP ${response.status}`), { code: 'bad-response' })
+      }
+      // Keep the Host's own code: a 401 ("log in first") and a 403 ("untrusted
+      // origin") are actionable in a way that a generic bad-response is not.
+      if (body?.ok === true) return body.value
+      const failure = new Error(body?.error?.message ?? `HTTP ${response.status}`)
+      failure.code = body?.error?.code ?? 'bad-response'
+      throw failure
     }
 
     /**
@@ -1130,7 +1185,18 @@ window.__ModuleLoader__.load({
         return
       }
       if (!response.ok || response.body === null) {
-        handlers.onError({ code: `http-${response.status}`, message: `HTTP ${response.status}` })
+        // Non-200 answers are JSON errors ({ok:false,error:{code,message}}),
+        // not SSE; surface the server's localized code instead of a bare
+        // "HTTP 400".
+        let wire = null
+        try {
+          const rawBody = await response.text()
+          const parsed = rawBody ? JSON.parse(rawBody) : null
+          if (parsed?.error !== null && typeof parsed?.error === 'object') wire = parsed.error
+        } catch { wire = null }
+        handlers.onError(wire && typeof wire.code === 'string'
+          ? wire
+          : { code: `http-${response.status}`, message: `HTTP ${response.status}` })
         return
       }
       const reader = response.body.getReader()
@@ -1531,14 +1597,25 @@ window.__ModuleLoader__.load({
      * Truncate an over-long selection for an outgoing prompt, keeping head and
      * tail. Mirrors the Host's `truncateSelection` (asserted by contract test):
      * code points, not UTF-16 units, so a surrogate pair is never split.
+     *
+     * The omission note is charged to the budget, not added on top of it: an
+     * "inclusive cap" that the note itself overflows by ~19 characters is not a
+     * cap, and the Host sizes its prompt budget from what a fixed prompt
+     * leaves over.
      * @returns {{text: string, truncated: boolean, droppedChars: number}}
      */
     function truncateSelection(text, maxChars) {
       const source = typeof text === 'string' ? text : ''
       const points = Array.from(source)
-      if (points.length <= maxChars) return { text: source, truncated: false, droppedChars: 0 }
-      const head = Math.max(1, Math.ceil(maxChars * 0.7))
-      const tail = Math.max(0, maxChars - head)
+      const cap = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : points.length
+      if (points.length <= cap) return { text: source, truncated: false, droppedChars: 0 }
+      const noteLength = Array.from(`\n…（已省略中间 ${points.length} 个字符）…\n`).length
+      const room = cap - noteLength
+      if (room < 2) {
+        return { text: points.slice(0, cap).join(''), truncated: true, droppedChars: points.length - cap }
+      }
+      const head = Math.max(1, Math.ceil(room * 0.7))
+      const tail = Math.max(0, room - head)
       const dropped = points.length - head - tail
       return {
         text: `${points.slice(0, head).join('')}\n…（已省略中间 ${dropped} 个字符）…\n${tail > 0 ? points.slice(points.length - tail).join('') : ''}`,
@@ -2525,14 +2602,24 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       return h('style', { 'data-dsa-style': '' }, CSS_TEXT)
     }
 
+    /**
+     * Inline markdown-lite token scanner.
+     *
+     * Hoisted out of {@link inlineNodes} because a long answer calls it once per
+     * line/paragraph on every render, and a fresh RegExp literal per call was
+     * pure allocation on the streaming hot path. `/g` is stateful, so the
+     * scanner resets `lastIndex` before each use (it never recurses).
+     */
+    const INLINE_TOKEN_RE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g
+
     /** Inline markdown-lite: `code`, **bold**, *italic*, [label](http url) — never innerHTML. */
     function inlineNodes(text, key) {
       const out = []
-      const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g
+      INLINE_TOKEN_RE.lastIndex = 0
       let last = 0
       let match
       let index = 0
-      while ((match = pattern.exec(text)) !== null) {
+      while ((match = INLINE_TOKEN_RE.exec(text)) !== null) {
         if (match.index > last) out.push(text.slice(last, match.index))
         const token = match[0]
         if (token.startsWith('`')) {
@@ -3873,18 +3960,27 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       // context, not the answer, and a long chain-of-thought would otherwise
       // bury the answer the user asked for. Collapsed by default, open on
       // demand — the text inside still streams live while it is open.
-      const reasoning = typeof card.reasoning === 'string' && card.reasoning !== ''
+      const reasoningText = typeof card.reasoning === 'string' ? card.reasoning : ''
+      // Memoised like the answer below: without this every 50 ms delta of the
+      // ANSWER re-parsed the whole reasoning stream as well, and reasoning is
+      // usually the longer of the two.
+      const reasoningNodes = React.useMemo(() => renderRichText(reasoningText), [reasoningText])
+      const reasoning = reasoningText !== ''
         ? h('details', { className: 'dsa-details' },
             h('summary', null, t('reasoningTitle')),
-            h('div', { className: 'dsa-reasoning' }, renderRichText(card.reasoning)))
+            h('div', { className: 'dsa-reasoning' }, reasoningNodes))
         : null
       // P2-4: the `<followups>` block is machine-readable scaffolding, never
       // prose. While streaming it is hidden from the first unclosed tag (a
       // half-written marker must not flash); once terminal the whole block is
       // stripped and only the answer is rendered.
-      const bodyText = card.status === 'streaming'
+      // P6: parseFollowUps/streamVisibleText run over the whole answer on every
+      // 50ms flush; memoize by the text so an unrelated store update does not
+      // re-parse a long answer.
+      const bodyText = React.useMemo(() => card.status === 'streaming'
         ? streamVisibleText(card.text)
-        : parseFollowUps(card.text).text
+        : parseFollowUps(card.text).text, [card.text, card.status])
+      const answerNodes = React.useMemo(() => renderRichText(bodyText), [bodyText])
       // Follow the stream only while the reader sits at the bottom; scrolling
       // up to reread an earlier paragraph must win over the auto-scroll. The
       // 48px slack keeps single-line deltas from losing the tail.
@@ -3914,7 +4010,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         return h('div', null, reasoning, h('div', { className: 'dsa-muted' }, t('answerEmpty')))
       }
       return h('div', { className: 'dsa-answer', ref: containerRef },
-        reasoning, renderRichText(bodyText))
+        reasoning, answerNodes)
     }
 
     /** Card footer: status, copy, follow-up, retry/edit-retry, close. */
@@ -5382,6 +5478,31 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         const PERSIST_LEGACY_KEY = 'dsh-sidecard-ask:cards:v1'
         const PERSIST_FALLBACK_CARDS = 10
         const PERSIST_TEXT_LIMIT = 65536
+        /**
+         * Total character budget for the whole v3 payload (every card, every
+         * field), in UTF-16 code units — what the localStorage quota counts.
+         *
+         * The per-field cap alone allows ~0.9 MB for ONE card (four 64k fields
+         * plus five 64k×2 versions), so the default 10-card history could reach
+         * ~9 MB and blow the usual 5 MB quota on every write, which then fell
+         * into the drop-one-and-retry loop below. 2M units stays under the
+         * quota for mixed CJK/ASCII content and still holds ~20 long answers.
+         */
+        const PERSIST_TOTAL_CHARS = 2_000_000
+
+        /** Size of one history entry, in UTF-16 code units. */
+        const entryChars = (entry) => {
+          let total = 0
+          for (const key of ['question', 'selected', 'selection', 'text', 'reasoning']) {
+            total += String(entry?.[key] ?? '').length
+          }
+          for (const version of Array.isArray(entry?.versions) ? entry.versions : []) {
+            total += String(version?.question ?? '').length
+              + String(version?.text ?? '').length
+              + String(version?.reasoning ?? '').length
+          }
+          return total
+        }
 
         /** Configured durable cap, clamped to the Host's 0–50 range. */
         const historyCap = () => {
@@ -5425,12 +5546,36 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         }
 
         function writePersisted(cards) {
-          try {
-            window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards }))
-          } catch (error) {
-            // Quota or privacy mode — the cards stay on screen, just not durable.
-            console.warn(`[${PLUGIN_ID}] card history not persisted:`, error)
+          let remaining = Array.isArray(cards) ? [...cards] : []
+          // Budget the WHOLE payload first (see PERSIST_TOTAL_CHARS). Trimming
+          // here keeps the common case on the first successful write instead of
+          // walking into the quota branch at all.
+          let total = remaining.reduce((sum, entry) => sum + entryChars(entry), 0)
+          while (remaining.length > 0 && total > PERSIST_TOTAL_CHARS) {
+            total -= entryChars(remaining[remaining.length - 1])
+            remaining.pop()
           }
+          // Newest first (cards are prepended); on quota, drop the OLDEST (tail)
+          // and retry instead of abandoning every card. An EMPTY array must still
+          // be written: deleting the last card clears the durable set on disk.
+          // Returns what actually landed so the manager mirrors the durable set.
+          let lastError = null
+          for (;;) {
+            try {
+              window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards: remaining }))
+              return remaining
+            } catch (error) {
+              lastError = error
+              if (remaining.length === 0) break
+              // Drop HALF, not one: every retry re-serialises the whole payload,
+              // so the old one-at-a-time fallback was O(n²) stringify work on the
+              // main thread — exactly while the UI is finishing a card.
+              remaining = remaining.slice(0, Math.floor(remaining.length / 2))
+            }
+          }
+          // Quota or privacy mode — the cards stay on screen, just not durable.
+          if (lastError !== null) console.warn(`[${PLUGIN_ID}] card history not persisted:`, lastError)
+          return []
         }
 
         /** Recompute the durable set from the live store and write it. */
@@ -5480,8 +5625,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             store.set({ history: [] })
             return
           }
-          writePersisted(finished)
-          store.set({ history: finished })
+          const persisted = writePersisted(finished)
+          store.set({ history: persisted })
         }
 
         /** Replay finished cards from a previous page load into the store. */
@@ -5905,7 +6050,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             return result
           },
           followUp(card, text) {
-            const history = [...card.history, { question: card.question, answer: card.text }]
+            const history = [...card.history, {
+              question: String(card.question ?? '').slice(0, HISTORY_TURN_Q_CHARS),
+              answer: String(card.text ?? '').slice(0, HISTORY_TURN_A_CHARS),
+            }].slice(-HISTORY_TURNS)
             const next = patchCard(card.id, {
               question: text,
               history,
@@ -6146,7 +6294,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             zone: card.zone,
             carrier: 'side',
             sessionId: currentSessionId(ctx),
-            history: card.history.slice(-HISTORY_TURNS),
+            history: card.history.slice(-HISTORY_TURNS).map(turn => ({
+              question: String(turn?.question ?? '').slice(0, HISTORY_TURN_Q_CHARS),
+              answer: String(turn?.answer ?? '').slice(0, HISTORY_TURN_A_CHARS),
+            })),
           }, {
             signal: controller.signal,
             onStart: (data) => {
@@ -6789,12 +6940,33 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           scheduleReport(0)
         }
         const legacyTimers = [300, 1200, 3000].map(delay => setTimeout(detectLegacy, delay))
+        // Coalesce the observer: `detectLegacy` runs a whole-document
+        // `querySelectorAll`, and a streaming answer mutates the DOM dozens of
+        // times per second — unthrottled, every one of those mutations became a
+        // full-tree scan for the first six seconds of the page's life. One
+        // trailing scan per 250 ms is plenty for a layer that only has to be
+        // noticed, never measured.
+        let legacyScanTimer = null
+        const queueLegacyScan = () => {
+          if (legacyScanTimer !== null) return
+          legacyScanTimer = setTimeout(() => {
+            legacyScanTimer = null
+            detectLegacy()
+          }, 250)
+        }
         if (typeof document !== 'undefined' && typeof MutationObserver === 'function') {
-          legacyObserver = new MutationObserver(() => detectLegacy())
+          legacyObserver = new MutationObserver(queueLegacyScan)
           try {
             legacyObserver.observe(document.documentElement ?? document, { childList: true, subtree: true })
           } catch { /* document without a root yet — timers still cover it */ }
         }
+        // After the boot probe window closes with no legacy, stop the
+        // document-wide observer: left attached it would re-scan the whole tree
+        // on every DOM mutation for the page's lifetime.
+        const legacyStopTimer = setTimeout(() => {
+          try { legacyObserver?.disconnect() } catch { /* already gone */ }
+          legacyObserver = null
+        }, 6000)
 
         reelect()
         void refreshState().catch(() => { /* the settings page shows the failure */ })
@@ -6815,6 +6987,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           if (toastTimer !== null) clearTimeout(toastTimer)
           if (reportTimer !== null) clearTimeout(reportTimer)
           for (const timer of legacyTimers) clearTimeout(timer)
+          clearTimeout(legacyStopTimer)
+          if (legacyScanTimer !== null) clearTimeout(legacyScanTimer)
           try {
             if (typeof document !== 'undefined' && document.getElementById) {
               document.getElementById('dsa-family-legacy-style')?.remove()

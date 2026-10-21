@@ -12,9 +12,13 @@ tmp-*.mjs
 
 # Local agent work journal (not part of the plugin; the repo owner keeps it out of git)
 .workbuddy/
+.workbuddy-ai/
 
 # Local third-party tool residue (graphflow / mnemon indexes, never part of the plugin)
 .graphflow/
 .graphflow-cache/
 .mnemon/
 graphflow-out/
+
+# Windows ACL recovery backups written by a local tool (never part of the plugin)
+.acl-recovery/

@@ -119,8 +119,33 @@ report.ok(
   'the newest turn still rides the prompt',
 )
 
-const clientPrefix = /const API = '([^']+)'/.exec(clientSource)?.[1]
-report.equal(clientPrefix, host.ROUTE_PREFIX, 'client API base equals the host route prefix')
+// D17: the Client must reach the Host route under the prefix the deployment
+// actually serves it on. This used to be read straight out of
+// `const API = '...'`; the base now resolves against `document.baseURI` (the
+// same rule the Host's own Client uses for its transport base), so evaluate the
+// shipped expression for the real bases instead of pinning its source form.
+const clientApiExpr = /const API = (\(\(\) => \{[\s\S]*?\n    \}\)\(\))/.exec(clientSource)?.[1]
+report.ok(typeof clientApiExpr === 'string', 'client API base is a resolvable expression')
+const resolveClientApi = (baseURI) => {
+  const fakeDocument = baseURI === undefined ? undefined : { baseURI }
+  return new Function('document', `return ${clientApiExpr}`)(fakeDocument)
+}
+report.equal(resolveClientApi(), host.ROUTE_PREFIX, 'client API base equals the host route prefix')
+report.equal(
+  resolveClientApi('http://127.0.0.1:8080/'),
+  host.ROUTE_PREFIX,
+  'client API base equals the host route prefix at the document root',
+)
+report.equal(
+  resolveClientApi('dsh-app://app/'),
+  host.ROUTE_PREFIX,
+  'client API base equals the host route prefix in the Electron shell',
+)
+report.equal(
+  resolveClientApi('https://host.example/dsh/'),
+  `/dsh${host.ROUTE_PREFIX}`,
+  'client API base keeps a deployment path prefix',
+)
 
 const hostEvents = new Set([...hostSource.matchAll(/sink\.send\('([a-z]+)'/g)].map(match => match[1]))
 const hostTerminalEvents = ['done', 'error']
@@ -322,7 +347,29 @@ for (const sample of ['short', 'x'.repeat(500), 'a\nb\nc'.repeat(400), '😀猫�
 const emojiSample = '😀猫𠀀'.repeat(300) // 900 code points, 1500 UTF-16 units
 const emojiCut = pure.truncateSelection(emojiSample, 200)
 report.ok(emojiCut.truncated === true, 'a surrogate-heavy selection still truncates')
-report.equal(emojiCut.droppedChars, 900 - 200, 'dropped counts code points, not code units')
+// The cap is INCLUSIVE of the omission note: the note is charged to the
+// budget, so the result (note included) never exceeds `maxChars` code points.
+const keptEmojiPoints = Array.from(emojiCut.text).length
+report.ok(keptEmojiPoints <= 200, `a truncation result stays within the cap (kept ${keptEmojiPoints} of 200)`)
+// `droppedChars` counts SOURCE code points removed, so the note's own
+// characters are neither kept source nor dropped source: strip the note first.
+const NOTE_PATTERN = /…（已省略中间 (\d+) 个字符）…/
+const contentPoints = text => Array.from(text.replace(/\n?…（已省略中间 \d+ 个字符）…\n?/, '')).length
+report.equal(
+  emojiCut.droppedChars,
+  900 - contentPoints(emojiCut.text),
+  'dropped counts every source code point the cut removed',
+)
+for (const cap of [0, 1, 5, 12, 19, 20, 40, 200, 1000]) {
+  const capCut = pure.truncateSelection(emojiSample, cap)
+  const capKept = Array.from(capCut.text).length
+  report.ok(capKept <= cap, `a ${cap}-code-point cap holds for an emoji-heavy selection (kept ${capKept})`)
+  const declared = capCut.text.match(NOTE_PATTERN)
+  if (declared !== null) {
+    report.equal(Number(declared[1]), capCut.droppedChars, `the note declares the real count at cap ${cap}`)
+  }
+  report.equal(capCut.droppedChars, 900 - contentPoints(capCut.text), `dropped adds up at cap ${cap}`)
+}
 const pairCut = pure.truncateSelection('👨👩', 1)
 report.equal(pairCut.text.split('\n')[0], '👨', 'a cut never keeps half a surrogate pair')
 report.equal(
@@ -356,6 +403,58 @@ const historyPrompt = host.buildSidePrompt({
   history: [{ question: '问过', answer: '答过' }], historyTurns: 6,
 })
 report.ok(historyPrompt.includes('Question: 问过') && historyPrompt.includes('Answer: 答过'), 'history turns keep their own language inside English scaffolding')
+// Malformed entries must be DROPPED, not read: `history: [null]` used to raise
+// a TypeError inside composeSidePrompt, which runs before `ask()`'s try — the
+// caller saw a raw English "Cannot read properties of null" and no start frame.
+const tolerantPrompt = host.buildSidePrompt({
+  selection: 'S', question: 'Q', zone: 'chat', truncated: false,
+  history: [null, 42, { question: '有效的一轮', answer: '答' }], historyTurns: 6,
+})
+report.ok(tolerantPrompt.includes('Question: 有效的一轮'), 'a malformed history entry is dropped instead of thrown on')
+// `slice(-0)` is `slice(0)`: asking for zero turns used to return EVERY turn.
+const zeroTurnsPrompt = host.buildSidePrompt({
+  selection: 'S', question: 'Q', zone: 'chat', truncated: false,
+  history: [{ question: '不该出现', answer: '也不该出现' }], historyTurns: 0,
+})
+report.equal(zeroTurnsPrompt.includes('Earlier turns'), false, 'historyTurns: 0 keeps no turns')
+
+// P1 budget allocation: a selection that fills the whole 60k character budget
+// must never push the current Question: line out (the old whole-string slice
+// dropped the instruction once the selection alone reached the cap).
+const fullBudgetPrompt = host.buildSidePrompt({
+  selection: 'x'.repeat(60000), question: '必须保留的问题', zone: 'chat', truncated: false,
+  history: [], historyTurns: 6,
+})
+report.ok(fullBudgetPrompt.includes('Question: 必须保留的问题'), 'a full-budget selection still keeps the question')
+report.ok(fullBudgetPrompt.length <= 60100, 'the assembled prompt stays at/under the 60k budget plus scaffolding')
+// The budget must actually HOLD, not近似: an inclusive cap the note overflows
+// (and a hand-counted fixed length that missed a separator) let the old
+// assembly reach ~60018 characters.
+report.ok(fullBudgetPrompt.length <= 60000, `the assembled prompt stays inside 60k (got ${fullBudgetPrompt.length})`)
+// Worst case: the longest question the cap allows plus a full history.
+const worstPrompt = host.buildSidePrompt({
+  selection: 'x'.repeat(60000),
+  question: '问'.repeat(30000),
+  zone: 'chat',
+  truncated: false,
+  history: Array.from({ length: 6 }, () => ({ question: 'q'.repeat(5000), answer: 'a'.repeat(9000) })),
+  historyTurns: 6,
+})
+report.ok(worstPrompt.length <= 60000, `a maximal question plus a full history stays inside 60k (got ${worstPrompt.length})`)
+report.ok(worstPrompt.includes('Question: 问'), 'the question still leads the prompt in the worst case')
+report.ok(
+  Array.from(worstPrompt.split('```text\n')[1]?.split('\n```')[0] ?? '').length >= 1000,
+  'the selection keeps a usable floor in the worst case',
+)
+// Per-turn history cap: one 10k-char earlier answer is bounded, never copied whole.
+const longHistoryPrompt = host.buildSidePrompt({
+  selection: 'S', question: 'Q', zone: 'chat', truncated: false,
+  history: [{ question: '追问', answer: '答'.repeat(10000) }], historyTurns: 6,
+})
+report.ok(
+  longHistoryPrompt.includes('答'.repeat(4000)) && !longHistoryPrompt.includes('答'.repeat(4001)),
+  'a long earlier history answer is capped per turn',
+)
 
 console.log('\nmarkdown-lite rendering')
 // A6: answers routinely contain links, italics, blockquotes and tables;
@@ -2206,6 +2305,46 @@ report.equal(reloadClient.module.api.snapshot().history.length, 0, 'deleteHistor
 report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'deleteHistoryCard also removes the live card')
 report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the deletion is persisted immediately')
 
+// Quota: the per-field caps alone allow ~0.9 MB for ONE card, so a full
+// history could exceed the usual 5 MB quota on every write — and the old
+// fallback then dropped a single card per retry, re-serialising the whole
+// payload each time (O(n²) stringify work on the main thread). The payload is
+// now budgeted before the first write and the fallback halves.
+{
+  const quotaStorage = createLocalStorageStub()
+  const quotaSet = quotaStorage.setItem.bind(quotaStorage)
+  quotaStorage.setItem = (key, value) => {
+    if (String(value).length > 2_200_000) throw new Error('QuotaExceededError')
+    quotaSet(key, value)
+  }
+  const bigCards = Array.from({ length: 10 }, (_, index) => ({
+    id: `quota-${index}`,
+    question: `q${index}`,
+    text: 'x'.repeat(240_000),
+    status: 'done',
+    createdAt: index + 1,
+    versions: [],
+  }))
+  quotaSet(PERSIST_KEY, JSON.stringify({ version: 3, cards: bigCards }))
+  const quotaClient = loadClientModule({ fetchImpl: hostFetch, storage: quotaStorage, language: 'zh-CN' })
+  const quotaCtx = makeClientCtx({})
+  quotaClient.module.apply(quotaCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const quotaActions = quotaCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+  quotaActions.deleteHistoryCard('quota-0')
+  const quotaWritten = JSON.parse(quotaStorage.getItem(PERSIST_KEY))
+  report.ok(quotaWritten.cards.length < 10, 'an over-budget history is trimmed before the write')
+  report.ok(
+    JSON.stringify(quotaWritten).length <= 2_200_000,
+    'the persisted payload stays inside the quota',
+  )
+  report.equal(
+    quotaWritten.cards.some(entry => entry.id === 'quota-0'),
+    false,
+    'the deleted entry stays deleted after the trim',
+  )
+}
+
 console.log('\ndelete this follow-up conversation (2.0.0)')
 // 2.0.0 (user decision): the × in the card header no longer hides the layer —
 // it deletes THIS follow-up conversation, from the live surface AND from the
@@ -3362,6 +3501,22 @@ console.log('\nfeedback: host transport')
   report.equal(smtp.endpoint?.from, 'bot@relay.local', '?from= overrides the sender')
   report.equal(feedback.parseSmtpUrl('http://example.com').ok, false, 'a non-SMTP scheme is refused')
   report.equal(feedback.parseSmtpUrl('smtp://smtp.example.com').ok, false, 'credentials are required')
+  // A password pasted into an environment variable is not URL-escaped by its
+  // author: `pass%word` reaches `decodeURIComponent` as `%wo` and used to throw
+  // a URIError all the way out of `/state` (which sat outside the route
+  // handler's try), turning a typo into "host unreachable" for the whole page.
+  const badPercent = feedback.parseSmtpUrl('smtp://u:pass%word@h.example:587')
+  report.equal(badPercent.ok, false, 'an unescaped % in the credentials is a config error, not a throw')
+  report.ok(
+    typeof badPercent.reason === 'string' && badPercent.reason.includes('%'),
+    'the refusal names the offending character',
+  )
+  const badPercentState = feedback.describeFeedback(
+    { feedbackAddress: 'ops@example.test' },
+    { DSH_SIDECARD_SMTP_URL: 'smtp://u:pass%word@h.example:587' },
+  )
+  report.equal(badPercentState.configured, false, 'a malformed SMTP URL degrades to "not configured" instead of throwing')
+  report.ok(badPercentState.reason.includes('%'), 'and the reason explains the unescaped %')
 
   report.equal(
     feedback.readSmtpFromEnv({ DSH_SIDECARD_SMTP_URL: 'smtp://u%40example.test:p@127.0.0.1:2525?starttls=0' }).ok,
@@ -3902,6 +4057,22 @@ console.log('\nfeedback: a complete environment beats a half-filled settings pag
   const envOnly = host.resolveSmtp({}, completeEnv)
   report.equal(envOnly.ok, true, 'an empty page plus the environment works')
   report.equal(envOnly.source, 'env', 'the source is the environment')
+
+  // The page-visible descriptor must not contradict itself: `configured` is
+  // computed from this same resolution, so an env-supplied password has to
+  // count as a password even though the settings form stores nothing.
+  const envDescriptor = host.describeSmtpSettings(halfTyped, completeEnv)
+  report.equal(envDescriptor.source, 'env', 'the descriptor names the environment')
+  report.equal(envDescriptor.hasPassword, true, 'an environment password counts as a password')
+  report.equal(envDescriptor.storedPassword, false, 'and is distinguished from one stored by the form')
+  const pageDescriptor = host.describeSmtpSettings(
+    { ...halfTyped, feedbackSmtpPass: 'from-the-page' },
+    {},
+  )
+  report.equal(pageDescriptor.source, 'config', 'a page-only transport says so')
+  report.equal(pageDescriptor.hasPassword, true, 'a page password counts as a password')
+  report.equal(pageDescriptor.storedPassword, true, 'and is reported as stored')
+  report.equal(pageDescriptor.pass, undefined, 'the descriptor never carries the password')
 }
 
 report.summary()

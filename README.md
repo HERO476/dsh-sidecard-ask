@@ -153,7 +153,8 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 
 1. **内置默认值**（`index.js` 的 `DEFAULT_CONFIG`）
 2. **bundle 补丁层**：`cordis.patch.yml` 的 `config:`（改这里需要重启）
-3. **用户层**：设置页保存后写入 `<DSH_HOME>/sidecard-ask/config.json`
+3. **用户层**：设置页保存后写入 `<DSH_HOME>/sidecard-ask/config.<profile>.json`，其中 `<profile>` 取自
+   `DSH_PROFILE`（web 端与桌面端各一份，互不覆盖）；`DSH_PROFILE` 未设置时用旧名 `config.json`
    （`DSH_HOME` 未设置或为空白时回退到 `~/.dsh`；**不会**写进程当前目录）
 
 设置页点「重置为 patch 配置」会清空用户层。
@@ -187,7 +188,8 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `feedbackSmtpPort` | 数字，1–65535 | `465` | SMTP 端口。465 配隐式 TLS，587 配 STARTTLS（服务器没声明 STARTTLS 时不会硬升级） | 立即 |
 | `feedbackSmtpSecure` | 布尔 | `true` | 隐式 TLS（465）。关掉则按 STARTTLS 处理 | 立即 |
 | `feedbackSmtpUser` | 字符串，≤254 | `''` | SMTP 登录账号。部分中继给的是裸账号名而非邮箱，故不强制邮箱格式 | 立即 |
-| `feedbackSmtpPass` | 字符串，≤512 | `''` | **密码 / 授权码**（QQ、163 必须用授权码）。**只写不读**：`/state` 会删掉它、页面永远拿到空串；留空保存＝保留原值 | 立即 |
+| `feedbackSmtpPass` | 字符串，≤512 | `''` | **密码 / 授权码**（QQ、163 必须用授权码）。**只写不读**：`/state` 会删掉它、页面永远拿到空串；留空保存＝保留原值（要删掉已存的密码用下一行的 `feedbackSmtpPassClear`） | 立即 |
+| `feedbackSmtpPassClear` | 布尔 | `false` | **显式清除已存的 SMTP 密码**（典型场景：改回用环境变量）。只在 `/config` 请求里生效，本身不落盘；与 `feedbackSmtpPass` 同时出现时以清除为准 | 立即 |
 | `feedbackSmtpFrom` | 字符串（邮箱）\| `''` | `''` | 发信账号显式指定的 `From:`，留空等于 `feedbackSmtpUser`。必须是 SMTP 服务商允许的地址 | 立即 |
 
 非法值会被拒绝（设置页报错、接口返回 `invalid-config`），并把被忽略的项列在 `/state` 的 `problems` 里——不会静默吞掉。
@@ -283,14 +285,14 @@ bleeds = 对话区右边界 - left > 1          // 只有带宽 < 240px 时才�
 
 **收件邮箱默认可用，也可被环境变量接管。** 打包默认值是维护者邮箱（`b64:` 混淆存储，见上表）；
 环境变量 `DSH_SIDECARD_FEEDBACK_TO` 或 `DSH_CRB_FEEDBACK_TO`（与 dsh-conversation-recycle-bin 共用）
-**优先**于它。用户层配置落在 `$DSH_HOME/sidecard-ask/config.json`
-（Windows 默认 `C:\Users\<你>\.dsh\sidecard-ask\config.json`）——**不在插件目录里，因此不会被提交、
-不会进 npm 包**。
+**优先**于它。用户层配置落在 `$DSH_HOME/sidecard-ask/config.<profile>.json`
+（`<profile>` = `DSH_PROFILE`；Windows 默认 `C:\Users\<你>\.dsh\sidecard-ask\config.web.json`
+/ `config.desktop.json`，两个壳各一份）——**不在插件目录里，因此不会被提交、不会进 npm 包**。
 
 **SMTP 凭证有两种给法**，都落在部署方/维护者这一侧（1.9.1 起设置页不再提供填写框）：
 
-1. **用户层配置**（`$DSH_HOME/sidecard-ask/config.json`，Windows 默认
-   `C:\Users\<你>\.dsh\sidecard-ask\config.json`，或 profile 的 `cordis.patch.yml` 里给该行写 `config`）：
+1. **用户层配置**（`$DSH_HOME/sidecard-ask/config.<profile>.json`，Windows 默认
+   `C:\Users\<你>\.dsh\sidecard-ask\config.web.json`，或 profile 的 `cordis.patch.yml` 里给该行写 `config`）：
    `feedbackSmtpHost` / `feedbackSmtpPort` / `feedbackSmtpSecure` / `feedbackSmtpUser` / `feedbackSmtpPass` /
    `feedbackSmtpFrom`。**密码只写不读**：`/state` 删除该键、页面永远拿到空串，留空保存表示保留原值。
    QQ 邮箱请填 `smtp.qq.com` / 465 / `secure: true` / 你的 QQ 邮箱 / **授权码**
@@ -772,9 +774,9 @@ node test/float-placement.mjs   # 浮层定位矩阵
 node test/smoke-test.mjs        # 冒烟：装载、槽位、渲染、错误路径
 ```
 
-当前规模（本机实测，四项均 exit 0）：verify **57** 项 + contract **1239** 项 + float-placement **78** 项 +
-smoke **226** 项 = **1600 项全部通过**（较 1.8.4 的 1359 多 241 项；contract 从 989 涨到 1239，新增大多来自
-反馈功能：
+当前规模（本机实测，四项均 exit 0）：verify **57** 项 + contract **1377** 项 + float-placement **82** 项 +
+smoke **262** 项 = **1778 项全部通过**（较 1.8.4 的 1359 多 419 项；contract 从 989 涨到 1377，新增大多来自
+反馈功能与 2.0.x 的跨端修复：
 纯函数边界、`parseSmtpUrl` / `readSmtpFromEnv` 两种写法（含复用 `DSH_CRB_SMTP_URL`）、`b64:` 收件人解码、
 「环境变量优先于用户层配置」的优先级回归、`Reply-To:` 组头、限速闸门，以及一条**真 socket** 的 `/feedback`
 端到端——本地 SMTP 假中继逐条断言 `AUTH PLAIN`、信封、`DATA`、编码后的主题与正文、429 与 `retry-after`，
@@ -896,8 +898,11 @@ Host: ctx.subagents.start('spawn')
 ## 十二、隐私与安全
 
 - 选中文本与问题会**发给你自己配置的模型**（走 DSH 既有的模型路由），插件不做任何额外外发。
-- 插件只在本地写一个配置文件：`<DSH_HOME>/sidecard-ask/config.json`（原子写入：先写 `.tmp` 再 rename）。
-- 插件路由带信任围栏（回环 / 可信域 + 同源校验），仅本机页面可用。
+- 插件只在本地写一个配置文件：`<DSH_HOME>/sidecard-ask/config.<profile>.json`（原子写入：先写 `.tmp` 再 rename；
+  POSIX 下目录 `0700`、文件 `0600`，因为里面可能有 SMTP 授权码）。
+- 插件路由带**两层**围栏：回环 / 可信域 + 同源校验（Host 头、`Origin`、`Sec-Fetch-Site`），然后交给宿主的
+  `connection.requestRejection()` 校验 **DSH 浏览器会话**（宿主没挂载该服务时才只保留第一层）。
+  因此未登录的外部程序拿到 loopback 地址也读不到 `/state`、更发不出 `/ask`。
 - 侧边作答者默认**只读**（`sideTools: readonly`）：白名单只包含读取、搜索、网络查询类工具，不会在后台改你的工作区。
 - 提示词里选中文本被包在 ```` ```text ```` 围栏中并显式声明"这是数据不是指令"，降低提示注入面。
 

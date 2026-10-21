@@ -5,7 +5,8 @@
  *   1. Serve the plugin's own JSON + SSE API under `/sidecard-ask/api`.
  *   2. Own the plugin's configuration: built-in defaults, the bundle patch
  *      layer, and the user layer persisted to
- *      `<DSH_HOME>/sidecard-ask/config.json`.
+ *      `<DSH_HOME>/sidecard-ask/config.<DSH_PROFILE>.json` (the plain
+ *      `config.json` when no profile is set).
  *   3. Run one independent "side answer" per request: a child Agent started
  *      through `ctx.subagents` whose live deltas are bridged from the
  *      process-local `agent/assistant-stream` event onto the SSE response.
@@ -44,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.0.1'
+export const PLUGIN_VERSION = '2.0.2'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -57,6 +58,22 @@ const SSE_HEARTBEAT_MS = 15_000
 
 /** Hard cap on the prompt text handed to the child (defense in depth). */
 const MAX_PROMPT_CHARS = 60_000
+
+/**
+ * Hard cap on the follow-up question inside the prompt (defense in depth).
+ *
+ * The question is the child's instruction, so it is capped far above anything
+ * a person types and far below the prompt budget: an unbounded question used
+ * to be able to squeeze the selection down to a single character.
+ */
+const MAX_QUESTION_CHARS = 20_000
+
+/**
+ * Code points the selection keeps before earlier turns are dropped from the
+ * prompt. Without a floor, a long question plus a full history could starve
+ * the selection to one character while the prompt still overflowed.
+ */
+const SELECTION_FLOOR_CHARS = 2_000
 
 /**
  * Built-in defaults. `cordis.patch.yml` overrides these; the user layer
@@ -172,7 +189,7 @@ export const DEFAULT_CONFIG = {
    * SMTP transport, editable in the settings page so a normal user never has to
    * touch environment variables.
    *
-   * These live in the USER layer only (`<DSH_HOME>/sidecard-ask/config.json`,
+   * These live in the USER layer only (`<DSH_HOME>/sidecard-ask/config.<profile>.json`,
    * outside the repository, never in a release artifact). The environment still
    * works and still wins nothing: an empty host means "read the environment".
    * The password is write-only over the wire: `/state` never returns it, an
@@ -202,6 +219,14 @@ const QUICK_ACTION_LIMITS = {
  * caps can never drift apart silently.
  */
 export const HISTORY_TURNS = 6
+
+/**
+ * Per-turn character caps inside the built prompt: a single very long earlier
+ * answer must not consume the whole 60k character budget and push the current
+ * question out (see {@link buildSidePrompt}'s budget allocation).
+ */
+const HISTORY_TURN_Q_CHARS = 500
+const HISTORY_TURN_A_CHARS = 4000
 
 /** Allowed values per enum key; anything else falls back to the default. */
 const ENUMS = {
@@ -522,6 +547,10 @@ export function normalizeConfig(patchConfig, persisted) {
  * a Plane-2 CJK glyph spans two code units, and slicing the pair's midpoint
  * would push a broken character into the child's prompt. The client mirrors
  * this helper exactly (asserted by the contract test).
+ *
+ * The omission note is charged to the budget, not added on top of it: an
+ * "inclusive cap" that the note itself overflows by ~19 characters is not a
+ * cap, and the caller sizes this budget from what a fixed prompt leaves over.
  * @param {string} text - the selected text.
  * @param {number} maxChars - inclusive cap, in code points.
  * @returns {{text: string, truncated: boolean, droppedChars: number}}
@@ -529,13 +558,21 @@ export function normalizeConfig(patchConfig, persisted) {
 export function truncateSelection(text, maxChars) {
   const source = typeof text === 'string' ? text : ''
   const points = Array.from(source)
-  if (points.length <= maxChars) return { text: source, truncated: false, droppedChars: 0 }
-  const head = Math.max(1, Math.ceil(maxChars * 0.7))
-  const tail = Math.max(0, maxChars - head)
+  const cap = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : points.length
+  if (points.length <= cap) return { text: source, truncated: false, droppedChars: 0 }
+  // Reserve the note's UPPER bound: the dropped count never exceeds the total,
+  // so the widest possible note is what the budget has to survive.
+  const noteLength = Array.from(`\n…（已省略中间 ${points.length} 个字符）…\n`).length
+  const room = cap - noteLength
+  if (room < 2) {
+    // Too little budget for a note: a plain head cut stays inside the cap.
+    return { text: points.slice(0, cap).join(''), truncated: true, droppedChars: points.length - cap }
+  }
+  const head = Math.max(1, Math.ceil(room * 0.7))
+  const tail = Math.max(0, room - head)
   const dropped = points.length - head - tail
-  const marker = `\n…（已省略中间 ${dropped} 个字符）…\n`
   return {
-    text: `${points.slice(0, head).join('')}${marker}${tail > 0 ? points.slice(points.length - tail).join('') : ''}`,
+    text: `${points.slice(0, head).join('')}\n…（已省略中间 ${dropped} 个字符）…\n${tail > 0 ? points.slice(points.length - tail).join('') : ''}`,
     truncated: true,
     droppedChars: dropped,
   }
@@ -556,24 +593,88 @@ export function truncateSelection(text, maxChars) {
  * @returns {string} the prompt text.
  */
 export function buildSidePrompt(input) {
+  return composeSidePrompt(input).text
+}
+
+/**
+ * Build the child's prompt and report what the budget cost the user.
+ *
+ * The caller used to learn nothing about prompt-side truncation: a selection
+ * lost to the budget was silent because only the client-side cut was reported.
+ * @param {{selection: string, question: string, zone: string, truncated: boolean,
+ *   history: Array<{question: string, answer: string}>, historyTurns: number}} input
+ * @returns {{text: string, truncated: boolean, droppedChars: number,
+ *   historyTurns: number, historyDropped: number}} the prompt and its budget cost.
+ */
+function composeSidePrompt(input) {
   const zoneLabel = { chat: 'chat area', task: 'task area', other: 'elsewhere' }[input.zone] ?? 'elsewhere'
-  const parts = [
-    `Source: ${zoneLabel}${input.truncated ? ' (selection too long; truncated)' : ''}`,
-    'Selection:',
-    '```text',
-    input.selection,
-    '```',
-  ]
-  const turns = Array.isArray(input.history) ? input.history.slice(-Math.max(0, input.historyTurns)) : []
-  if (turns.length > 0) {
-    parts.push('Earlier turns on this card:')
-    for (const turn of turns) {
-      parts.push(`Question: ${turn.question}`)
-      if (turn.answer) parts.push(`Answer: ${turn.answer}`)
-    }
+  const capTurn = (value, limit) => {
+    const text = typeof value === 'string' ? value : ''
+    return text.length <= limit ? text : `${text.slice(0, limit)}…`
   }
-  parts.push('Question:', input.question)
-  return parts.join('\n').slice(0, MAX_PROMPT_CHARS)
+  // Last N turns; each turn's fields are individually bounded so one long
+  // earlier answer cannot consume the whole budget. Entries that are not
+  // objects are dropped instead of thrown on: `history: [null]` used to raise a
+  // TypeError out of `ask()` before its try block, which reached the Client as
+  // a raw English message and with no `start` frame at all.
+  const limit = Number.isFinite(input.historyTurns)
+    ? Math.max(0, Math.floor(input.historyTurns))
+    : HISTORY_TURNS
+  const validTurns = (Array.isArray(input.history) ? input.history : [])
+    .filter(turn => turn !== null && typeof turn === 'object' && !Array.isArray(turn))
+  // `slice(-0)` is `slice(0)` — the whole list. A caller asking for zero turns
+  // must get zero turns, not every turn.
+  const turns = limit === 0 ? [] : validTurns.slice(-limit)
+  const questionBlock = `Question: ${capTurn(input.question, MAX_QUESTION_CHARS)}`
+  const sourceLine = `Source: ${zoneLabel}${input.truncated ? ' (selection too long; truncated)' : ''}`
+
+  /**
+   * Assemble the prompt for one selection and one set of turns. Used both for
+   * the real prompt and for the empty-selection skeleton, so the fixed length
+   * is MEASURED instead of re-derived: the old hand-counted sum missed the
+   * separator between the selection and its closing fence.
+   */
+  const assemble = (selection, historyTurns) => {
+    const parts = [sourceLine, 'Selection:', '```text', selection, '```']
+    if (historyTurns.length > 0) {
+      const historyLines = ['Earlier turns on this card:']
+      for (const turn of historyTurns) {
+        historyLines.push(`Question: ${capTurn(turn.question, HISTORY_TURN_Q_CHARS)}`)
+        const answer = capTurn(turn.answer, HISTORY_TURN_A_CHARS)
+        if (answer !== '') historyLines.push(`Answer: ${answer}`)
+      }
+      parts.push(historyLines.join('\n'))
+    }
+    parts.push(questionBlock)
+    return parts.join('\n')
+  }
+
+  const rawSelection = typeof input.selection === 'string' ? input.selection : ''
+  const selectionLength = Array.from(rawSelection).length
+  // The question is the instruction and must survive the cap; the history
+  // block is fixed-length; only the SELECTION absorbs what remains. Slicing the
+  // whole joined string used to drop "Question:" when the selection filled 60k
+  // characters, leaving the child with no instruction.
+  //
+  // The history is the only slack: if the fixed blocks would starve the
+  // selection below its floor, the OLDEST turns go first (the newest context is
+  // the most relevant), and if even a bare skeleton cannot hold the floor the
+  // question cap above is what keeps the budget finite.
+  const floor = Math.min(SELECTION_FLOOR_CHARS, selectionLength)
+  let kept = turns
+  let skeleton = assemble('', kept).length
+  while (kept.length > 0 && MAX_PROMPT_CHARS - skeleton < floor) {
+    kept = kept.slice(1)
+    skeleton = assemble('', kept).length
+  }
+  const cut = truncateSelection(rawSelection, Math.max(0, MAX_PROMPT_CHARS - skeleton))
+  return {
+    text: assemble(cut.text, kept),
+    truncated: cut.truncated || kept.length !== turns.length,
+    droppedChars: cut.droppedChars,
+    historyTurns: kept.length,
+    historyDropped: turns.length - kept.length,
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -725,8 +826,20 @@ export function parseSmtpUrl(raw) {
   if (host === '') return { ok: false, reason: 'SMTP 地址缺少主机名' }
   const port = url.port === '' ? (secure ? 465 : 587) : Number(url.port)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return { ok: false, reason: 'SMTP 端口不在 1–65535 之间' }
-  const user = decodeURIComponent(url.username ?? '')
-  const pass = decodeURIComponent(url.password ?? '')
+  // A password pasted into an environment variable is not URL-escaped by its
+  // author: `pass%word` reaches here as `%wo`, and `decodeURIComponent` rejects
+  // that with a URIError. The throw used to escape `parseSmtpUrl` →
+  // `readSmtpFromEnv` → `describeFeedback` → `/state`, where it surfaced as
+  // "host unreachable" and took the whole settings page with it — one stray `%`
+  // in a credential must be a config error, never a broken page.
+  let user
+  let pass
+  try {
+    user = decodeURIComponent(url.username ?? '')
+    pass = decodeURIComponent(url.password ?? '')
+  } catch {
+    return { ok: false, reason: 'SMTP 账号或密码含未转义的 %（请把 % 写成 %25）' }
+  }
   if (user === '' || pass === '') return { ok: false, reason: 'SMTP 地址需要 user:pass' }
   const from = (url.searchParams.get('from') ?? '').trim() || user
   if (!looksLikeEmail(from)) return { ok: false, reason: '发件邮箱格式不合法（由 ?from= 指定）' }
@@ -818,18 +931,28 @@ export function resolveSmtp(config = {}, env = process.env) {
 
 /**
  * The SMTP settings as the page may see them: everything except the password,
- * which is reduced to a boolean.
+ * which is reduced to boolean facts.
  */
 export function describeSmtpSettings(config = {}, env = process.env) {
   const resolved = resolveSmtp(config, env)
+  const stored = typeof config.feedbackSmtpPass === 'string' && config.feedbackSmtpPass !== ''
+  const source = resolved.ok === true ? resolved.source : ''
   return {
     host: typeof config.feedbackSmtpHost === 'string' ? config.feedbackSmtpHost.trim() : '',
     port: clampNumber(config.feedbackSmtpPort, 1, 65_535) ?? 465,
     secure: config.feedbackSmtpSecure !== false,
     user: typeof config.feedbackSmtpUser === 'string' ? config.feedbackSmtpUser.trim() : '',
     from: typeof config.feedbackSmtpFrom === 'string' ? config.feedbackSmtpFrom.trim() : '',
-    hasPassword: typeof config.feedbackSmtpPass === 'string' && config.feedbackSmtpPass !== '',
-    source: resolved.ok === true ? resolved.source : '',
+    // True when a password is actually available to send with, from EITHER
+    // layer. This used to read the config field only, so an operator who
+    // exported the credentials got `configured: true` next to
+    // `hasPassword: false` — a descriptor that contradicted itself and made a
+    // working setup look broken in diagnostics.
+    hasPassword: source === 'env' ? true : stored,
+    // Which layer the active credentials come from, and whether the settings
+    // form itself holds a password (what "leave blank to keep it" refers to).
+    source,
+    storedPassword: stored,
   }
 }
 
@@ -1134,6 +1257,28 @@ export function configDir() {
 }
 
 /**
+ * The persisted-config file for THIS harness profile.
+ *
+ * `$DSH_HOME` is one directory shared by every profile of an installation —
+ * the web shell and the desktop shell are two profiles over the same home — so
+ * a single `config.json` let one end's save silently rewrite the other end's
+ * settings (a web-only `sideTools: 'inherit'` then applied to desktop runs).
+ * `$DSH_PROFILE` is the harness' own profile identity, so it becomes part of
+ * the file name.
+ *
+ * The profile segment is restricted to a conservative token: this value
+ * reaches a filesystem path, so anything else falls back to the shared file
+ * rather than escaping the directory. A shell that sets no profile (older
+ * harness, bare `node` runs) keeps the historical path exactly.
+ * @returns {string} absolute file path.
+ */
+export function configFilePath() {
+  const profile = typeof process.env.DSH_PROFILE === 'string' ? process.env.DSH_PROFILE.trim() : ''
+  const slug = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profile) ? profile : ''
+  return join(configDir(), slug === '' ? 'config.json' : `config.${slug}.json`)
+}
+
+/**
  * Build the read-only tool restriction for a child run.
  *
  * Returns `undefined` (no restriction at all → the child inherits the parent's
@@ -1246,7 +1391,10 @@ function writeOk(res, value) {
  * relies on `retry-after` surviving).
  */
 function writeError(res, status, code, message, extraHeaders = {}) {
-  writeJson(res, status, { ok: false, error: { code, message } }, extraHeaders)
+  if (res === null || res === undefined || res.destroyed === true || res.headersSent === true) return
+  try {
+    writeJson(res, status, { ok: false, error: { code, message } }, extraHeaders)
+  } catch { /* the socket is already gone — nothing to write */ }
 }
 
 /**
@@ -1257,27 +1405,54 @@ function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
-    req.on('data', (chunk) => {
+    let settled = false
+    const cleanup = () => {
+      // Guard: synthetic request stubs (and very old streams) may only implement
+      // on(); removeListener is a no-op there rather than a crash.
+      if (typeof req.removeListener === 'function') {
+        req.removeListener('data', onData)
+        req.removeListener('end', onEnd)
+      }
+      // The 'error' listener stays attached for the socket lifetime: removing
+      // it would turn a later ECONNRESET after destroy into an unhandled crash;
+      // onError no-ops once settled is true.
+    }
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const onData = (chunk) => {
       size += chunk.length
       if (size > MAX_BODY_BYTES) {
-        reject(Object.assign(new Error('请求体过大'), { code: 'too-large' }))
+        fail(Object.assign(new Error('请求体过大'), { code: 'too-large' }))
         req.destroy()
         return
       }
       chunks.push(chunk)
-    })
-    req.on('end', () => {
+    }
+    const onEnd = () => {
+      if (settled) return
       if (size === 0) {
+        settled = true
+        cleanup()
         resolve(null)
         return
       }
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+        const value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        settled = true
+        cleanup()
+        resolve(value)
       } catch {
-        reject(Object.assign(new Error('请求体不是合法 JSON'), { code: 'bad-request' }))
+        fail(Object.assign(new Error('请求体不是合法 JSON'), { code: 'bad-request' }))
       }
-    })
-    req.on('error', (error) => { reject(error) })
+    }
+    const onError = (error) => { fail(error) }
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onError)
   })
 }
 
@@ -1290,12 +1465,24 @@ function openSse(res) {
     'x-accel-buffering': 'no',
   })
   let closed = false
-  const heartbeat = setInterval(() => {
+  let heartbeat = null
+  /**
+   * Mark the stream dead and stop the heartbeat exactly once.
+   *
+   * `end()` alone was not enough: a failed `write` set `closed = true`, and
+   * `end()` then early-returned on that flag WITHOUT clearing the interval — an
+   * orphaned timer ticking every 15s for the rest of the process lifetime.
+   */
+  const shutdown = () => {
+    closed = true
+    if (heartbeat !== null) clearInterval(heartbeat)
+  }
+  heartbeat = setInterval(() => {
     if (closed) return
     try {
       res.write(': keep-alive\n\n')
     } catch {
-      closed = true
+      shutdown()
     }
   }, SSE_HEARTBEAT_MS)
   heartbeat.unref?.()
@@ -1306,14 +1493,13 @@ function openSse(res) {
       try {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
       } catch {
-        closed = true
+        shutdown()
       }
     },
     /** End the stream exactly once. */
     end() {
       if (closed) return
-      closed = true
-      clearInterval(heartbeat)
+      shutdown()
       try {
         res.end()
       } catch {
@@ -1564,7 +1750,8 @@ function createSideEngine(ctx, configOf) {
   }
 
   /** Report what the side card can do right now. */
-  function capabilities() {    const providers = providerNames()
+  function capabilities() {
+    const providers = providerNames()
     const service = subagentsService()
     const parent = resolveParent(undefined)
     return {
@@ -1663,7 +1850,9 @@ function createSideEngine(ctx, configOf) {
     }
 
     const cut = truncateSelection(rawSelection, config.maxChars)
-    const prompt = buildSidePrompt({
+    // `composeSidePrompt` reports what the total prompt budget cost so the
+    // start frame can surface it; `buildSidePrompt` is the string-only wrapper.
+    const composed = composeSidePrompt({
       selection: cut.text,
       question,
       zone: typeof request.zone === 'string' ? request.zone : 'other',
@@ -1671,6 +1860,7 @@ function createSideEngine(ctx, configOf) {
       history: Array.isArray(request.history) ? request.history : [],
       historyTurns: HISTORY_TURNS,
     })
+    const prompt = composed.text
 
     const controller = new AbortController()
     const abortOnClientGone = () => { controller.abort() }
@@ -1734,6 +1924,12 @@ function createSideEngine(ctx, configOf) {
         maxChars: config.maxChars,
         truncated: cut.truncated,
         droppedChars: cut.droppedChars,
+        // Prompt-side budget cost, which the Client could not see before: the
+        // selection can lose MORE characters to the total prompt budget than
+        // the client-side cut dropped, and older turns can be shed entirely.
+        promptTruncated: composed.truncated,
+        promptDroppedChars: composed.droppedChars,
+        promptHistoryDropped: composed.historyDropped,
         // Reported so the card can say the run inherits the session's tools
         // instead of silently pretending the read-only guard is in force.
         toolFilter: config.sideTools !== 'readonly'
@@ -1812,6 +2008,15 @@ function createSideEngine(ctx, configOf) {
           .trim()
         text = joined
       }
+      // Non-streaming builds lose reasoning when only the text fallback ran:
+      // also recover reasoning/thinking blocks from the durable result.output.
+      if (reasoning.trim() === '') {
+        reasoning = (Array.isArray(result?.output) ? result.output : [])
+          .filter(block => (block?.type === 'reasoning' || block?.type === 'thinking') && typeof block.text === 'string')
+          .map(block => block.text)
+          .join('\n')
+          .trim()
+      }
       const stopReason = typeof result?.stopReason === 'string' ? result.stopReason : 'completed'
       if (text.trim() === '' && stopReason !== 'completed') {
         // `refusal` is the subagent seam's name for a turn the loop ended as
@@ -1841,6 +2046,9 @@ function createSideEngine(ctx, configOf) {
         text,
         reasoning,
         streaming: framesSeen || chunksSeen,
+        // True when the child returned no prose at all (reasoning-only or a
+        // silent completion); the Client already shows its empty notice.
+        empty: text.trim() === '',
         // Which source carried the deltas — the Client uses it only for the
         // "this build publishes no stream frames" note.
         streamSource: framesSeen ? 'frames' : (chunksSeen ? 'chunks' : 'result'),
@@ -1904,14 +2112,13 @@ function createSideEngine(ctx, configOf) {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Read the persisted user layer. A missing or unreadable file is not an
- * error — it only means "no user overrides yet".
+ * Read ONE config file. A missing or unreadable file is not an error — it only
+ * means "no user overrides here".
+ * @param {string} path - absolute file path.
  * @param {object} [logger] - optional ctx.logger.
  * @returns {{data: Record<string, unknown>, path: string, present: boolean, error?: string}}
  */
-function readPersistedConfig(logger) {
-  const dir = configDir()
-  const path = join(dir, 'config.json')
+function readConfigFile(path, logger) {
   try {
     const raw = readFileSync(path, 'utf8')
     const parsed = JSON.parse(raw)
@@ -1926,18 +2133,46 @@ function readPersistedConfig(logger) {
 }
 
 /**
+ * Read the persisted user layer for this profile.
+ *
+ * A profile-scoped file that has never been written inherits the old shared
+ * `config.json` once, so an existing installation keeps its settings when the
+ * file name becomes profile-aware. The shared file is never moved or deleted:
+ * an older plugin build still reads it.
+ * @param {object} [logger] - optional ctx.logger.
+ * @returns {{data: Record<string, unknown>, path: string, present: boolean,
+ *   inheritedFrom?: string, error?: string}}
+ */
+function readPersistedConfig(logger) {
+  const path = configFilePath()
+  const own = readConfigFile(path, logger)
+  if (own.present === true) return own
+  const legacy = join(configDir(), 'config.json')
+  if (path === legacy) return own
+  const inherited = readConfigFile(legacy, logger)
+  if (inherited.present !== true) return own
+  return { ...inherited, path, inheritedFrom: legacy }
+}
+
+/**
  * Persist the user layer atomically (write a sibling temp file, then rename).
- * @returns {{ok: boolean, error?: string}} the outcome.
+ * Always writes THIS profile's file, never the shared one.
+ * @param {Record<string, unknown>} data - the user layer.
+ * @param {object} [logger] - optional ctx.logger.
+ * @returns {{ok: boolean, path: string, error?: string}} the outcome.
  */
 function writePersistedConfig(data, logger) {
   const dir = configDir()
-  const path = join(dir, 'config.json')
+  const path = configFilePath()
   const temp = `${path}.tmp`
   try {
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
+    // POSIX hardening: the file holds the SMTP password, so it must not be
+    // world-readable; the mode bits are no-ops on Windows but keep the
+    // behavior correct on Linux/macOS.
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
     renameSync(temp, path)
-    return { ok: true }
+    return { ok: true, path }
   } catch (error) {
     try {
       rmSync(temp, { force: true })
@@ -1945,7 +2180,7 @@ function writePersistedConfig(data, logger) {
       /* best effort */
     }
     logger?.warn?.('[sidecard-ask] 保存配置失败：', error?.message ?? error)
-    return { ok: false, error: String(error?.message ?? error) }
+    return { ok: false, path, error: String(error?.message ?? error) }
   }
 }
 
@@ -2063,6 +2298,59 @@ export function apply(ctx, patchConfig) {
     return out
   }
 
+  /**
+   * Whether a sanitized report carries any observation at all.
+   *
+   * `sanitizeClientReport` always produces the `at/slots/native/better` shell,
+   * so an empty POST used to look like a valid report and erased the previous
+   * one. Only fields the Client actually observed count.
+   * @param {Record<string, any>} report - sanitized report.
+   * @returns {boolean} true when at least one observation is present.
+   */
+  function reportHasContent(report) {
+    if (report === null || typeof report !== 'object') return false
+    for (const key of ['version', 'surface', 'zoneAnchors', 'sessionKnown', 'family']) {
+      if (report[key] !== undefined) return true
+    }
+    if (report.slots !== undefined && Object.keys(report.slots).length > 0) return true
+    for (const key of ['native', 'better']) {
+      const block = report[key]
+      if (block !== undefined && Object.keys(block).length > 0) return true
+    }
+    return false
+  }
+
+  /**
+   * Fold one report into the accumulated view instead of replacing it.
+   *
+   * The channel is a single last-write-wins slot fed by every page of every
+   * tab, so a replacement loses whatever the previous reporter knew (a page
+   * that only re-registered one slot would blank the other three). Undefined
+   * fields mean "not observed this time" and keep the stored value; only
+   * fields the sender actually reported overwrite.
+   * @param {Record<string, any>|null} previous - accumulated report.
+   * @param {Record<string, any>} next - freshly sanitized report.
+   * @returns {Record<string, any>} merged report.
+   */
+  function mergeClientReport(previous, next) {
+    if (previous === null || typeof previous !== 'object') return next
+    const merged = { ...previous, at: next.at }
+    for (const key of ['version', 'surface', 'zoneAnchors', 'sessionKnown', 'family']) {
+      if (next[key] !== undefined) merged[key] = next[key]
+    }
+    for (const key of ['slots', 'native', 'better']) {
+      const incoming = next[key]
+      if (incoming === undefined) continue
+      const stored = previous[key]
+      if (stored === undefined || typeof stored !== 'object') {
+        merged[key] = incoming
+        continue
+      }
+      merged[key] = { ...stored, ...incoming }
+    }
+    return merged
+  }
+
   /** Whether the request may reach the plugin routes. */
   const trustedHostsOf = () => {
     const runtime = ctx.get('webRuntime')
@@ -2089,6 +2377,10 @@ export function apply(ctx, patchConfig) {
         persistedAtBoot: persisted.present && Object.keys(sanitizeLayer(persisted.data)).length > 0,
         persistedPath: persisted.path,
         persistedError: persisted.error,
+        // Set only on the first boot after a profile-scoped file was
+        // introduced: the settings were inherited from the old shared file and
+        // will be re-saved into the scoped one on the next save.
+        persistedInheritedFrom: persisted.inheritedFrom,
         patchKeys: Object.keys(sanitizeLayer(patchConfig)),
       },
       capabilities: {
@@ -2110,6 +2402,11 @@ export function apply(ctx, patchConfig) {
    * A browser-side plugin cannot be inspected from the Host, so this is the
    * only channel that turns "the card silently fell back" or "the native tab
    * never registered" into something readable from outside the page.
+   *
+   * Reports are MERGED, not replaced, and a report with no observations is
+   * refused: the channel is one last-write-wins slot shared by every page, so
+   * a replacement (or an empty POST) used to erase what the real page knew and
+   * made the one outside view of the Client lie.
    */
   const handleDiagnose = async (req, res) => {
     let body
@@ -2124,7 +2421,11 @@ export function apply(ctx, patchConfig) {
       writeError(res, 400, 'bad-request', '诊断上报必须是对象')
       return
     }
-    clientReport = report
+    if (!reportHasContent(report)) {
+      writeError(res, 400, 'bad-request', '诊断上报没有任何可识别字段')
+      return
+    }
+    clientReport = mergeClientReport(clientReport, report)
     writeOk(res, { accepted: true, at: report.at })
   }
 
@@ -2248,11 +2549,22 @@ export function apply(ctx, patchConfig) {
       return
     }
     const problems = []
-    // The SMTP password is write-only: `/state` never hands it back, so the
-    // settings form always submits an empty string for an untouched password.
-    // Treat that empty value as "leave it alone" instead of erasing it.
+    // The SMTP password is write-only: `/state` never hands it back, so a
+    // client that submits an empty string for an untouched password means
+    // "leave it alone" instead of erasing it. That rule used to leave NO way to
+    // remove a stored credential at all (empty = keep, anything else =
+    // overwrite), so `feedbackSmtpPassClear: true` is the explicit erase: it
+    // drops the stored password (typically to fall back to the environment) and
+    // is never persisted as a config key itself.
     const patch = { ...body }
-    if (patch.feedbackSmtpPass === '') delete patch.feedbackSmtpPass
+    if (patch.feedbackSmtpPassClear === true) {
+      delete patch.feedbackSmtpPassClear
+      delete patch.feedbackSmtpPass
+      delete userLayer.feedbackSmtpPass
+    } else {
+      delete patch.feedbackSmtpPassClear
+      if (patch.feedbackSmtpPass === '') delete patch.feedbackSmtpPass
+    }
     const accepted = sanitizeLayer(patch, problems)
     if (problems.length > 0) {
       writeError(res, 400, 'invalid-config', problems.join('；'))
@@ -2282,33 +2594,92 @@ export function apply(ctx, patchConfig) {
    */
   const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
 
+  /**
+   * The Host's own browser-session gate, borrowed for the plugin's routes.
+   *
+   * `webServer` routes are NOT covered by the Host's index-only
+   * `authorizeIndex`, so without this check any local process that can reach
+   * the loopback port may read `/state`, rewrite settings, and spawn a child
+   * agent with the plugin's own privileges. `connection.requestRejection`
+   * verifies the authority-bound `dsh-auth-*` HMAC cookie the Host mints for
+   * the browser (a plain `dsh-auth-` cookie is NOT enough: the signature is
+   * checked against a secret only the Host holds).
+   *
+   * Returns undefined when the composition has no `connection` service: such a
+   * shell serves no browser UI, so requests can only come from the machine
+   * itself and the loopback/Origin fence is the whole model.
+   */
+  const connectionService = () => {
+    try {
+      const connection = ctx.get('connection')
+      return connection !== undefined && typeof connection.requestRejection === 'function' ? connection : undefined
+    } catch {
+      return undefined
+    }
+  }
+  let authGateNoted = false
+  const authRejection = req => {
+    const connection = connectionService()
+    if (connection === undefined) {
+      if (!authGateNoted) {
+        authGateNoted = true
+        ctx.logger?.info?.('[sidecard-ask] 未挂载 connection 服务：API 仅保留 loopback/Origin 围栏')
+      }
+      return undefined
+    }
+    try {
+      const rejection = connection.requestRejection(req)
+      return rejection === 401 || rejection === 403 ? rejection : undefined
+    } catch (error) {
+      // Fail closed: an unreadable auth service must not widen the surface.
+      ctx.logger?.warn?.('[sidecard-ask] 鉴权校验异常，按未认证处理：', error?.message ?? error)
+      return 401
+    }
+  }
+
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
     if (!isTrustedRequest(req, trustedHostsOf())) {
       writeError(res, 403, 'forbidden', 'forbidden')
       return
     }
+    const unauthorized = authRejection(req)
+    if (unauthorized !== undefined) {
+      writeError(
+        res,
+        unauthorized,
+        unauthorized === 401 ? 'unauthorized' : 'forbidden',
+        unauthorized === 401 ? '需要先通过 DSH 登录（宿主会话未认证）' : '请求来源不受信任',
+      )
+      return
+    }
     const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
     const method = pathname.startsWith(`${ROUTE_PREFIX}/`)
       ? pathname.slice(ROUTE_PREFIX.length + 1)
       : ''
-    if (method === '' || method.includes('/')) {
+    // The method name decides "unknown" before the HTTP verb does, so a typo
+    // answers the same 404 for every verb (a GET used to fall through to 405).
+    if (method === '' || method.includes('/') || !API_METHODS.includes(method)) {
       writeError(res, 404, 'not-found', `未知接口 "${method}"`)
       return
     }
-    if (method === 'state') {
-      if (req.method !== 'GET' && req.method !== 'POST') {
+    // Everything that can throw runs inside ONE try: `/state` assembles the
+    // whole diagnostic surface (capabilities, SMTP resolution, provenance), and
+    // it used to sit outside this block, so a single bad config value answered
+    // the browser with an unhandled rejection instead of a readable 500.
+    try {
+      if (method === 'state') {
+        if (req.method !== 'GET' && req.method !== 'POST') {
+          writeError(res, 405, 'method-error', 'method not allowed')
+          return
+        }
+        handleState(res)
+        return
+      }
+      if (req.method !== 'POST') {
         writeError(res, 405, 'method-error', 'method not allowed')
         return
       }
-      handleState(res)
-      return
-    }
-    if (req.method !== 'POST') {
-      writeError(res, 405, 'method-error', 'method not allowed')
-      return
-    }
-    try {
       if (method === 'ask') await handleAsk(req, res)
       else if (method === 'cancel') await handleCancel(req, res)
       else if (method === 'config') await handleConfig(req, res)

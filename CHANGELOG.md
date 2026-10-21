@@ -1,5 +1,105 @@
 # Changelog
 
+## 2.0.2
+
+**主题：跨端（网页端 / 桌面端）排查后的六个修复 —— 插件 API 补上宿主会话鉴权、诊断上报不再互相覆盖、prompt 预算真正守住 60k、SMTP 密码状态自洽、未知接口状态码对称、用户层配置按 profile 分文件。**
+
+排查方式：网页端在真实宿主上跑运行态探针（curl 打全部 7 个接口 + 真跑一次 SSE 作答）；桌面端读
+`DeepSeek Harness.exe` 里 `app.asar` 的 `lib/main.js`（网络转发、权限、下载拦截、窗口参数）做静态取证。
+
+### 安全
+
+- **插件 API 之前绕过了宿主的 401 登录门禁**（D1）。`ctx.webServer.register` 注册的 prefix 路由不经过
+  `dsh-client-connection` 的 `authorizeIndex`，插件自己又只做「回环 / 可信域 + `Origin` + `Sec-Fetch-Site`」围栏——
+  实测**不带任何 cookie 的 `POST /sidecard-ask/api/ask` 真的会 spawn 一个子代理**，`POST /config` 会写配置。
+  现在在围栏之后追加一次 `ctx.get('connection').requestRejection(req)`：
+  - 返回 `401` → 一律 `{code:"unauthorized"}`「需要先通过 DSH 登录（宿主会话未认证）」；
+  - 返回 `403` → `{code:"forbidden"}`「请求来源不受信任」；
+  - 宿主**没有**挂载 `connection` 服务（旧组合 / 单测）→ 只记一条 info 日志，退回原来的单层围栏；
+  - 校验本身抛错 → fail-closed 按 401 拒绝。
+  桌面端不受影响：`forwardWebRequest` 本来就会注入宿主启动时换来的鉴权 cookie（`lib/main.js:8268-8299`）。
+
+### 修复
+
+- **`/diagnose` 上报是 last-write-wins**（D2）。`clientReport = report` 无条件覆盖，于是「哪个页面最后上报，
+  `/state` 里的客户端诊断就只剩它看到的那点东西」——实测发一个 `{}` 就能把整段诊断清空。改为
+  `mergeClientReport(previous, next)`：本次没观测到的字段保留旧值（`slots` / `native` / `better` 浅合并），
+  `at` 取新值；完全空的上报直接 `400 bad-request`，不再当成一次有效观测。
+- **prompt 预算算不准**（D3）。`truncateSelection` 把省略标记加在预算之外（给 100 字符的预算返回 119 字符），
+  `fixedLength` 又比实际 join 少算一个分隔符，实测总量落到 60018–60023（`MAX_PROMPT_CHARS = 60000`），
+  极端组合（超长 question + 6 轮历史）能把 selection 压到 1 个字符。现在：
+  - 省略标记**计入**预算，任何 `maxChars` 下结果都 ≤ cap（`test/contract-test.mjs` 用 9 档 cap × 900 点的
+    emoji 样本逐档断言）；
+  - 固定块先算长度、selection 吃剩余预算，问题行长按 `MAX_QUESTION_CHARS = 20000` 先截断，
+    selection 保留 `SELECTION_FLOOR_CHARS = 2000` 下限，预算不够时按轮丢弃更旧的历史而不是把 selection 压没；
+  - 最坏组合（19000 字问题 + 6 轮历史 + 20000 字 selection）总量验证 ≤ 60000；
+  - `start` 帧新增 `promptTruncated` / `promptDroppedChars` / `promptHistoryDropped`：prompt 侧的截断
+    以前对客户端完全不可见，用户只会看到"答案变短了"。
+- **SMTP 状态自相矛盾**（D4）。`configured` 走 `resolveSmtp()`（环境变量优先），`hasPassword` 却只看设置页里那一格，
+  于是「凭据来自环境变量」时报出 `configured: true` + `hasPassword: false`。现在 `hasPassword` 表示
+  **手上真的有一份能用的密码**（任一层），并新增 `source`（`config` / `env`）与 `storedPassword`
+  （设置页里是否存了一份）区分两层来源。
+- **未知接口的状态码不对称**（D5）。`GET /nope` 回 405（`method-error`）、`POST /nope` 回 404（`not-found`）——
+  方法名判定排在动词判定之后。现在先判方法名：任何动词打未知接口都是 `404 not-found`，已知接口用错动词才是 405。
+- **网页端与桌面端共用同一份 `config.json`**（D6）。两边是同一台机器上的两个 profile，共用一个 `DSH_HOME`，
+  于是 web 端存的 `sideTools: inherit` 会直接作用于桌面端的运行。用户层文件改为
+  `<DSH_HOME>/sidecard-ask/config.<DSH_PROFILE>.json`（profile 名只接受 `[A-Za-z0-9._-]`，否则退回旧名，
+  防止路径穿越）；`DSH_PROFILE` 未设置时仍是 `config.json`，**旧文件不迁移、不删除**：新 profile 第一次启动
+  会继承它一次（`/state` 的 `provenance.persistedInheritedFrom` 会说明），下一次保存在自己的文件里落盘。
+- **客户端 `getState()` 丢掉了宿主的错误码**（D1 的配套）。`ok !== true` 时统一抛 `bad-response`，于是 401 会被
+  渲染成"宿主接口不可达"。现在透传 `body.error.code`，并给 `unauthorized` / `forbidden` 各加一条中英文案。
+
+### 复审追加（同版本内）
+
+- **一个 `%` 就能打断设置页**。`parseSmtpUrl` 用 `decodeURIComponent` 解账号/密码，密码里带未转义的 `%`
+  （`pass%word`）会抛 `URIError`；异常经 `describeFeedback → resolveSmtp → readSmtpFromEnv` 一路逃到 `/state`，
+  而 `/state` 分支当时在 `routeHandler` 的 `try` 之外，于是整页变成「宿主接口不可达」。现在解析失败返回
+  `{ok:false, reason}`，且 `/state` 与其余接口共用同一个 try（失败回可读的 500，而不是未处理的拒绝）。
+- **`history` 里的坏条目会把提问打成 TypeError**。`composeSidePrompt` 直接读 `turn.question`，`history:[null]`
+  在 `ask()` 的 try 之前抛出，前端只看到英文 `Cannot read properties of null`。现在非对象条目被丢弃；
+  顺带修掉 `historyTurns: 0` 被 `slice(-0)` 解释成「全部历史」的边界。
+- **历史持久化在配额满时是 O(n²)**。按字段上限单卡最坏 ~0.9 MB、默认 10 卡 ~8.8 MB，超过常见 5 MB 配额后
+  旧实现逐张丢弃并整份重新 `JSON.stringify`。现在先按 2M UTF-16 单元的总预算裁剪，失败时折半丢弃。
+- **答案流式期间重复解析 reasoning**。`renderRichText(card.reasoning)` 未 memo，答案每 50 ms 刷新都重解析
+  整段思考过程；现在与正文一样按文本 memo。
+- **旧版插件探测在启动 6 秒内全文档扫描**。`MutationObserver` 每次 DOM 变更都跑
+  `querySelectorAll('.dsa-layer:not([data-dsa-owner])')`，现在合并成 250 ms 一次的尾随扫描，卸载时清定时器。
+- **已存的 SMTP 密码无法清除**（空串＝保留）。新增 `feedbackSmtpPassClear: true` 显式清除。
+- `inlineNodes` 的 token 正则从每次调用新建改为模块级常量（用前复位 `lastIndex`）。
+- `openSse.end()` 在流已关闭时提前返回、跳过 `clearInterval`，现在关闭动作统一走 `shutdown()`。
+- README 自测规模更正为实测值，并补上本轮 9 条回归断言（坏 `%` 两处、坏 `history` 条目、`historyTurns: 0`、
+  配额下的裁剪/落盘/删除保持）——现为 verify 57 + contract 1377 + float-placement 82 + smoke 262 = **1778 项**；
+  同时删掉仓库里未声明、无 lock 的 `node_modules`（js-yaml / argparse）残留，`.acl-recovery/` 加入 `.gitignore`。
+
+### 未修：宿主 / 安装包侧（不是本插件能修的）
+
+- **桌面端在本机冷启动即崩**：`DeepSeek Harness.exe` 6 秒内退出，唯一确凿栈是
+  `Received fatal exception EXCEPTION_BREAKPOINT` → `electron::fuses::IsLoadBrowserProcessSpecificV8SnapshotEnabled`
+  → `v8::ScriptCompiler::CreateCodeCacheForFunction`，崩在 V8 snapshot fuse 初始化阶段、早于任何插件加载。
+  安装根还缺 `browser_v8_context_snapshot.bin`。因此桌面端的结论只能来自 `app.asar` 静态取证，没有运行态验证。
+- **桌面壳没有 `app.setAppUserModelId`**（只有 `setAsDefaultProtocolClient("dsh")`，`lib/main.js:13055`）：
+  Windows 上 toast 通知可能不显示。插件 `notifyOnDone` 走的就是 `new window.Notification`，这一项**待验证**，
+  插件侧无法兜底（`Notification` 是桌面壳的默认会话权限，非麦克风权限一律放行）。
+
+### 排查中推翻的三个旧判断
+
+1. **桌面端下载没有被取消。** `will-download → preventDefault()` 只出现在 `dsh-policy-auth-*` 登录窗
+   （`lib/main.js:10113`）和侧边栏 webview 的 `dsh-sidebar-browser-*` 分区（`lib/main.js:10632`，由
+   `configureSession` 安装）。主窗口走 `defaultSession`，没有该拦截，`downloadMarkdown()` 在桌面端可用。
+2. **剪贴板不存在"静默无操作"。** `copyText(text, fallbackElement)` 在 `navigator.clipboard` 缺失或失败时
+   会 `selectNodeContents` 选中卡片正文并返回 `'selected'`，最后才 `'failed'`。
+3. **`getState()` 没有未处理的 rejection。** 它的两个调用点都收口（`await` + `.catch(() => {})`）。
+
+### 测试
+
+- `node test/contract-test.mjs` 1377 通过（2.0.1 是 1334）；`smoke-test.mjs` 262（原 226）；`verify.mjs` 57；
+  `float-placement.mjs` 82。合计 **1778 通过，0 失败**。
+- 新增覆盖：`truncateSelection` 的「结果 ≤ cap」不变式（9 档 cap）、最坏组合的 prompt 预算、`start` 帧的
+  prompt 侧截断字段、`/diagnose` 的合并与空上报拒绝、宿主会话门禁四种返回（401 / 403 / undefined / 抛错）、
+  未知接口在 GET/HEAD/POST 下的 404、profile 分文件与一次性继承、`describeSmtpSettings` 的两层来源；
+  复审追加 9 条：坏 `%` 的解析与 `/state` 降级（4）、坏 `history` 条目与 `historyTurns: 0`（2）、
+  配额下的历史裁剪 / 落盘 / 删除保持（3）。
+
 ## 2.0.1
 
 **主题：清掉 6 个死 i18n 键。无行为变化，无 API / 配置变化，升级无需任何操作。**
