@@ -486,6 +486,25 @@ dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[d
 `Alt+Q` 是否会撞上桌面 App 的菜单加速键（Electron 的菜单加速键由菜单先处理，页面的 keydown 可能收不到；
 若冲突，在设置页改成 `Ctrl+Alt+Q` 之类即可）；Electron 下 `navigator.clipboard` 的写入权限（已有"选中文本"降级兜底）。
 
+### 5.4 2026-10-22 复核（v2.1.0 / 桌面 0.2.0-rc.2）
+
+上一轮之后桌面端与网页端的形态都变过，本轮把能静态取证的部分重新核了一遍，**完整报告见
+[`CROSS-END-AUDIT-2.0.2.md`](CROSS-END-AUDIT-2.0.2.md)**（含实测数字与未验证清单）。要点：
+
+| 维度 | 事实 | 对插件意味着什么 |
+|---|---|---|
+| 宿主版本落差 | 桌面 `dsh-desktop 0.2.0-rc.2`（包内 `dsh` 同版本）；网页 **`0.2.1-rc.2`** | 适配矩阵要按两端分别列，不能写成"DSH 0.2.x" |
+| 渲染内核 | Electron **43.3.0 = Chromium 150.0.7871.212**（`~/.dsh/electron/version` 亦为 43.3.0）；网页端取决于访问者浏览器（本机对照 Edge/Chromium 155） | `renderRichText` 在 150 与 155 上实测同量级（8 k 0.2–0.3 ms，64 k 1.2–2.0 ms） |
+| 自定义 scheme | `dsh-app://app/` 特权：`standard/secure/supportFetchAPI/corsEnabled/stream/codeCache` | `fetch` + 流式读取可用，不需要 EventSource |
+| 请求转发 | `forwardWebRequest`：只放行 `origin=dsh-app://app`，删 `host/origin/cookie/sec-fetch-site` 后注入宿主 cookie，`duplex:"half"` | 2.0.2 起的会话门在桌面端靠这条链路通过；插件侧 `origin` 缺失时被判为可信（`isTrustedRequest`） |
+| 权限 | 主窗口 `setPermissionRequestHandler`：非 `media` 一律放行；登录窗/侧栏 webview 一律拒绝并拦下载 | 剪贴板与通知**有**权限；导出下载走主窗口，不受拦截 |
+| 通知 | 全包 **无 `setAppUserModelId`** | Windows toast 可能不弹；`notifyOnDone` 默认关，打开后仍以卡片状态为兜底 |
+| 菜单加速键 | 全包 `Alt+Q` **0 命中** | 外壳不抢默认快捷键（输入法/其它程序仍可能抢） |
+| 插件产物缓存 | `/plugins/*` 被壳改写为 `cache-control: no-store` | 每次加载重新拉 349 KB（localhost，传输≈0，代价在解析） |
+
+> 另：2.0.2 CHANGELOG 里"桌面端在本机冷启动即崩"的结论，2026-10-22 **未能复现**——本次冷启动成功、
+> 宿主在 19387 正常服务。该条已按"与安装包/启动方式相关，需按版本复验"处理，不再当作既定事实。
+
 ---
 
 ## 六、未知 DSH API：占位接口与替换方式
@@ -816,11 +835,21 @@ node tools/compat-probe.mjs 0.1.7-rc.2            # 也可只探某个版本
 
 ### 10.1 对已安装实例做真实联调（本机实测通过）
 
-```powershell
-# 1) 宿主接口与能力（archived 父会话检测也在这里）
-(Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/state -UseBasicParsing).Content
+> **2.1.0 起除 `/ping` 外的每个接口都走宿主会话门。** 不带浏览器登录 cookie 的脚本调用会拿到
+> `401 {"error":{"code":"unauthorized"}}`，这表示"没登录"，**不表示插件没起来**——先用第 0 步区分。
+> 页面内自检（设置 → 侧边卡片追问 → 运行自检）读的是同一份 `/state`，不需要任何脚本。
 
-# 2) 端到端流式作答：把 sessionId 换成当前会话 id（$env:DSH_SESSION_ID）
+```powershell
+# 0) 探活：唯一免鉴权的接口，只回插件版本与宿主时钟
+(Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/ping -UseBasicParsing).Content
+# → {"ok":true,"value":{"version":"2.1.0","at":1792...}}    200 = 插件宿主半已加载
+
+# 1) 宿主接口与能力（archived 父会话检测也在这里）——需要会话
+#    在本机浏览器已登录的前提下复用会话：先 -WebSession 登录，或把浏览器的 Cookie 头带进来
+(Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/state `
+   -Headers @{ Cookie = $cookie } -UseBasicParsing).Content
+
+# 2) 端到端流式作答：把 sessionId 换成当前会话 id（$env:DSH_SESSION_ID）；同样需要会话
 #    期望事件序列：start → reasoning*/delta* → status → done（done.text 是真实答案）
 $body = @{ id='probe'; question='用一句话说明这句话在说什么。';
            selection='槽位出口会带上 data-slot 标记。'; zone='chat';
@@ -828,11 +857,13 @@ $body = @{ id='probe'; question='用一句话说明这句话在说什么。';
 $tmp = Join-Path $env:TEMP 'probe.json'
 [System.IO.File]::WriteAllText($tmp, $body, (New-Object System.Text.UTF8Encoding($false)))
 (Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/ask -Method POST `
+   -Headers @{ Cookie = $cookie } `
    -ContentType 'application/json; charset=utf-8' -InFile $tmp -TimeoutSec 240 -UseBasicParsing).Content
 
 # 3) 客户端半的真实状态（浏览器跑的那份代码/槽位落点/两个适配器）
 #    页面加载后 GET /state，看 value.client —— 这是唯一能从页面外读到客户端状态的通道
-((Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/state -UseBasicParsing).Content | ConvertFrom-Json).value.client
+((Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/state `
+    -Headers @{ Cookie = $cookie } -UseBasicParsing).Content | ConvertFrom-Json).value.client
 ```
 
 **客户端状态样例**（1.3.0 起）：
@@ -986,4 +1017,14 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
     自己的数据）；**唯一的例外是「清空全部历史」**——显式清空会同时删除 v3/v2/v1 三代键（1.8.1）。
     这条例外是必需的：只删当前键会让 `readPersisted()` 的 v3→v2→v1 回落把刚清掉的历史从旧键读回来，
     刷新一次就复活（1.8.1 复现并修复）。
+12. **接口鉴权（2.0.2 起，2.1.0 补 `/ping`）**：除 `/ping` 外的每个接口都要宿主会话；从页面外读
+    `/state` 会得到 `401 unauthorized`。`/ping` 是唯一免鉴权的探活口，只回 `{version, at}`——
+    不要往里加字段，它存在的理由是"能给监控用"，不是"能省登录"。
+13. **活动卡片上限 20（2.1.0）**：超过后最旧的**已完成**卡片自动隐藏（`open:false`，数据仍在，
+    历史里可恢复），正在流式的卡片永不隐藏。这不是删除，但会"少一张卡片在浮层里"。
+14. **冷启动回放预算 200 K 字符（2.1.0）**：最新一张必定展开，其余按累计字符预算展开；
+    超预算的旧卡片以折叠态回来，点开才解析。改 `historyMaxCards` 不改变这个预算。
+15. **部署前缀不带尾斜杠时（2.1.0）**：`API` 基址会先按 `document.baseURI` 猜一次，若得到 404
+    则回退到根绝对路径重试一次。这是唯一安全的判别方式（401/403 都不能用来改基址），
+    代价是每次页面加载最多多一次 404 往返——正常部署下不会触发。
 

@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.0.2'
+export const PLUGIN_VERSION = '2.1.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -2591,8 +2591,13 @@ export function apply(ctx, patchConfig) {
   /**
    * The HTTP methods the plugin serves; kept in one place because the route
    * registration has two shapes (see below).
+   *
+   * `ping` is the one method that answers WITHOUT the browser session: it is
+   * the only way a script, a CI job or a monitor can tell "the plugin is up"
+   * apart from "the Host is up" once the session gate is in front of
+   * everything else. It exposes nothing but the version and the Host clock.
    */
-  const API_METHODS = ['state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
+  const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
 
   /**
    * The Host's own browser-session gate, borrowed for the plugin's routes.
@@ -2643,16 +2648,11 @@ export function apply(ctx, patchConfig) {
       writeError(res, 403, 'forbidden', 'forbidden')
       return
     }
-    const unauthorized = authRejection(req)
-    if (unauthorized !== undefined) {
-      writeError(
-        res,
-        unauthorized,
-        unauthorized === 401 ? 'unauthorized' : 'forbidden',
-        unauthorized === 401 ? '需要先通过 DSH 登录（宿主会话未认证）' : '请求来源不受信任',
-      )
-      return
-    }
+    // Path parsing runs BEFORE the session gate now, because `ping` must be
+    // answerable without a browser session. The order is deliberate: the fence
+    // still rejects a foreign origin first, the method name is validated
+    // before anything is dispatched, and `ping` is the ONLY verb that skips the
+    // gate — everything else falls through to it immediately below.
     const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
     const method = pathname.startsWith(`${ROUTE_PREFIX}/`)
       ? pathname.slice(ROUTE_PREFIX.length + 1)
@@ -2661,6 +2661,24 @@ export function apply(ctx, patchConfig) {
     // answers the same 404 for every verb (a GET used to fall through to 405).
     if (method === '' || method.includes('/') || !API_METHODS.includes(method)) {
       writeError(res, 404, 'not-found', `未知接口 "${method}"`)
+      return
+    }
+    if (method === 'ping') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        writeError(res, 405, 'method-error', 'method not allowed')
+        return
+      }
+      writeOk(res, { version: PLUGIN_VERSION, at: Date.now() })
+      return
+    }
+    const unauthorized = authRejection(req)
+    if (unauthorized !== undefined) {
+      writeError(
+        res,
+        unauthorized,
+        unauthorized === 401 ? 'unauthorized' : 'forbidden',
+        unauthorized === 401 ? '需要先通过 DSH 登录（宿主会话未认证）' : '请求来源不受信任',
+      )
       return
     }
     // Everything that can throw runs inside ONE try: `/state` assembles the

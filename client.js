@@ -62,6 +62,50 @@ window.__ModuleLoader__.load({
         return '/sidecard-ask/api'
       }
     })()
+
+    /** Root-absolute base — the retry target when the prefix guess misses. */
+    const API_ROOT = '/sidecard-ask/api'
+
+    /**
+     * The base actually used from now on.
+     *
+     * `new URL('.', base)` treats the last path segment as a FILE name, so a
+     * deployment whose public URL has no trailing slash (`https://host/dsh`)
+     * resolves to the document root and loses the prefix. There is no way to
+     * tell `/dsh` (directory) from `/dsh` (file) without asking the server, so
+     * the first `404` retries once against the root-absolute base: 404 is the
+     * only unambiguous signal here — auth answers `401`, a foreign origin
+     * `403`, and `404` means the route is not mounted at this path at all.
+     */
+    let apiBase = API
+
+    /**
+     * The base to use after one response.
+     * @param {number} status - HTTP status of the attempt.
+     * @param {string} current - the base that produced it.
+     * @returns {string} the base for the next attempt (unchanged unless 404).
+     */
+    function apiBaseAfter(status, current) {
+      return status === 404 && current !== API_ROOT ? API_ROOT : current
+    }
+
+    /**
+     * `fetch` against the plugin API, retrying once on a 404 with the other
+     * base. A 404 body is never consumed here: the caller's own error path
+     * reads it (or ignores it), exactly as before.
+     * @param {string} path - `/state` or `/ask`, appended to the base.
+     * @param {RequestInit} [init] - fetch options (body must be replayable).
+     * @returns {Promise<Response>} the response of whichever attempt answered.
+     */
+    async function fetchApi(path, init) {
+      const attempted = apiBase
+      let response = await fetch(`${attempted}${path}`, init)
+      if (response.status === 404 && attempted !== API_ROOT) {
+        apiBase = apiBaseAfter(response.status, attempted)
+        response = await fetch(`${apiBase}${path}`, init)
+      }
+      return response
+    }
     /** Slot ids contributed by this plugin (also the overlay entry ids). */
     const IDS = {
       overlay: 'sidecard-ask',
@@ -73,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.0.2'
+    const CLIENT_VERSION = '2.1.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -108,6 +152,35 @@ window.__ModuleLoader__.load({
     // the current question out of the child prompt.
     const HISTORY_TURN_Q_CHARS = 500
     const HISTORY_TURN_A_CHARS = 4000
+
+    /**
+     * Streaming flush cadence.
+     *
+     * 50 ms is the cadence that reads as "live"; a 32 k+ answer costs 1.2–2.0 ms
+     * of markdown parsing per frame (measured, both Chromium 150 and 155), so
+     * past that length the cadence doubles — the eye cannot tell, and the work
+     * halves.
+     */
+    const STREAM_FLUSH_MS = 50
+    const STREAM_FLUSH_SLOW_MS = 100
+    const STREAM_SLOW_CHARS = 32_000
+
+    /**
+     * How many cards may stay mounted at once. Past this the oldest finished
+     * card is hidden (not deleted): its body unmounts, its data stays, and the
+     * durable history still restores it.
+     */
+    const MAX_LIVE_CARDS = 20
+
+    /**
+     * How many characters of history a page load may re-render unfolded.
+     *
+     * Replay used to restore every saved card `open:true`, bounded only by the
+     * card count (default 10) and a 64 k per-field limit — a worst case of
+     * ~640 k characters of markdown parsed and mounted before the page is
+     * usable. Past this budget the older cards come back collapsed.
+     */
+    const REPLAY_OPEN_BUDGET_CHARS = 200_000
 
     /**
      * Client-side mirror of the Host `DEFAULT_CONFIG`. The client needs values
@@ -1121,7 +1194,7 @@ window.__ModuleLoader__.load({
     async function postJson(method, payload) {
       let response
       try {
-        response = await fetch(`${API}/${method}`, {
+        response = await fetchApi(`/${method}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload ?? {}),
@@ -1145,7 +1218,7 @@ window.__ModuleLoader__.load({
     async function getState() {
       let response
       try {
-        response = await fetch(`${API}/state`, { method: 'GET' })
+        response = await fetchApi('/state', { method: 'GET' })
       } catch (error) {
         throw Object.assign(new Error(String(error?.message ?? error)), { code: 'unreachable' })
       }
@@ -1173,7 +1246,7 @@ window.__ModuleLoader__.load({
     async function streamAsk(payload, handlers) {
       let response
       try {
-        response = await fetch(`${API}/ask`, {
+        response = await fetchApi('/ask', {
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
           body: JSON.stringify(payload),
@@ -1323,6 +1396,57 @@ window.__ModuleLoader__.load({
       return store.state
     }
 
+    /**
+     * Per-card handler bundle with a STABLE identity.
+     *
+     * `store.set` bumps a revision on every streamed delta, and the floating
+     * layer re-renders on each one. Handing `AnswerCard` a fresh arrow per
+     * render makes every prop compare unequal, so `React.memo` could never bail
+     * out. The bundle is therefore created once per card id and reads the card
+     * through a ref at call time — a closure must never capture a stale card,
+     * or "copy" would copy the text from two deltas ago.
+     * @param {object} actions - the plugin's action table (stable for the
+     *   lifetime of `apply`).
+     * @returns {(card: object) => object} handler bundle for one card.
+     */
+    function useCardHandlers(actions) {
+      const latest = React.useRef(new Map())
+      const cache = React.useRef(new Map())
+      return React.useCallback((card) => {
+        if (card === null || card === undefined) return null
+        latest.current.set(card.id, card)
+        let bundle = cache.current.get(card.id)
+        if (bundle === undefined) {
+          // The maps are keyed by card id and live for the whole session, so a
+          // long session would keep one tiny bundle per card ever shown. Past a
+          // generous ceiling both are dropped: the live cards simply get a
+          // fresh (still stable) bundle and re-render once.
+          if (cache.current.size > 64) {
+            cache.current.clear()
+            latest.current.clear()
+          }
+          const current = () => latest.current.get(card.id) ?? card
+          bundle = {
+            onCopy: element => actions.copy(current(), element),
+            onFollowUp: text => actions.followUp(current(), text),
+            onRetry: () => actions.retry(current()),
+            onRetryEdit: text => actions.retryEdit(current(), text),
+            onCancel: () => actions.cancel(current()),
+            onSendToMain: () => { void actions.sendToMain(current()) },
+            onClose: () => actions.close(current()),
+            onLocate: target => actions.locateCard(target ?? current()),
+            onExport: target => actions.exportCard(target ?? current()),
+            onInsert: target => actions.insertAnswer(target ?? current()),
+            onReplace: target => actions.insertAnswer(target ?? current(), { replace: true }),
+            onViewVersion: index => actions.viewVersion(current(), index),
+            onDelete: () => actions.deleteCard(current()),
+          }
+          cache.current.set(card.id, bundle)
+        }
+        return bundle
+      }, [actions])
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // §4.5 family singleton
     //
@@ -1430,20 +1554,63 @@ window.__ModuleLoader__.load({
       return cards.find(card => card.id === id)
     }
 
-    /** Append text to one card's streaming answer. */
-    function appendCardText(id, delta) {
-      const cards = store.state.cards.map(card => (
-        card.id === id ? { ...card, text: card.text + delta } : card
-      ))
-      store.set({ cards })
+    /**
+     * Hide the oldest finished cards once a stack exceeds its cap.
+     *
+     * Pure so the rule can be asserted without a renderer: the newest card and
+     * anything still streaming are never hidden, `open:false` cards are skipped
+     * (already hidden), and the input array is not mutated.
+     * @param {object[]} cards - newest first.
+     * @param {number} [cap] - how many may stay visible.
+     * @param {string|null} [keptId] - id that must survive this pass.
+     * @returns {object[]} the same list, with overflow entries closed.
+     */
+    function capLiveCards(cards, cap = MAX_LIVE_CARDS, keptId = null) {
+      if (!Array.isArray(cards) || cards.length <= cap) return cards
+      const next = [...cards]
+      let excess = next.length - cap
+      for (let index = next.length - 1; index >= 0 && excess > 0; index -= 1) {
+        const item = next[index]
+        if (item === null || item === undefined) continue
+        if (item.id === keptId || item.open === false) continue
+        if (item.status === 'pending' || item.status === 'streaming') continue
+        next[index] = { ...item, open: false }
+        excess -= 1
+      }
+      return next
     }
 
-    /** Append reasoning text to one card. */
-    function appendCardReasoning(id, delta) {
-      const cards = store.state.cards.map(card => (
-        card.id === id ? { ...card, reasoning: card.reasoning + delta } : card
-      ))
-      store.set({ cards })
+    /**
+     * Whether replayed card `index` comes back unfolded.
+     *
+     * The newest replay always does — a page load that hides everything would
+     * look like data loss — and the rest only while the running total stays
+     * inside the budget.
+     * @param {number} index - 0 = newest.
+     * @param {number} replayedChars - characters replayed so far, inclusive.
+     * @returns {boolean} true when the card should mount unfolded.
+     */
+    function replayCardOpen(index, replayedChars) {
+      return index === 0 || replayedChars <= REPLAY_OPEN_BUDGET_CHARS
+    }
+
+    /**
+     * Prepend one card, hiding the oldest FINISHED card once the stack grows
+     * past the live cap.
+     *
+     * Cards used to accumulate for the whole session: nothing capped
+     * `store.state.cards`, so a long session kept every answer mounted (each
+     * one a full React subtree). Past the cap the oldest finished card is
+     * hidden — `open:false` keeps its data, unmounts its body, and the durable
+     * history still offers it back. A card that is still streaming is never
+     * hidden: that would orphan its stream.
+     * @param {object} card - the card to put on top.
+     * @param {object} [extra] - additional store fields to commit in the same
+     *   update (the carrier's surface label, for instance).
+     */
+    function pushCard(card, extra = null) {
+      const cards = capLiveCards([card, ...store.state.cards], MAX_LIVE_CARDS, card.id)
+      store.set(extra === null ? { cards } : { ...extra, cards })
     }
 
     /** Show a transient toast line. */
@@ -4432,6 +4599,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
     }
 
     /**
+     * Memoised {@link AnswerCard}.
+     *
+     * Only the card that actually changed gets a new `card` object
+     * (`patchCard` / the stream flush keep every other card by reference), and
+     * the handler bundle from {@link useCardHandlers} is stable per id — so a
+     * delta on card A no longer re-renders cards B..N. `React.memo` is probed
+     * because the test double (and any trimmed-down React a host might hand a
+     * plugin) does not have to implement it; without it this is the same
+     * component, just un-memoised.
+     */
+    const MemoAnswerCard = typeof React.memo === 'function' ? React.memo(AnswerCard) : AnswerCard
+
+    /**
      * The flow surface, i.e. the floating layer (A).
      *
      * Two shapes, both sharing one right-anchored container:
@@ -4450,6 +4630,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const containerRef = React.useRef(null)
       const dockRef = React.useRef(null)
       const state = useStoreState()
+      const handlersFor = useCardHandlers(actions)
       const [dock, setDock] = React.useState(null)
       const visible = cards.filter(card => card.surface === 'flow' && card.open)
       const total = visible.length
@@ -4563,16 +4744,20 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         }
         if (typeof window.addEventListener === 'function') window.addEventListener('resize', schedule)
         // Opening/closing the rail changes no size this effect already watches,
-        // so the DOM itself has to be the trigger. Attributes only (no
-        // childList): streaming tokens rewrite text nodes continuously and must
-        // not wake the layer on every frame.
+        // so the DOM itself has to be the trigger. The two data attributes are
+        // the only signals that MEAN "the rail geometry changed". `class` and
+        // `style` used to be in this list too, and a chat pane rewrites both
+        // constantly (hover, scroll state, streaming badges) — every one of
+        // those woke this observer and forced a layout read on the next frame.
+        // Streaming tokens rewrite text nodes, which `childList`-free observing
+        // already ignores.
         if (typeof window.MutationObserver === 'function' && document.body !== null && document.body !== undefined) {
           try {
             mutation = new window.MutationObserver(schedule)
             mutation.observe(document.body, {
               attributes: true,
               subtree: true,
-              attributeFilter: ['data-sidebar-right-open', 'data-dockkit-pane-active', 'style', 'class'],
+              attributeFilter: ['data-sidebar-right-open', 'data-dockkit-pane-active'],
             })
           } catch { mutation = null }
         }
@@ -4625,24 +4810,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           : null),
       }, children)
 
-      const cardNodes = visible.map(card => h(AnswerCard, {
+      const cardNodes = visible.map(card => h(MemoAnswerCard, {
         key: card.id,
         card,
         surfaceLabel: null,
-        onCopy: element => actions.copy(card, element),
-        onFollowUp: text => actions.followUp(card, text),
-        onRetry: () => actions.retry(card),
-        onRetryEdit: text => actions.retryEdit(card, text),
-        onCancel: () => actions.cancel(card),
-        onSendToMain: () => actions.sendToMain(card),
-        onClose: () => actions.close(card),
-        onLocate: target => actions.locateCard(target ?? card),
-        onExport: target => actions.exportCard(target ?? card),
-        onInsert: target => actions.insertAnswer(target ?? card),
-        onReplace: target => actions.insertAnswer(target ?? card, { replace: true }),
-        onViewVersion: index => actions.viewVersion(card, index),
         onFloatMode: setFloatMode,
-        onDelete: () => actions.deleteCard(card),
+        // Stable per card id (see useCardHandlers), which is what lets
+        // React.memo skip every card that did not change in this tick.
+        ...handlersFor(card),
       }))
 
       if (mode === 'capsule') {
@@ -5646,37 +5821,47 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           if (cap > 0 && (currentRaw === null || currentRaw === undefined)) {
             writePersisted(saved)
           }
-          const replayed = saved.map(entry => ({
-            id: entry.id,
-            question: entry.question,
-            selected: String(entry.selected ?? ''),
-            selection: String(entry.selection ?? ''),
-            text: String(entry.text ?? ''),
-            reasoning: String(entry.reasoning ?? ''),
-            status: entry.status === 'stopped' ? 'stopped' : 'done',
-            carrier: 'side',
-            zone: entry.zone,
-            truncated: entry.truncated === true,
-            droppedChars: Number(entry.droppedChars ?? 0),
-            streaming: null,
-            error: null,
-            provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
-            elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
-            createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
-            // P2-5b: replayed versions stay switchable after a reload.
-            versions: replayVersions(entry.versions),
-            viewingVersion: null,
-            actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
-            // A native/better tab cannot survive a reload, so history always
-            // comes back on the flow stack where it is visible immediately.
-            surface: 'flow',
-            open: true,
-            history: Array.isArray(entry.history)
-              ? entry.history
-                  .filter(turn => turn !== null && typeof turn === 'object')
-                  .map(turn => ({ question: String(turn.question ?? ''), answer: String(turn.answer ?? '') }))
-              : [],
-          }))
+          // Replay budget: the newest card always comes back unfolded, and the
+          // rest stay unfolded only while the running total of replayed
+          // characters stays under the budget. A page load used to mount up to
+          // 10 × 64 k characters of markdown before it was usable; past the
+          // budget the older cards come back collapsed and are parsed when the
+          // user opens them.
+          let replayedChars = 0
+          const replayed = saved.map((entry, index) => {
+            replayedChars += String(entry.text ?? '').length + String(entry.reasoning ?? '').length
+            return {
+              id: entry.id,
+              question: entry.question,
+              selected: String(entry.selected ?? ''),
+              selection: String(entry.selection ?? ''),
+              text: String(entry.text ?? ''),
+              reasoning: String(entry.reasoning ?? ''),
+              status: entry.status === 'stopped' ? 'stopped' : 'done',
+              carrier: 'side',
+              zone: entry.zone,
+              truncated: entry.truncated === true,
+              droppedChars: Number(entry.droppedChars ?? 0),
+              streaming: null,
+              error: null,
+              provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
+              elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
+              createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
+              // P2-5b: replayed versions stay switchable after a reload.
+              versions: replayVersions(entry.versions),
+              viewingVersion: null,
+              actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
+              // A native/better tab cannot survive a reload, so history always
+              // comes back on the flow stack where it is visible immediately.
+              surface: 'flow',
+              open: replayCardOpen(index, replayedChars),
+              history: Array.isArray(entry.history)
+                ? entry.history
+                    .filter(turn => turn !== null && typeof turn === 'object')
+                    .map(turn => ({ question: String(turn.question ?? ''), answer: String(turn.answer ?? '') }))
+                : [],
+            }
+          })
           store.set({ cards: [...replayed, ...store.state.cards] })
         }
 
@@ -5750,7 +5935,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             if (store.state.cards.some(card => card.id === id)) {
               patchCard(id, { surface: 'flow', open: true })
             } else {
-              store.set({ cards: [historyEntryToCard(entry), ...store.state.cards] })
+              pushCard(historyEntryToCard(entry))
             }
             // A collapsed (capsule) layer would swallow the restored card;
             // this is a session-only override, exactly like clicking expand.
@@ -5879,7 +6064,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               actionId: payload?.actionId ?? null,
             }
             if (payload.carrier === 'main') {
-              store.set({ cards: [card, ...store.state.cards] })
+              pushCard(card)
               try {
                 const result = await askInMainConversation({
                   ctx,
@@ -5905,7 +6090,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             }
             const { adapter, fellBack } = pickSurface(config.sideSurface)
             card.surface = adapter.kind
-            store.set({ cards: [card, ...store.state.cards], surface: adapter.kind })
+            pushCard(card, { surface: adapter.kind })
             if (fellBack) {
               store.set({ surfaceNote: t('surfaceFellBack', { name: adapter.label() }) })
               toast(t('surfaceUnavailable'))
@@ -6241,31 +6426,65 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         const pendingReasonings = new Map()
         let deltaFlushTimer = null
 
+        /**
+         * Commit every buffered chunk for this tick as ONE store update.
+         *
+         * The previous shape published text and reasoning separately, so a
+         * single 50 ms tick could bump the store twice per streaming card —
+         * and every bump re-renders the whole overlay. With the concurrency
+         * cap at 3 that is up to 120 tree renders per second for two string
+         * appends. Cards that saw no chunk keep their identity, so a memoised
+         * card is not touched at all.
+         */
         const flushStreamBuffers = () => {
           if (deltaFlushTimer !== null) {
             clearTimeout(deltaFlushTimer)
             deltaFlushTimer = null
           }
-          if (pendingDeltas.size > 0) {
-            for (const [cardId, chunk] of [...pendingDeltas.entries()]) appendCardText(cardId, chunk)
-            pendingDeltas.clear()
+          if (pendingDeltas.size === 0 && pendingReasonings.size === 0) return
+          const cards = store.state.cards.map((card) => {
+            const text = pendingDeltas.get(card.id)
+            const reasoning = pendingReasonings.get(card.id)
+            if (text === undefined && reasoning === undefined) return card
+            const next = { ...card }
+            if (text !== undefined) next.text = `${card.text}${text}`
+            if (reasoning !== undefined) next.reasoning = `${card.reasoning}${reasoning}`
+            return next
+          })
+          pendingDeltas.clear()
+          pendingReasonings.clear()
+          store.set({ cards })
+        }
+
+        /**
+         * Milliseconds to wait before the next flush.
+         *
+         * 50 ms is the "feels live" cadence, but the cost of one frame grows
+         * with the answer: `renderRichText` measured 0.2–0.3 ms at 8 k
+         * characters and 1.2–2.0 ms at 64 k. Past 32 k a 100 ms cadence is
+         * indistinguishable to the eye and halves the work.
+         * @returns {number} the delay for the next flush tick.
+         */
+        const streamFlushDelay = () => {
+          let longest = 0
+          for (const card of store.state.cards) {
+            if (card.status === 'streaming' && typeof card.text === 'string' && card.text.length > longest) {
+              longest = card.text.length
+            }
           }
-          if (pendingReasonings.size > 0) {
-            for (const [cardId, chunk] of [...pendingReasonings.entries()]) appendCardReasoning(cardId, chunk)
-            pendingReasonings.clear()
-          }
+          return longest > STREAM_SLOW_CHARS ? STREAM_FLUSH_SLOW_MS : STREAM_FLUSH_MS
         }
 
         const bufferStreamDelta = (cardId, chunk) => {
           if (chunk === '') return
           pendingDeltas.set(cardId, (pendingDeltas.get(cardId) ?? '') + chunk)
-          if (deltaFlushTimer === null) deltaFlushTimer = setTimeout(flushStreamBuffers, 50)
+          if (deltaFlushTimer === null) deltaFlushTimer = setTimeout(flushStreamBuffers, streamFlushDelay())
         }
 
         const bufferStreamReasoning = (cardId, chunk) => {
           if (chunk === '') return
           pendingReasonings.set(cardId, (pendingReasonings.get(cardId) ?? '') + chunk)
-          if (deltaFlushTimer === null) deltaFlushTimer = setTimeout(flushStreamBuffers, 50)
+          if (deltaFlushTimer === null) deltaFlushTimer = setTimeout(flushStreamBuffers, streamFlushDelay())
         }
 
         /** Stream one side answer into its card. */
@@ -6868,7 +7087,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           }
           return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '', style: { padding: '10px' } },
             h(Styles, null),
-            h(AnswerCard, {
+            h(MemoAnswerCard, {
               card,
               surfaceLabel: state.surface === 'better-sidebar' ? t('surfaceBetter') : t('surfaceNative'),
               onCopy: element => actions.copy(card, element),
@@ -7043,6 +7262,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           CARD_KIND,
           CARD_KIND_BETTER,
           HISTORY_TURNS,
+          API_ROOT,
+          apiBaseAfter,
+          MAX_LIVE_CARDS,
+          REPLAY_OPEN_BUDGET_CHARS,
+          STREAM_FLUSH_MS,
+          STREAM_FLUSH_SLOW_MS,
+          STREAM_SLOW_CHARS,
+          capLiveCards,
+          replayCardOpen,
           estimateLabelWidth,
           parseSseBlock,
           truncateSelection,

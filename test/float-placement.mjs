@@ -213,8 +213,14 @@ report.ok(/floatControl\(\s*'capsule'/.test(source), 'the card offers the collap
 report.ok(!/floatControl\(\s*'off'/.test(source), 'the card no longer offers a hide-the-layer control')
 report.ok(!/\bdsa-launcher\b/.test(source) && !/\bfloatRestore\b/.test(source),
   'the hidden-layer launcher is gone from the stylesheet and the dictionary')
-report.ok(/onDelete:\s*\(\)\s*=>\s*actions\.deleteCard\(card\)/.test(source),
+// 2.1.0: the handlers moved into a per-card bundle (stable identity so
+// `React.memo` can skip untouched cards), and the bundle reads the card through
+// a ref at call time. Assert the wiring survives the move: × still reaches
+// `actions.deleteCard`, and the layer still hands the bundle to the card.
+report.ok(/onDelete:\s*\(\)\s*=>\s*actions\.deleteCard\((?:card|current\(\))\)/.test(source),
   'the floating layer wires the card × to the delete action')
+report.ok(/\.\.\.handlersFor\(card\)/.test(source) && /useCardHandlers\(actions\)/.test(source),
+  'the floating layer hands every card one stable handler bundle')
 report.ok(/['"]off['"]/.test(source) === false || !/mode === 'off'/.test(source),
   'no render branch reacts to the retired `off` shape')
 report.ok(/--dsa-float-w/.test(source), 'the width is a CSS variable, not a hardcoded 400px')

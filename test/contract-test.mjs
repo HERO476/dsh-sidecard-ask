@@ -4075,5 +4075,85 @@ console.log('\nfeedback: a complete environment beats a half-filled settings pag
   report.equal(pageDescriptor.pass, undefined, 'the descriptor never carries the password')
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// 2.1.0 — cross-end hardening: API-base retry, live-card cap, replay budget,
+//         and the render fan-out of one streamed delta
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\napi base retry')
+// A deployment prefix WITHOUT a trailing slash (`https://host/dsh`) makes
+// `new URL('.', base)` treat the last segment as a file name, so the first
+// guess loses the prefix. The client retries the root-absolute base once.
+report.equal(pure.API_ROOT, '/sidecard-ask/api', 'the retry target is the root-absolute base')
+report.equal(pure.apiBaseAfter(404, '/dsh/sidecard-ask/api'), '/sidecard-ask/api',
+  'a 404 on the prefixed base falls back to the root-absolute one')
+report.equal(pure.apiBaseAfter(401, '/dsh/sidecard-ask/api'), '/dsh/sidecard-ask/api',
+  'an auth refusal does not move the base')
+report.equal(pure.apiBaseAfter(403, '/dsh/sidecard-ask/api'), '/dsh/sidecard-ask/api',
+  'nor does a fence refusal')
+report.equal(pure.apiBaseAfter(404, '/sidecard-ask/api'), '/sidecard-ask/api',
+  'the fallback never loops')
+
+console.log('\nlive card cap')
+const doneCards = count => Array.from({ length: count }, (_, index) => ({
+  id: `done-${index}`, status: 'done', open: true,
+}))
+const pushed = [{ id: 'new', status: 'streaming', open: true }, ...doneCards(20)]
+const capped = pure.capLiveCards(pushed, 20, 'new')
+report.equal(capped.length, 21, 'nothing is dropped from the store')
+report.equal(capped.filter(card => card.open === false).length, 1, 'exactly one card is hidden')
+report.equal(capped[capped.length - 1].open, false, 'the oldest card is the one hidden')
+report.equal(capped[0].open, true, 'the card being pushed stays visible')
+report.equal(pushed[pushed.length - 1].open, true, 'the input array is not mutated')
+
+const busyOldest = [
+  { id: 'new', status: 'done', open: true },
+  ...doneCards(19),
+  { id: 'old-busy', status: 'streaming', open: true },
+]
+const cappedBusy = pure.capLiveCards(busyOldest, 20, 'new')
+report.equal(cappedBusy[cappedBusy.length - 1].open, true, 'a card that is still streaming is never hidden')
+report.equal(cappedBusy.filter(card => card.open === false).length, 1, 'the next finished card takes the hit instead')
+
+const alreadyHidden = [
+  { id: 'new', status: 'done', open: true },
+  { id: 'already', status: 'done', open: false },
+  ...doneCards(20),
+]
+const cappedHidden = pure.capLiveCards(alreadyHidden, 20, 'new')
+report.equal(cappedHidden.filter(card => card.open === false).length, 3, 'already-hidden cards do not consume the quota')
+report.equal(pure.capLiveCards(doneCards(3), 20, null).length, 3, 'a stack under the cap is returned untouched')
+
+console.log('\nreplay budget')
+report.equal(pure.replayCardOpen(0, 10_000_000), true, 'the newest replayed card always unfolds')
+report.equal(pure.replayCardOpen(1, pure.REPLAY_OPEN_BUDGET_CHARS), true, 'a card inside the budget unfolds')
+report.equal(pure.replayCardOpen(1, pure.REPLAY_OPEN_BUDGET_CHARS + 1), false, 'a card past it comes back collapsed')
+report.equal(pure.REPLAY_OPEN_BUDGET_CHARS, 200_000, 'the budget is what the docs say')
+report.equal(pure.MAX_LIVE_CARDS, 20, 'the live cap is what the docs say')
+
+console.log('\nrender fan-out')
+// The streamed delta is the hot path: one store update per tick, and only the
+// changed card may re-render.
+report.ok(/const MemoAnswerCard = typeof React\.memo === 'function' \? React\.memo\(AnswerCard\) : AnswerCard/.test(clientSource),
+  'the card is memoised, with a fallback for a React without memo')
+report.ok(/h\(MemoAnswerCard, \{/.test(clientSource), 'the flow stack renders the memoised card')
+report.ok(/\.\.\.handlersFor\(card\)/.test(clientSource) && /useCardHandlers\(actions\)/.test(clientSource),
+  'the layer hands each card one stable handler bundle')
+const flushBody = /const flushStreamBuffers = \(\) => \{([\s\S]*?)\n        \}/.exec(clientSource)?.[1] ?? ''
+report.ok(flushBody !== '', 'the flush routine is findable in the source')
+report.equal((flushBody.match(/store\.set\(/g) ?? []).length, 1, 'one flush commits exactly one store update')
+report.equal(/appendCardText|appendCardReasoning/.test(clientSource), false,
+  'the per-channel append helpers are gone, so a tick cannot publish twice')
+report.ok(/streamFlushDelay\(\)/.test(clientSource), 'the stream cadence is measured, not fixed')
+report.equal(pure.STREAM_SLOW_CHARS, 32_000, 'the slow cadence starts at 32 k characters')
+report.equal(pure.STREAM_FLUSH_MS, 50, 'the normal cadence stays 50 ms')
+report.equal(pure.STREAM_FLUSH_SLOW_MS, 100, 'the slow cadence is 100 ms')
+
+console.log('\nrail observer')
+report.ok(/attributeFilter: \['data-sidebar-right-open', 'data-dockkit-pane-active'\]/.test(clientSource),
+  'the rail observer only watches the two geometry attributes')
+report.equal(/attributeFilter: \[[^\]]*'class'/.test(clientSource), false,
+  'class churn no longer wakes the layer')
+
 report.summary()
 

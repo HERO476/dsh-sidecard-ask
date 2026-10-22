@@ -849,6 +849,41 @@ const gateBroken = await callRoute(broken.harness, '/state', { method: 'GET' })
 report.equal(gateBroken.status, 401, 'an auth service that throws fails closed')
 
 // ────────────────────────────────────────────────────────────────────────────
+// 10b. liveness probe — the one method OUTSIDE the session gate
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nliveness probe')
+// The gate above is right for every real endpoint, but it also removed the only
+// way a script or a monitor could tell "plugin up" from "host up". `ping` is the
+// deliberate exception: version + host clock, nothing else.
+const ping = await callRoute(unauthenticated.harness, '/ping', { method: 'GET' })
+report.equal(ping.status, 200, 'ping answers without a browser session')
+report.equal(ping.json().ok, true, 'ping is a success envelope')
+report.equal(typeof ping.json().value.version, 'string', 'ping names the plugin version')
+report.equal(ping.json().value.at > 0, true, 'ping carries the host clock')
+report.equal(Object.keys(ping.json().value).sort().join(','), 'at,version',
+  'ping exposes the version and the clock, nothing else')
+
+const pingPost = await callRoute(unauthenticated.harness, '/ping', { method: 'POST', body: {} })
+report.equal(pingPost.status, 405, 'ping is a read-only probe')
+
+// The probe must not even consult the auth service: a composition whose gate
+// throws still answers it (otherwise a broken session service would take the
+// health check down with it).
+const probeBroken = await boot({
+  services: { connection: { requestRejection: () => { throw new Error('ping must not ask') } } },
+})
+const pingBroken = await callRoute(probeBroken.harness, '/ping', { method: 'GET' })
+report.equal(pingBroken.status, 200, 'ping does not consult the auth service')
+
+// …while every other method still does, in the same composition.
+const stateBroken = await callRoute(probeBroken.harness, '/state', { method: 'GET' })
+report.equal(stateBroken.status, 401, 'the rest of the API still fails closed')
+
+const unknownUnauthenticated = await callRoute(unauthenticated.harness, '/nope', { method: 'GET' })
+report.equal(unknownUnauthenticated.status, 404, 'an unknown endpoint is still a 404, gate or no gate')
+
+// ────────────────────────────────────────────────────────────────────────────
 // 11. unknown endpoints answer the method name, not the verb
 // ────────────────────────────────────────────────────────────────────────────
 
