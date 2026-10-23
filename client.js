@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.0'
+    const CLIENT_VERSION = '2.1.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -3123,7 +3123,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
      * @returns {string} the file body.
      */
     function buildHistoryMarkdown(entries) {
-      const list = Array.isArray(entries) ? entries.filter(entry => entry !== null && typeof entry === 'object') : []
+      // 主对话承载的问答不算卡片记录（2026-10-23，用户要求）——即使调用方
+      // 递来一条带 `carrier: 'main'` 的旧条目，导出也不该把它当成侧边卡片。
+      const list = Array.isArray(entries)
+        ? entries.filter(entry => entry !== null
+          && typeof entry === 'object'
+          && (entry.carrier === undefined || entry.carrier === 'side'))
+        : []
       if (list.length === 0) return ''
       const sections = list.map((entry, index) => {
         const body = buildCardMarkdown(entry)
@@ -5693,7 +5699,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const value = JSON.parse(raw)
             if (value?.version !== version || !Array.isArray(value.cards)) return []
             return value.cards
-              .filter(entry => typeof entry?.id === 'string' && entry.id !== '' && typeof entry.question === 'string')
+              // 主对话承载的问答不算卡片记录（2026-10-23，用户要求）。旧版本
+              // 曾把 `carrier: 'main'` 的条目写进 v3/legacy 信封：读取时丢弃，
+              // 磁盘上的副本等下一次写回自然消失；没有 carrier 字段的 v1/v2
+              // 条目仍按侧边卡片处理（它们当时只可能来自侧边卡片）。
+              .filter(entry => typeof entry?.id === 'string'
+                && entry.id !== ''
+                && typeof entry.question === 'string'
+                && (entry.carrier === undefined || entry.carrier === 'side'))
           } catch { return [] }
         }
 
@@ -5756,6 +5769,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         /** Recompute the durable set from the live store and write it. */
         const syncPersisted = () => {
           const cap = historyCap()
+          // 只有侧边卡片算「记录」：改发到主对话的问答由主对话自己保存，
+          // 不再进 durable history（2026-10-23，用户要求）。carrier 过滤是
+          // 这条边界的唯一入口，下游 writePersisted 不要再放宽。
           const finished = store.state.cards
             .filter(card => card.carrier === 'side'
               && (card.status === 'done' || card.status === 'stopped')
@@ -6344,6 +6360,20 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 error: null,
                 streaming: null,
               })
+              // 主对话承载的问答不算卡片记录（2026-10-23，用户要求）。这条
+              // 卡片一旦改投主对话，durable history 里若还有它的副本就必须
+              // 删掉，否则刷新后它会以侧边卡片的身份被恢复，和主对话重复。
+              // `draft` 模式只是把文本放进输入框（还没有真正发出），保留记录。
+              // cap === 0 与 deleteCard 同规则：不动已存的键，只镜像内存。
+              if (result.mode !== 'draft') {
+                const kept = store.state.history
+                  .filter(item => item.id !== card.id)
+                  .slice(0, historyCap())
+                if (kept.length !== store.state.history.length) {
+                  if (historyCap() > 0) writePersisted(kept)
+                  store.set({ history: kept })
+                }
+              }
               toast(result.mode === 'draft' ? t('draftInserted') : t('mainSent'))
             } catch (error) {
               patchCard(card.id, {

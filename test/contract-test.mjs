@@ -2305,6 +2305,113 @@ report.equal(reloadClient.module.api.snapshot().history.length, 0, 'deleteHistor
 report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'deleteHistoryCard also removes the live card')
 report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the deletion is persisted immediately')
 
+// 用户要求（2026-10-23）：主对话承载的问答不算卡片记录。侧边卡片的
+// durable history 只收 carrier === 'side'，所以「改发到主对话」的问答既不进
+// localStorage、也不进设置页的记录管理器；旧版本写进去的 main 条目在读取时
+// 一并丢弃。
+console.log('\nmain-carrier records')
+{
+  const mainStorage = createLocalStorageStub()
+  const sessionsService = {
+    using: async (_id, _options, operation) => operation({
+      binding: { session: { prompt: async () => ({ ok: true }) } },
+    }),
+  }
+  const mainCtx = makeClientCtx({
+    services: {
+      sessions: sessionsService,
+      sidebarRight: { mounted: { getSnapshot: () => 'session-main' } },
+    },
+  })
+  const mainClient = loadClientModule({ fetchImpl: hostFetch, storage: mainStorage, language: 'zh-CN' })
+  mainClient.module.apply(mainCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const mainActions = mainCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+  mainActions.submit(
+    {
+      text: '主对话的选中文本',
+      rect: { left: 8, top: 66, right: 260, bottom: 86, width: 252, height: 20 },
+      zone: 'chat',
+      cross: false,
+      slotPath: ['conversation.chat.node'],
+      kind: 'text',
+    },
+    { question: '主对话也会留下记录吗？', carrier: 'main' },
+  )
+  await new Promise(resolve => setTimeout(resolve, 120))
+  const mainSnapshot = mainClient.module.api.snapshot()
+  report.equal(mainSnapshot.cards[0]?.carrier, 'main', 'a main-carrier card still answers in the main chat')
+  report.equal(mainSnapshot.cards[0]?.status, 'done', 'the main-carrier card reaches a terminal status')
+  report.equal(mainSnapshot.history.length, 0, 'a main-carrier answer is not a card record')
+  report.equal(mainStorage.getItem(PERSIST_KEY), null, 'a main-carrier answer writes nothing to the card history')
+}
+
+// A v3 payload written by an older build may still carry main-carrier entries:
+// reading must drop them, and the surviving side entry must replay alone.
+{
+  const legacyStorage = createLocalStorageStub()
+  legacyStorage.setItem(PERSIST_KEY, JSON.stringify({
+    version: 3,
+    cards: [
+      {
+        id: 'legacy-main', question: '旧版主对话记录', text: '旧答案', status: 'done',
+        carrier: 'main', createdAt: 1, versions: [],
+      },
+      {
+        id: 'legacy-side', question: '旧版侧边记录', text: '旧答案', status: 'done',
+        carrier: 'side', createdAt: 2, versions: [],
+      },
+    ],
+  }))
+  const legacyClient = loadClientModule({ fetchImpl: hostFetch, storage: legacyStorage, language: 'zh-CN' })
+  const legacyCtx = makeClientCtx({})
+  legacyClient.module.apply(legacyCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const legacySnapshot = legacyClient.module.api.snapshot()
+  report.equal(legacySnapshot.history.length, 1, 'a legacy main-carrier entry is dropped from the record')
+  report.equal(legacySnapshot.history[0]?.question, '旧版侧边记录', 'the legacy side entry survives')
+  report.equal(legacySnapshot.cards.length, 1, 'only the side entry is replayed')
+  report.equal(legacySnapshot.cards[0]?.question, '旧版侧边记录', 'the replayed card is the side entry')
+}
+
+// A card that is later re-sent to the main chat stops being a record: the
+// durable copy is deleted instead of being replayed beside the main thread.
+{
+  const cleanStorage = createLocalStorageStub()
+  const cleanCtx = makeClientCtx({
+    services: {
+      sessions: {
+        using: async (_id, _options, operation) => operation({
+          binding: { session: { prompt: async () => ({ ok: true }) } },
+        }),
+      },
+      sidebarRight: { mounted: { getSnapshot: () => 'session-main' } },
+    },
+  })
+  const cleanClient = loadClientModule({ fetchImpl: hostFetch, storage: cleanStorage, language: 'zh-CN' })
+  cleanClient.module.apply(cleanCtx.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const cleanActions = cleanCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+  cleanActions.submit(
+    {
+      text: '改投前的选中文本',
+      rect: { left: 8, top: 100, right: 260, bottom: 120, width: 252, height: 20 },
+      zone: 'chat',
+      cross: false,
+      slotPath: ['conversation.chat.node'],
+      kind: 'text',
+    },
+    { question: '改投后还算记录吗？', carrier: 'side' },
+  )
+  await new Promise(resolve => setTimeout(resolve, 150))
+  report.equal(cleanClient.module.api.snapshot().history.length, 1, 'the side card is a record first')
+  await cleanActions.sendToMain(cleanClient.module.api.snapshot().cards[0])
+  const afterMove = cleanClient.module.api.snapshot()
+  report.equal(afterMove.cards[0]?.carrier, 'main', 'sendToMain moves the card to the main chat')
+  report.equal(afterMove.history.length, 0, 'the moved card stops being a record')
+  report.equal(JSON.parse(cleanStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the moved record is deleted from storage')
+}
+
 // Quota: the per-field caps alone allow ~0.9 MB for ONE card, so a full
 // history could exceed the usual 5 MB quota on every write — and the old
 // fallback then dropped a single card per retry, re-serialising the whole

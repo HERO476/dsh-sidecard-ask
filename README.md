@@ -713,6 +713,8 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
 7e. 设置页勾选「完成后桌面通知」会请求通知权限；授权后切到其它标签页/窗口，作答结束时应弹系统通知。
 7f. 设置页「历史追问卡片」：可搜索、恢复到浮层、单条删除、清空；「历史卡片保存数量」设 0 后新卡片不再写盘；
    注意：**关闭浮层卡片不会删历史**（1.8.0 起历史只在管理中心删除）。
+   **改发到主对话（`carrier: 'main'`）的问答不算卡片记录**（2.1.1 起）：它只出现在主对话里，不写
+   localStorage，也不出现在历史管理器与「导出全部 .md」；旧版本写进去的 main 条目在读取时丢弃。
 7g. **回答风格（1.8.0）**：设置页把「回答风格」切成「精简」并保存 → 下一次追问的答案应明显更短、
    不复述原文；切「详细」→ 应看到展开与依据。自检办法：`GET /state` 的 `config.answerStyle` 应为所选值；
    若 provider 不支持 persona，指令会内联进提示词（卡片上的 provider 行为不变）。
@@ -842,7 +844,7 @@ node tools/compat-probe.mjs 0.1.7-rc.2            # 也可只探某个版本
 ```powershell
 # 0) 探活：唯一免鉴权的接口，只回插件版本与宿主时钟
 (Invoke-WebRequest http://127.0.0.1:8080/sidecard-ask/api/ping -UseBasicParsing).Content
-# → {"ok":true,"value":{"version":"2.1.0","at":1792...}}    200 = 插件宿主半已加载
+# → {"ok":true,"value":{"version":"2.1.1","at":1792...}}    200 = 插件宿主半已加载
 
 # 1) 宿主接口与能力（archived 父会话检测也在这里）——需要会话
 #    在本机浏览器已登录的前提下复用会话：先 -WebSession 登录，或把浏览器的 Cookie 头带进来

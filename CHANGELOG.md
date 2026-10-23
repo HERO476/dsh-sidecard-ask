@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.1
+
+**主题：卡片记录只收侧边卡片——改发到主对话的问答不再进持久化历史。** 无 API/配置变更。
+
+### 修复
+
+- **主对话承载的问答混进卡片记录**。`syncPersisted()` 一直只收 `carrier === 'side'`，但 v3 信封或
+  v1/v2 迁移数据里可能存在 `carrier: 'main'` 的条目（旧版本写下的），
+  `parseEnvelope()` 会把它当普通记录读回来并在启动时以侧边卡片回放，与主对话内容重复。
+  现在读取时直接丢弃这类条目：它不写 localStorage、不进设置页的历史管理器、也不进「导出全部 .md」。
+- **`sendToMain()` 成功后清理记录**。卡片改投主对话时从 durable history 删除对应 id
+  （`draft` 模式只是把文本放进输入框、尚未真正发出，保留记录）。
+
+CHANGELOG 对应回归测试：`test/contract-test.mjs` 的 `main-carrier records` 段（main 提交不写盘、
+旧 payload 里的 main 条目被丢弃、`sendToMain` 删除记录）。
+
 ## 2.1.0
 
 **主题：跨端核查后的性能与可观测性收口——流式热路径从「每次 delta 全树重渲染」改成「只重渲染变化的卡」，
