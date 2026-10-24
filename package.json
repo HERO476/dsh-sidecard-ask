@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidecard-ask",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "DSH 划词追问（侧边卡片作答）：在聊天区与任务区选中文本就地追问，答案由独立子代理在侧边卡片里流式呈现，也可选择落回主对话。",
   "type": "module",
   "main": "index.js",
@@ -24,7 +24,8 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.1.2-rc.1 <0.3.0"
   },
   "license": "MIT",
   "keywords": [

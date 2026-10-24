@@ -251,9 +251,14 @@ report.ok(/RAIL_SELECTOR/.test(source), 'the rail lookup lives in one named plac
 report.ok(/'\[data-dsa-rail-host\]'/.test(source),
   'the dock anchors on the plugin own rail-hosted node first')
 const railAnchorAt = source.indexOf("'[data-dsa-rail-host]'")
-const rightbarAt = source.indexOf("'.rightbar'", railAnchorAt)
-report.ok(railAnchorAt > -1 && rightbarAt > railAnchorAt,
-  'the plugin anchor is tried before the legacy .rightbar spelling')
+// 2.1.2 dropped the pre-rail `.rightbar` class: no build in the supported
+// range renders it, so the ladder now ends with the `sidebar.right` slot
+// subtree instead of a dead spelling.
+const slotAt = source.indexOf('\'[data-slot^="sidebar.right"]\'', railAnchorAt)
+report.ok(railAnchorAt > -1 && slotAt > railAnchorAt,
+  'the plugin anchor is tried before the slot-subtree fallback')
+report.ok(!/'\.rightbar'/.test(source),
+  'the dead .rightbar spelling is gone from the anchor ladder')
 report.ok(/data-dsa-rail-host/.test(source), 'the in-rail card host is marked for measuring')
 report.ok(/MutationObserver/.test(source),
   'opening the rail re-measures (DOM mutation, not just window resize)')

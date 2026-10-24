@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.1'
+    const CLIENT_VERSION = '2.1.2'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -201,6 +201,10 @@ window.__ModuleLoader__.load({
       sideTools: 'readonly',
       sideTimeoutMs: 180000,
       sideProvider: 'auto',
+      // Mirrors the Host's DEFAULT_CONFIG.sideAgentPreset: the preset that
+      // carries the read-only tool set, because a preset is the only
+      // tool-narrowing channel 0.2.1 honors (see the settings row help text).
+      sideAgentPreset: '',
       floatMode: 'capsule',
       floatMaxWidth: 340,
       // Docked presentation (1.8.3): when the right rail is on screen, the
@@ -401,11 +405,12 @@ window.__ModuleLoader__.load({
      * the installed build (`@deepseek-ai/dsh-client-ui-sidebar-right`): its panel
      * is a div carrying `data-sidebar-right-panel="push|fullscreen"` and, while
      * expanded, `data-sidebar-right-open`; each session surface also carries
-     * `data-sidebar-right-session`. Two older spellings are kept behind those so
-     * a downgraded shell does not silently lose the dock: `.rightbar` (pre-rail
-     * builds) and the `sidebar.right` slot subtree. The OPEN marker matters: the
-     * panel slides off the frame while collapsed, so its rect is off-screen and
-     * must not be docked into.
+     * `data-sidebar-right-session`. The `sidebar.right` slot subtree is kept as
+     * a last resort for a shell that renders slots but none of those markers.
+     * (The pre-rail `.rightbar` class was dropped in 2.1.2: no build in the
+     * supported range renders it, so it only cost a query per scan.) The OPEN
+     * marker matters: the panel slides off the frame while collapsed, so its
+     * rect is off-screen and must not be docked into.
      */
     const RAIL_SELECTORS = [
       // The plugin's own nodes are the most reliable anchor there is: a tab body
@@ -424,7 +429,6 @@ window.__ModuleLoader__.load({
       // from being docked into.
       '[data-dockkit-pane]',
       '[data-dockkit-column]',
-      '.rightbar',
       '[data-slot^="sidebar.right"]',
     ]
 
@@ -660,6 +664,10 @@ window.__ModuleLoader__.load({
         setSideTools: '侧边作答工具权限',
         setSideToolsReadonly: '只读（推荐）',
         setSideToolsInherit: '继承当前会话',
+        setSideToolsHint: '在 0.2.1 上，只读靠探针自动拒写，不依赖此开关；要彻底收窄工具，请填写下面的 preset',
+        setSideAgentPreset: '只读 preset（可选）',
+        setSideAgentPresetPlaceholder: '留空则不启用',
+        setSideAgentPresetHint: '子代理以该 agent preset 启动，工具集由 preset 决定（0.2.1 唯一可靠的收窄通道）；留空时退回探针拒写',
         setSideTimeout: '侧边作答超时（毫秒）',
         setSideTimeoutHint: '超过该时间未完成即停止作答',
         setSideProvider: '子代理 provider',
@@ -686,6 +694,7 @@ window.__ModuleLoader__.load({
         diagNativeKind: 'kind',
         toolGuardUnavailable: '该 provider 不支持工具白名单，本次作答继承了当前会话的工具',
         toolGuardInherited: '按配置继承当前会话的工具',
+        toolGuardPreset: '工具集由 preset「{name}」决定',
         diagUnreachable: '宿主接口不可达：{msg}',
         yes: '可用',
         no: '不可用',
@@ -930,6 +939,10 @@ window.__ModuleLoader__.load({
         setSideTools: 'Side answerer tool access',
         setSideToolsReadonly: 'Read-only (recommended)',
         setSideToolsInherit: 'Inherit from the session',
+        setSideToolsHint: 'On 0.2.1 read-only is enforced by the write-refusing probe, not by this switch; set a preset below to narrow the tool set itself',
+        setSideAgentPreset: 'Read-only preset (optional)',
+        setSideAgentPresetPlaceholder: 'Leave empty to disable',
+        setSideAgentPresetHint: 'Starts the subagent with this agent preset, so the preset decides the tool set — the only reliable narrowing channel on 0.2.1; when empty the write-refusing probe is the fallback',
         setSideTimeout: 'Side answer timeout (ms)',
         setSideTimeoutHint: 'The answer stops once this time is exceeded',
         setSideProvider: 'Subagent provider',
@@ -956,6 +969,7 @@ window.__ModuleLoader__.load({
         diagNativeKind: 'kind',
         toolGuardUnavailable: 'This provider supports no tool allow-list, so the answer inherited the session tools',
         toolGuardInherited: 'Inherits the session tools, as configured',
+        toolGuardPreset: 'Tool set fixed by the preset "{name}"',
         diagUnreachable: 'Host API unreachable: {msg}',
         yes: 'yes',
         no: 'no',
@@ -2234,23 +2248,58 @@ window.__ModuleLoader__.load({
         available() {
           return this.registry !== null && this.controller !== null && this.error === null
         },
+        /**
+         * The card this rail tab is currently showing.
+         *
+         * The built-in rail keeps navigation parameters OUT of the tab record
+         * (`{ id, kind, contentId, title }`) and hands a body no `tab` prop at
+         * all: its own bodies read `useTabInfo()`, a framework hook a plugin
+         * bundle cannot import. The registered type declares no `multiple`, so
+         * `placeTab` records the whole kind under ONE address — the rail holds
+         * one side card at a time, namely the one opened last. CardHost renders
+         * this id instead of guessing at a `tab.meta` that no longer exists.
+         */
+        cardId: null,
         open(card) {
           if (!this.available() || typeof this.controller.openTab !== 'function') return false
+          this.cardId = card.id
           this.controller.openTab(CARD_KIND, { params: { cardId: card.id }, revealIfOpened: true })
           return true
         },
         close(card) {
-          // The right rail owns its tab lifecycle, so closing never blocks on
-          // it — but since 0.2.0 the rail controller exposes `closeTab` with
-          // the same shape `openTab` has (verified only for `openTab` on this
-          // machine; see README §6). Probe defensively: a mismatching rail
-          // simply keeps the tab, and CardHost then shows the closed-card note.
-          if (typeof this.controller?.closeTab !== 'function') return false
+          // There is no `closeTab(kind, options)` on the rail controller: a tab
+          // is closed by its id, and `openTabs` publishes exactly that as
+          // `{ sessionId, tabId, kind, contentId }` metadata (0.2.1-rc.3). The
+          // rail still owns the tab's lifetime, so a miss just leaves it open
+          // and lets CardHost show its closed-card face.
+          const controller = this.controller
+          if (controller === null || controller === undefined) return false
+          let rows = []
           try {
-            this.controller.closeTab(CARD_KIND, { params: { cardId: card.id } })
+            rows = typeof controller.openTabs?.getSnapshot === 'function'
+              ? controller.openTabs.getSnapshot()
+              : []
+          } catch { /* the inventory is optional */ }
+          const row = Array.isArray(rows)
+            ? rows.find(entry => entry?.kind === CARD_KIND
+              && typeof entry?.tabId === 'string' && entry.tabId !== ''
+              && (typeof entry?.sessionId !== 'string'
+                || store.state.sessionId === null
+                || entry.sessionId === store.state.sessionId))
+            : undefined
+          if (row === undefined) return false
+          try {
+            if (typeof controller.closeIn === 'function' && typeof row.sessionId === 'string') {
+              controller.closeIn(row.sessionId, row.tabId)
+            } else if (typeof controller.close === 'function') {
+              controller.close(row.tabId)
+            } else {
+              return false
+            }
+            if (this.cardId === card.id) this.cardId = null
             return true
           } catch (error) {
-            console.warn(`[${PLUGIN_ID}] native closeTab rejected the close:`, error)
+            console.warn(`[${PLUGIN_ID}] the right rail refused the close:`, error)
             return false
           }
         },
@@ -4467,6 +4516,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         card.toolFilter === 'unsupported'
           ? h('div', { className: 'dsa-muted' }, t('toolGuardUnavailable'))
           : (card.toolFilter === 'inherit' ? h('div', { className: 'dsa-muted' }, t('toolGuardInherited')) : null),
+        card.toolFilter === 'preset' && typeof card.agentPreset === 'string'
+          ? h('div', { className: 'dsa-muted' }, t('toolGuardPreset', { name: card.agentPreset }))
+          : null,
         card.carrier === 'main' && card.status === 'done'
           ? h('div', { className: 'dsa-muted' }, t('mainSentHint'))
           : null,
@@ -4652,7 +4704,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       React.useEffect(() => {
         const node = containerRef.current
         if (node === null || node === undefined) return undefined
-        const selector = '[data-slot^="conversation"], .rightbar, [data-slot^="sidebar.right"], [data-dsh-panel-host]'
+        // Slot subtrees only: `.rightbar` and `[data-dsh-panel-host]` were
+        // dropped in 2.1.2 — no supported build renders either marker, so they
+        // were two dead branches in a selector that runs on every resize.
+        const selector = '[data-slot^="conversation"], [data-slot^="sidebar.right"]'
         const observed = new Set()
         const all = () => {
           try {
@@ -5426,7 +5481,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           field(t('setSideTools'), select('sideTools', [
             ['readonly', t('setSideToolsReadonly')],
             ['inherit', t('setSideToolsInherit')],
-          ])),
+          ]), t('setSideToolsHint')),
+          field(t('setSideAgentPreset'), h('input', {
+            className: 'dsa-input',
+            value: String(draft.sideAgentPreset ?? ''),
+            maxLength: 120,
+            placeholder: t('setSideAgentPresetPlaceholder'),
+            disabled: draft.sideTools !== 'readonly',
+            onChange: event => setDraft({ ...draft, sideAgentPreset: event.target.value }),
+          }), t('setSideAgentPresetHint')),
           field(t('setSideTimeout'), number('sideTimeoutMs', 5000, 3600000), t('setSideTimeoutHint')),
           field(t('setSideProvider'), providerSelect(), t('setSideProviderHint')),
           field(t('setAnswerStyle'), select('answerStyle', [
@@ -6556,6 +6619,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 // Reported by the host so the card can be honest about the
                 // read-only guard when the provider cannot take a tool filter.
                 toolFilter: typeof data?.toolFilter === 'string' ? data.toolFilter : null,
+                agentPreset: typeof data?.agentPreset === 'string' ? data.agentPreset : (card.agentPreset ?? null),
                 provider: typeof data?.provider === 'string' ? data.provider : (card.provider ?? null),
               })
             },
@@ -6745,7 +6809,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               let id = null
               try {
                 const snapshot = typeof locale.getSnapshot === 'function' ? locale.getSnapshot() : null
-                id = snapshot?.locale ?? snapshot?.id ?? (typeof locale.getLocale === 'function' ? locale.getLocale()?.locale : null)
+                const direct = typeof locale.getLocale === 'function' ? locale.getLocale() : null
+                // 0.2.1-rc.3 calls the live locale `active`
+                // (`{ active, locales, revision }`); older builds exposed
+                // `locale` / `id`, and `getLocale()` may return a bare string.
+                id = snapshot?.active ?? snapshot?.locale ?? snapshot?.id
+                  ?? direct?.active ?? direct?.locale
+                  ?? (typeof direct === 'string' ? direct : null)
               } catch { /* keep the previous language */ }
               if (typeof id === 'string' && id !== '') {
                 // The service names ONE locale (no preference list behind it),
@@ -6939,11 +7009,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         // PLACEHOLDER: native-rightbar — the call shapes below were taken from
         // the native surface's own consumer (`sidebarRightTabs.register` with a
         // `guide[]` entry, `sidebarRight.openTab(kind, { params })`, and the
-        // keyed `sidebar.right.pane.tab` slot with `inject: sessionId => …`).
-        // They are NOT verified on this machine (no right-rail composition),
-        // so the whole block is capability-probed and try/caught: a mismatch
-        // degrades to the next surface and logs, never breaks the plugin.
-        // See README §6 for the replacement checklist.
+        // keyed `sidebar.right.pane.tab` slot). They are NOT verified against a
+        // live right-rail composition on this machine, so the whole block is
+        // capability-probed and try/caught: a mismatch degrades to the next
+        // surface and logs, never breaks the plugin.
+        //
+        // What 0.2.1-rc.3 does NOT give a third-party body: a `tab` prop or the
+        // navigation parameters. The card id therefore travels in the adapter
+        // (`surfaces.native.cardId`), not through `tab.meta` or an `inject`
+        // callback — see `hostCardIdOf` and README §6.
         try {
           const uninject = ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => {
             try {
@@ -6984,8 +7058,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 slotDisposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
                   name: 'sidebar.right.pane.tab',
                   key: CARD_KIND,
-                  inject: sessionId => ({ sessionId }),
-                }, (props) => h(CardHost, { props, actions }))))
+                }, props => h(CardHost, { props, actions }))))
                 slotDisposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
                   name: 'sidebar.right.pane.tab.title',
                   key: CARD_KIND,
@@ -7004,6 +7077,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 }
                 surfaces.native.registry = null
                 surfaces.native.controller = null
+                surfaces.native.cardId = null
                 throw error
               }
               disposers.push(() => {
@@ -7077,10 +7151,28 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           surfaces.better.error = String(error?.message ?? error)
         }
 
+        /**
+         * Which card an embedded body must render.
+         *
+         * better-sidebar transports the id in `tab.meta` (its `tabMeta`
+         * feature). The built-in rail supplies a body neither `tab` nor its
+         * navigation parameters, so that path falls back to the id the native
+         * adapter recorded when it opened the tab.
+         */
+        function hostCardIdOf(props) {
+          const fromMeta = props?.tab?.meta?.cardId
+          if (typeof fromMeta === 'string' && fromMeta !== '') return fromMeta
+          const navigation = props?.tab?.navigation ?? props?.navigation
+          const fromParams = navigation?.params?.cardId
+          if (typeof fromParams === 'string' && fromParams !== '') return fromParams
+          const recorded = surfaces.native.cardId
+          return typeof recorded === 'string' && recorded !== '' ? recorded : undefined
+        }
+
         /** Embedded card body used by both external hosts. */
         function CardHost({ props }) {
           const state = useStoreState()
-          const cardId = props?.tab?.meta?.cardId
+          const cardId = hostCardIdOf(props)
           const card = state.cards.find(item => item.id === cardId)
           // The proof hook MUST run before any early return (hook order), and
           // it is what lets `submit` detect a host that never rendered us.

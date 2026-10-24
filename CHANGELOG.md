@@ -1,5 +1,58 @@
 # Changelog
 
+## 2.1.2
+
+**主题：按 DSH 0.2.1-rc.3 的实测契约修复——原生右栏卡片、语言跟随、只读工具收窄、可信主机围栏。
+排查依据见 `CROSS-END-AUDIT-2.1.1.md`（桌面端 0.2.1-rc.3 / Electron 43.3.0 × 网页端 0.2.1-rc.3）。**
+
+### 修复
+
+- **D0 原生右侧栏永远显示「卡片已关闭」**。0.2.1-rc.3 的右侧栏 tab 记录只有
+  `{ id, kind, contentId, title }`，body 组件拿不到 `tab`，也没有 `tab.meta`——插件原先读
+  `props?.tab?.meta?.cardId` 恒为 `undefined`，于是 `CardHost` 走「已关闭」兜底分支，
+  render proof 永不 settle，600 ms 后把卡片挪去浮层并提示「承载面未渲染」。
+  新增 `hostCardIdOf(props)`：`tab.meta.cardId` → `navigation.params.cardId` →
+  原生适配器打开时记下的 `surfaces.native.cardId`。内置右栏的 tab 是**按 kind 单例**的，
+  同一时刻只承载一张卡，所以「打开时记下 id」是可靠来源。
+  > 该缺口只影响显式选 `native-rightbar` 的用户；`auto` 的候选顺序是「侧边卡片插件 → 浮层」，
+  > 本来就不选原生栏（见 `pickSurface` 注释）。
+- **D2 卡片关闭后右栏 tab 残留**。rc.3 的 `sidebarRight` 控制器没有 `closeTab(kind, options)`
+  （只有 `openTab/openTabIn/openResource/openResourceIn/close/closeIn/closeTarget`），
+  原实现对 `closeTab` 做防御式探测，恒为「不存在」⇒ 永远返回 `false`。
+  现在从 `controller.openTabs.getSnapshot()` 找 `{ sessionId, tabId, kind }` 行，用
+  `closeIn(sessionId, tabId)`（无则 `close(tabId)`）真正关掉；同时删掉注释里那条错误陈述。
+- **D3 切换界面语言不跟随**。rc.3 locale 快照是 `{ active, locales, revision }`，插件读的
+  `snapshot.locale / snapshot.id / getLocale().locale` 三个字段都不存在。改为
+  `active → locale → id → getLocale()` 的顺序读取（兼容旧壳与返回裸字符串的 `getLocale()`）。
+- **D1 `sideTools: 'readonly'` 只是名义上的**。rc.3 的 `SubagentStartRequest` /
+  `SubagentCapabilities` **没有 `toolFilter`，也没有 `persona`**，只读实际靠「探针拒写」。
+  真正能收窄工具集的通道是 `agentPreset`（`SubagentCapabilities.agentPreset` +
+  `SubagentStartRequest.agentPreset`）。新增配置 `sideAgentPreset`（默认空 = 不启用，≤120 字符）：
+  设置后子代理以该 preset 启动，工具集由 preset 决定；`agentPreset` 能力位缺失时自动退回探针。
+  设置页给出对应输入行（仅在 `readonly` 下可编辑），卡片上标注「工具集由 preset「X」决定」。
+  **未新增任何 `toolFilter` 参数**——它在新版并不存在。
+- **D4 `persona` 能力位缺失**：保持现状（persona 拼进 prompt 文本，行为正确），仅在文档标注。
+- **P2 非 loopback 访问一律 403**。`webRuntime` 服务在 rc.3 中不存在，`trustedHosts` 恒空。
+  `trustedHostsOf()` 现在先读 `webRuntime.trustedHosts`，再读 `connection.trustedHosts`
+  （`HostConnectionService` 的公开字段，与宿主自己的 Host/Origin 围栏同源），两者皆空才返回 `[]`。
+- **P3 没有安装期门禁**：`package.json` 增加 `engines.dsh: ">=0.1.2-rc.1 <0.3.0"`。
+- **P6 失效的后备选择器**：从锚点阶梯删除 `.rightbar`（pre-rail 时代的类名，支持范围内无任何构建渲染它），
+  观察器选择器同步清理 `[data-dsh-panel-host]`；`[data-slot^="sidebar.right"]` 保留为最后一档。
+- **P1 `assistant-stream` end 帧无 `stopReason`**：保持现有兜底（取 `result.stopReason`），
+  在 README §7 注明该字段在 0.2.1 上恒空的原因。
+
+### 版本
+
+`package.json` / `index.js` `PLUGIN_VERSION` / `client.js` `CLIENT_VERSION` 同升 2.1.2。
+
+### 回归
+
+- `test/contract-test.mjs`：原生 tab 生命周期的替身改为 rc.3 真实形态
+  （`openTabs.getSnapshot()` + `closeIn`），断言「关闭走到拥有该 tab 的会话」而不是不存在的 `closeTab`。
+- `test/float-placement.mjs`：锚点阶梯断言改为「插件自有节点先于 slot 子树」，并新增
+  「`.rightbar` 已从阶梯中移除」。
+- 全量：verify 57 + contract 1427 + float-placement 84 + smoke 271 = **1839 passed, 0 failed**。
+
 ## 2.1.1
 
 **主题：卡片记录只收侧边卡片——改发到主对话的问答不再进持久化历史。** 无 API/配置变更。

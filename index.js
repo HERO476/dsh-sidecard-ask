@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.1'
+export const PLUGIN_VERSION = '2.1.2'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -92,6 +92,18 @@ export const DEFAULT_CONFIG = {
   sideTools: 'readonly',
   sideTimeoutMs: 180_000,
   sideProvider: 'auto',
+  /**
+   * Agent preset that carries the read-only tool set for side answers.
+   *
+   * The only tool-narrowing channel the 0.2.1 host actually honors is a
+   * preset: `SubagentStartRequest` has `agentPreset`, `startLocal` forwards it
+   * into the child's composition, and `SubagentCapabilities` advertises
+   * `agentPreset` — while BOTH `persona` and `toolFilter` are missing from
+   * that capability object, so passing a filter is a no-op there. Empty means
+   * "no preset"; the wire then reports the guard as unsupported instead of
+   * pretending one is in force.
+   */
+  sideAgentPreset: '',
   /**
    * Floating-layer (A) surface. `capsule` = one-line pill that never covers
    * the conversation, `full` = the classic card stack. (The former `off`
@@ -464,6 +476,14 @@ export function sanitizeLayer(raw, problems = []) {
   if (raw.sideProvider !== undefined) {
     if (typeof raw.sideProvider === 'string' && raw.sideProvider.length <= 80) out.sideProvider = raw.sideProvider
     else problems.push('sideProvider: 必须是字符串，已忽略')
+  }
+  if (raw.sideAgentPreset !== undefined) {
+    // An empty string is meaningful ("no preset"); anything longer than a
+    // preset id is refused rather than silently truncated, because a truncated
+    // id would name a DIFFERENT preset — the worst possible failure here.
+    const value = typeof raw.sideAgentPreset === 'string' ? raw.sideAgentPreset.trim() : null
+    if (value !== null && value.length <= 120) out.sideAgentPreset = value
+    else problems.push('sideAgentPreset: 必须是 ≤120 字符的字符串，已忽略')
   }
   if (raw.customPersona !== undefined) {
     // Counted in code points: a 500-emoji paste is 500 characters to the user
@@ -1902,6 +1922,15 @@ function createSideEngine(ctx, configOf) {
       // into the prompt text and a missing tool filter is reported on the wire.
       const personaSupported = caps?.persona === true
       const toolFilterSupported = caps?.toolFilter === true
+      // The preset channel is the one that actually works on this host: the
+      // capability object advertises `agentPreset`, and `startLocal` forwards
+      // `request.agentPreset` into the child's composition (its `toolFilter`
+      // is not read from the request at all). So a configured preset is the
+      // only way to genuinely narrow the side answerer's tools — and when it
+      // is the one in force, the card must not say "inherits".
+      const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
+      const presetSupported = caps?.agentPreset === true
+      const presetInForce = config.sideTools === 'readonly' && preset !== '' && presetSupported
       // Style and the user's own extra instruction ride the SAME persona
       // string, so the "persona vs prompt" gate above covers all three of
       // them with one branch — there is no second injection point.
@@ -1913,6 +1942,7 @@ function createSideEngine(ctx, configOf) {
         parent: parent.agent,
         signal: controller.signal,
         ...(personaSupported ? { persona: personaText } : {}),
+        ...(presetInForce ? { agentPreset: preset } : {}),
         ...(toolFilter === undefined || !toolFilterSupported ? {} : { toolFilter }),
       })
       runRecord.dispose = run.dispose
@@ -1930,11 +1960,19 @@ function createSideEngine(ctx, configOf) {
         promptTruncated: composed.truncated,
         promptDroppedChars: composed.droppedChars,
         promptHistoryDropped: composed.historyDropped,
-        // Reported so the card can say the run inherits the session's tools
-        // instead of silently pretending the read-only guard is in force.
+        // Reported so the card can say which guard is really in force instead
+        // of silently pretending the read-only one is: `preset` = a configured
+        // agent preset narrowed the child's tools, `applied` = a tool filter
+        // travelled on a host that honors one, `unsupported` = neither channel
+        // exists, `inherit` = the user asked for the session's tools.
         toolFilter: config.sideTools !== 'readonly'
           ? 'inherit'
-          : (toolFilter === undefined ? 'unsupported' : (toolFilterSupported ? 'applied' : 'unsupported')),
+          : (presetInForce
+            ? 'preset'
+            : (toolFilter === undefined
+              ? 'unsupported'
+              : (toolFilterSupported ? 'applied' : 'unsupported'))),
+        agentPreset: presetInForce ? preset : null,
         persona: personaSupported ? 'section' : 'prompt',
         parentArchived: parent.archived === true,
       })
@@ -2228,7 +2266,9 @@ export function apply(ctx, patchConfig) {
 
   /**
    * Best-effort DSH version for the feedback environment block.
-   * Every lookup is optional: a missing service must not fail the send.
+   * Every lookup is optional: `webRuntime` is absent on 0.2.1-rc.3 (the probe
+   * finds no such service), so the env fallback is the normal path here and a
+   * missing service must not fail the send.
    */
   const dshVersionOf = () => {
     try {
@@ -2351,11 +2391,33 @@ export function apply(ctx, patchConfig) {
     return merged
   }
 
-  /** Whether the request may reach the plugin routes. */
+  /**
+   * Deployment authorities the plugin routes may answer for, beyond loopback.
+   *
+   * `webRuntime` does not exist on this host generation (0.2.1-rc.3 has no
+   * such service), so the declared list is read from the `connection` service
+   * instead — its `HostConnectionService.trustedHosts` field is the very array
+   * its own Host/Origin fence consults, so the plugin cannot end up trusting
+   * more (or fewer) authorities than the shell does. An empty result keeps
+   * the fence at loopback + Origin only, which is the shipped default.
+   */
   const trustedHostsOf = () => {
-    const runtime = ctx.get('webRuntime')
-    const hosts = runtime?.trustedHosts
-    return Array.isArray(hosts) ? hosts.filter(host => typeof host === 'string') : []
+    const cleaned = list => (Array.isArray(list) ? list.filter(host => typeof host === 'string') : [])
+    try {
+      const runtime = ctx.get('webRuntime')
+      const fromRuntime = cleaned(runtime?.trustedHosts)
+      if (fromRuntime.length > 0) return fromRuntime
+    } catch {
+      /* optional service */
+    }
+    try {
+      const connection = ctx.get('connection')
+      const fromConnection = cleaned(connection?.trustedHosts)
+      if (fromConnection.length > 0) return fromConnection
+    } catch {
+      /* optional service */
+    }
+    return []
   }
 
   /** `/state` — the Client's single source of truth at boot and after a save. */

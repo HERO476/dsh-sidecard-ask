@@ -28,7 +28,8 @@
 
 > **1.4.0 增强一览**（详见 CHANGELOG）：卡片**思考过程**（reasoning）可折叠展示并随答案流式渲染；
 > **已完成卡片写入 localStorage，刷新页面不丢**；答案渲染扩展链接/斜体/引用/表格；流式输出自动滚动到底；
-> 设置页补齐 `sideTimeoutMs` / `sideProvider` 控件；原生右侧栏 tab 可关闭（不再残留空壳）；
+> 设置页补齐 `sideTimeoutMs` / `sideProvider` 控件；原生右侧栏 tab 可关闭（不再残留空壳；该能力在
+> 0.2.1-rc.3 上一度因控制器无 `closeTab` 而失效，2.1.2 改用 `closeIn` 修复）；
 > 界面语言解析支持 `navigator.languages` 优先级回退，英文界面显示英文错误文案；
 > 长答案的流式增量按 50ms 窗口合并提交（避免整卡重渲染的二次方开销）。
 
@@ -173,7 +174,8 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `showInUnclassified` | 布尔 | `true` | 无法归类的区域是否也触发 | 立即 |
 | `minChars` | 0–200 | `2` | 少于该字符数的选区不触发 | 立即 |
 | `maxConcurrentAsks` | 1–12 | `3` | 侧边卡片并发作答上限，超出返回 `busy`（可重试） | 立即 |
-| `sideTools` | `readonly` \| `inherit` | `readonly` | 侧边作答者的工具权限：只读白名单 / 继承当前会话 | 下一次提问 |
+| `sideTools` | `readonly` \| `inherit` | `readonly` | 侧边作答者的工具权限：只读 / 继承当前会话。**注意**：0.2.1 的 `SubagentStartRequest` 没有 `toolFilter`，`readonly` 实际由「探针拒写」兜住（发一条会写盘的指令，被拒即判定只读链路有效）；要真正收窄工具集请用下一条 | 下一次提问 |
+| `sideAgentPreset` | 字符串，≤120 字符 | `''` | **只读 preset**：子代理以该 agent preset 启动，工具集由 preset 决定——这是 0.2.1 上唯一可靠的收窄通道（`agentPreset` 能力位存在时生效，否则退回探针）。留空 = 不启用 | 下一次提问 |
 | `sideTimeoutMs` | 5000–3600000 | `180000` | 单次侧边作答超时 | 下一次提问 |
 | `sideProvider` | 字符串 \| `auto` | `auto` | 指定子代理 provider（`auto` 优先 `spawn`） | 下一次提问 |
 | `quickActions` | 动作数组（≤12 条） | 5 个内置动作 | **一键快捷动作**：选中后按钮旁的动作芯片。条目形如 `{id, enabled, shortcut}`；内置 id 为 `builtin:explain/translate/summarize/polish/fix`，自定义动作（非 `builtin:` 前缀）还需 `label`（≤20 字）与 `question`（≤500 字，可用 `{selection}` 内嵌选中正文）。设置页可视化编辑，用户层整表覆盖默认值 | 立即（快捷键下次按键生效） |
@@ -486,6 +488,30 @@ dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[d
 `Alt+Q` 是否会撞上桌面 App 的菜单加速键（Electron 的菜单加速键由菜单先处理，页面的 keydown 可能收不到；
 若冲突，在设置页改成 `Ctrl+Alt+Q` 之类即可）；Electron 下 `navigator.clipboard` 的写入权限（已有"选中文本"降级兜底）。
 
+### 5.5 2026-10-24 复核（v2.1.2 / 桌面 0.2.1-rc.3 × 网页 0.2.1-rc.3）
+
+本轮把双端都升到 **0.2.1-rc.3** 后重新取证，**完整报告见 [`CROSS-END-AUDIT-2.1.1.md`](CROSS-END-AUDIT-2.1.1.md)**。
+结论先行：**插件可加载、可用**（宿主半路由注册成功、客户端半被 `ClientModuleRegistry` 组装并由 `/plugins` 路由取到，
+`GET /sidecard-ask/api/ping` 实机 200），默认承载路径（侧边卡片插件 / 浮层 / 输入区）全部正常；
+原生右侧栏这条**可选**路径此前在 rc.3 上是坏的（D0/D2），2.1.2 已修。
+
+| 编号 | rc.3 事实 | 影响 | 2.1.2 处置 |
+|---|---|---|---|
+| D0 | tab 记录只有 `{id,kind,contentId,title}`，body 无 `tab` 属性、无 `tab.meta` | 原生栏卡片恒走「已关闭」兜底 + 600 ms 后被挪去浮层 | `hostCardIdOf()` 三级回退，含适配器记录的 cardId |
+| D1 | `SubagentStartRequest`/`Capabilities` 无 `toolFilter`、无 `persona` | `sideTools: readonly` 只靠探针拒写 | 新增 `sideAgentPreset`（`agentPreset` 是唯一真实收窄通道） |
+| D2 | 控制器无 `closeTab(kind, options)` | 关闭卡片后 tab 残留 | 改用 `openTabs.getSnapshot()` + `closeIn(sessionId, tabId)` |
+| D3 | locale 快照是 `{active, locales, revision}` | 切换语言不跟随 | 先读 `active` |
+| D4 | `persona` 能力位不存在 | persona 拼进 prompt（无损失） | 保持，文档标注 |
+| P1 | end 帧只有 `outcome`，无 `stopReason` | SSE 该字段恒空 | 前端取 `result.stopReason` 兜底 |
+| P2 | `webRuntime` 服务不存在 | `trustedHosts` 恒空 ⇒ 非 loopback 403 | 改读 `connection.trustedHosts` |
+| P3 | 无 `engines.dsh` | 安装期无版本门禁 | 声明 `>=0.1.2-rc.1 <0.3.0` |
+| P6 | `.rightbar` / `[data-dsh-panel-host]` 全树 0 命中 | 后备选择器白跑 | 已从锚点阶梯与观察器移除 |
+| P7 | `conversation.input.for()` 不在服务目录 | 草稿降级为第二顺位 | 保持防御式最后一档 |
+
+**仍然存在的结构限制（非缺陷）**：内置右栏的 tab body 拿不到 `tab`，`useTabInfo()` 是它给自家 body 的通道，
+插件 bundle 无法 import ⇒ 原生承载的"一张卡一个 tab"做不到，只能是**按 kind 单例**（同时一张卡）。
+`auto` 本就不选原生栏，这条限制只影响显式开 `native-rightbar` 的人。
+
 ### 5.4 2026-10-22 复核（v2.1.0 / 桌面 0.2.0-rc.2）
 
 上一轮之后桌面端与网页端的形态都变过，本轮把能静态取证的部分重新核了一遍，**完整报告见
@@ -518,9 +544,13 @@ dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[d
 ctx.inject(['sidebarRightTabs', 'sidebarRight'], (injected) => { ... })
 ```
 
-- **已实测的调用形态**：`registry.register({ id, kind, title, guide: [{ id, order, title, description }] })`、
-  `controller.openTab(kind, { params, revealIfOpened })`、槽位 `sidebar.right.pane.tab`（keyed，`inject: sessionId => ({ sessionId })`）。
-- **未逐版本实测的部分**（占位）：`guide[].icon`、`canOpen/patterns`、`closeIn/activateIn`。
+- **已实测的调用形态**（0.2.1-rc.3）：`registry.register({ id, kind, title, guide: [{ id, order, title, description }] })`、
+  `controller.openTab(kind, { params, revealIfOpened })`、槽位 `sidebar.right.pane.tab`（**keyed，注册项只有 `key`**，
+  没有 `inject`）、关闭走 `closeIn(sessionId, tabId)`（tab 行来自 `controller.openTabs.getSnapshot()`）。
+- **rc.3 的硬限制**：该槽位的 body 拿不到 `tab`、也拿不到 `navigation.params`（内置 body 靠 `useTabInfo()`，
+  插件无法 import）⇒ 卡片 id 只能由适配器在 `open()` 时记下（`surfaces.native.cardId`）。这也是原生承载
+  **按 kind 单例**的原因。
+- **未逐版本实测的部分**（占位）：`guide[].icon`、`canOpen/patterns`、`closeTarget/activateIn`。
   替换方式：在 `client.js` 搜索 `PLACEHOLDER: native-rightbar`，按目标 DSH 版本的真实签名补齐；
   补齐前该分支只会记录错误并降级，不会破坏插件。
 
@@ -642,6 +672,17 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
   `agentPreset` 进入）不命中插件消费面——1.6.0 的字段门控原样覆盖。
 - 插件四套自测重跑 **1004 项全过**；完整证据（脚本 / 原始输出 / 截图，`wb-*` 前缀为本轮独立复核产物）
   见 `.compat-report/`，过程细节（含两处探针口径修正的如实记录）见该目录 `COMPATIBILITY-REPORT-alpha3-alpha4.md` §8。
+
+**2.1.2 复核（2026-10-24）：0.2.1-rc.3（桌面端与网页端同为 rc.3）——发现 4 项契约漂移并全部修复**（详见 §5.5 与 `CROSS-END-AUDIT-2.1.1.md`）。
+
+- 实机证据：桌面端进程（`0.2.1-rc.3`，Electron 43.3.0）在 `127.0.0.1:14582` 上
+  `GET /sidecard-ask/api/ping` 返回 200（前缀路由注册成功），`GET /plugins/??dsh-sidecard-ask/client.js&rev=…`
+  返回 369 873 字节（客户端半被 `ClientModuleRegistry` 组装并从 `/plugins` 路由可取）。
+- 产物级证据：`@deepseek-ai` 下 307 个包全为 `0.2.1-rc.3`；`tools/compat-probe.mjs` 在 rc.2/rc.3 上矩阵完全一致。
+- 契约漂移：D0（右栏 tab 无 `tab.meta`）、D1（无 `toolFilter`/`persona`）、D2（无 `closeTab`）、
+  D3（locale 字段名 `active`）——这三项会让**原生右侧栏**与**语言跟随**在 rc.3 上表现异常，2.1.2 已修；
+  默认承载路径（侧边卡片插件 / 浮层 / 输入区）不受影响。
+- 四套自测重跑 **1839 项全过**（verify 57 / contract 1427 / float-placement 84 / smoke 271）。
 
 ### 7.4 更早版本仍未做真机验证的部分（如实标注）
 

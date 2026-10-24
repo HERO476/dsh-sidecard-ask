@@ -3166,12 +3166,30 @@ const nativeRegistry = {
 const mirroredDescriptors = []
 const kindTabsOpened = []
 const kindTabsClosed = []
+// 0.2.1-rc.3 has no `closeTab(kind, options)`: a rail tab closes by id, and
+// `openTabs.getSnapshot()` publishes `{ sessionId, tabId, kind, contentId }`.
+// The double keeps that inventory so the close path is exercised for real.
+const kindRailTabs = []
 const kindCtx = makeClientCtx({
   services: {
     sidebarRightTabs: nativeRegistry,
     sidebarRight: {
-      openTab: (kind, request) => { kindTabsOpened.push({ kind, request }) },
-      closeTab: (kind, request) => { kindTabsClosed.push({ kind, request }) },
+      openTab: (kind, request) => {
+        kindTabsOpened.push({ kind, request })
+        kindRailTabs.push({
+          sessionId: 'session-alpha',
+          tabId: `kind-tab-${kindRailTabs.length + 1}`,
+          kind,
+          contentId: request?.params?.cardId ?? '',
+        })
+      },
+      closeIn: (sessionId, tabId) => {
+        const at = kindRailTabs.findIndex(row => row.tabId === tabId)
+        kindTabsClosed.push({ sessionId, tabId, kind: at >= 0 ? kindRailTabs[at].kind : null })
+        if (at >= 0) kindRailTabs.splice(at, 1)
+      },
+      close: tabId => { kindTabsClosed.push({ tabId, sessionId: null, kind: null }) },
+      openTabs: { getSnapshot: () => kindRailTabs.slice() },
       mounted: { getSnapshot: () => 'session-alpha', subscribe: () => () => {} },
     },
     betterSidebar: {
@@ -3246,10 +3264,26 @@ report.equal(kindCards.length, 1, 'the submitted card lives in the store')
 report.equal(kindCards[0]?.surface, 'native-rightbar', 'the card is carried by the native right rail')
 report.ok(kindTabsOpened.length === 1, 'opening the card opened exactly one rail tab')
 report.equal(kindTabsOpened[0]?.kind, pure.CARD_KIND, 'the rail tab was opened under the card kind')
+// 0.2.1-rc.3 hands a tab body NO `tab` prop: the record is only
+// `{ id, kind, contentId, title }` and navigation params never reach the slot
+// (its own bodies call `useTabInfo()`, which a plugin cannot import). The body
+// must still resolve its card from the id the native adapter recorded.
+const kindNativeEntry = kindCtx.registrations.find(
+  item => item.options.name === 'sidebar.right.pane.tab' && item.options.key === pure.CARD_KIND,
+)
+const kindBareTree = expandTree(kindNativeEntry.component({}))
+report.ok(
+  textOf(kindBareTree).includes('这段讲什么？'),
+  'a 0.2.1-rail body with no tab prop still renders the card the adapter opened',
+)
 kindActions.close(kindCards[0])
 report.ok(kindTabsClosed.length === 1, 'closing the card asks the rail to close its tab')
 report.equal(kindTabsClosed[0]?.kind, pure.CARD_KIND, 'the close targets the same card kind')
-report.equal(kindTabsClosed[0]?.request?.params?.cardId, kindCards[0].id, 'the close names the card id')
+report.equal(kindTabsClosed[0]?.sessionId, 'session-alpha', 'the close goes through the session that owns the tab')
+report.ok(
+  kindTabsOpened[0]?.request?.params?.cardId === kindCards[0].id,
+  'the opened tab names the card it shows',
+)
 report.equal(kindClient.module.api.snapshot().cards.length, 0, 'the card is gone from the store after close')
 // After the close nothing renders a card anywhere, and a leftover tab body
 // (a rail that ignored the close) says the card was closed, not "(empty)".
@@ -3270,12 +3304,27 @@ console.log('\nrender proof timing')
 const proofTabsOpened = []
 const proofTabsClosed = []
 const proofDescriptors = []
+const proofRailTabs = []
 const proofCtx = makeClientCtx({
   services: {
     sidebarRightTabs: { register: () => () => {} },
     sidebarRight: {
-      openTab: (kind, request) => { proofTabsOpened.push({ kind, request }) },
-      closeTab: (kind, request) => { proofTabsClosed.push({ kind, request }) },
+      openTab: (kind, request) => {
+        proofTabsOpened.push({ kind, request })
+        proofRailTabs.push({
+          sessionId: 'session-alpha',
+          tabId: `proof-tab-${proofRailTabs.length + 1}`,
+          kind,
+          contentId: request?.params?.cardId ?? '',
+        })
+      },
+      closeIn: (sessionId, tabId) => {
+        const at = proofRailTabs.findIndex(row => row.tabId === tabId)
+        proofTabsClosed.push({ sessionId, tabId, kind: at >= 0 ? proofRailTabs[at].kind : null })
+        if (at >= 0) proofRailTabs.splice(at, 1)
+      },
+      close: tabId => { proofTabsClosed.push({ tabId, sessionId: null, kind: null }) },
+      openTabs: { getSnapshot: () => proofRailTabs.slice() },
       mounted: { getSnapshot: () => 'session-alpha', subscribe: () => () => {} },
     },
     betterSidebar: {
