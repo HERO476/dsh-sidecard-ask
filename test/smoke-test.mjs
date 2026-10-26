@@ -247,6 +247,54 @@ report.equal(typeof act.harness.services.subagents.start, 'undefined', 'the new 
 report.equal(typeof act.harness.services.subagents.startActivation, 'function', 'startActivation is present')
 report.equal(act.engine.disposed, ['child-1'], 'the activation was disposed after settling')
 
+// B2 回归（2026-10-26）：activation 面的 `request` 必须一起转发 agentPreset。
+// 漏掉这一项，子代理会拿默认全套工具，而 start 帧仍上报
+// `toolFilter: 'preset'`，卡片于是对用户谎报"工具集由 preset 决定"。
+const presetAct = await boot({
+  patch: { sideAgentPreset: 'ro-preset' },
+  engineOptions: {
+    activationApi: true,
+    capabilities: {
+      agentOptions: true,
+      outputSchema: true,
+      depthLimit: true,
+      toolFilter: true,
+      persona: true,
+      agentPreset: true,
+    },
+  },
+})
+const presetAsk = await callRoute(presetAct.harness, '/ask', {
+  body: { id: 'ask-preset', question: 'q', selection: 'text' },
+})
+const presetStart = presetAsk.events()[0]
+report.equal(
+  presetAct.engine.starts[0].request.agentPreset,
+  'ro-preset',
+  'the configured preset rides inside request on the activation face',
+)
+report.equal(presetStart.data.toolFilter, 'preset', 'the start event names the preset as the guard in force')
+report.equal(presetStart.data.agentPreset, 'ro-preset', 'the start event names the preset')
+// A provider that does not advertise the capability must not receive the field
+// (the host rejects unknown start fields outright).
+const noPresetCap = await boot({
+  patch: { sideAgentPreset: 'ro-preset' },
+  engineOptions: { activationApi: true, capabilities: { toolFilter: true, persona: true } },
+})
+const noPresetAsk = await callRoute(noPresetCap.harness, '/ask', {
+  body: { id: 'ask-nopreset', question: 'q', selection: 'text' },
+})
+report.equal(
+  Object.hasOwn(noPresetCap.engine.starts[0].request, 'agentPreset'),
+  false,
+  'a provider without the agentPreset capability gets no preset field',
+)
+report.equal(
+  noPresetAsk.events()[0].data.toolFilter,
+  'applied',
+  'without a preset the read-only filter is reported as applied',
+)
+
 // ────────────────────────────────────────────────────────────────────────────
 // 3. truncation of an over-long selection
 // ────────────────────────────────────────────────────────────────────────────
@@ -314,6 +362,9 @@ report.equal(earlyEvents.at(-1).data.retryable, true, 'the early abort is retrya
 
 const unknownCancel = (await callRoute(c.harness, '/cancel', { body: { id: 'nope' } })).json()
 report.equal(unknownCancel.value.cancelled, false, 'cancelling an unknown id is a safe no-op')
+// B5 回归（2026-10-26）：`/cancel` 曾经把跨会话的全局 run id 列表一起回给页面。
+// 那是别的会话正在追问的卡片 id，属于信息泄露，且 Client 从不消费它。
+report.equal(Object.hasOwn(unknownCancel.value, 'active'), false, '/cancel does not leak the global run registry')
 report.equal((await callRoute(c.harness, '/cancel', { body: {} })).status, 400, 'a missing id is refused')
 
 // ────────────────────────────────────────────────────────────────────────────

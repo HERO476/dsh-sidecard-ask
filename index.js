@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.3'
+export const PLUGIN_VERSION = '2.1.4'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -1541,7 +1541,7 @@ function openSse(res) {
  * Build the engine that owns every side-card run.
  * @param {import('@deepseek-ai/cordis').Context} ctx - host plugin context.
  * @param {() => Record<string, unknown>} configOf - live config reader.
- * @returns {{ask: Function, cancel: Function, activeIds: Function, dispose: Function, capabilities: Function}}
+ * @returns {{ask: Function, cancel: Function, dispose: Function, capabilities: Function}}
  */
 function createSideEngine(ctx, configOf) {
   /** id → run record. */
@@ -1630,6 +1630,11 @@ function createSideEngine(ctx, configOf) {
         parent: fields.parent,
         ...(fields.persona === undefined ? {} : { persona: fields.persona }),
         ...(fields.toolFilter === undefined ? {} : { toolFilter: fields.toolFilter }),
+        // 0.2.1-alpha.2+ 的 `request` 与旧 `start(provider, request)` 是同一个
+        // SubagentStartRequest 形状，`agentPreset` 必须一起转发。漏掉这一项
+        // 会让子代理拿到默认全套工具，而 start 帧仍按配置上报
+        // `toolFilter: 'preset'`，卡片于是对用户谎报"工具集由 preset 决定"。
+        ...(fields.agentPreset === undefined ? {} : { agentPreset: fields.agentPreset }),
       },
     })
     return {
@@ -1893,7 +1898,6 @@ function createSideEngine(ctx, configOf) {
     /** Which source produced deltas: process-local frames or durable chunks. */
     let framesSeen = false
     let chunksSeen = false
-    let finished = false
 
     /** Detach this run's stream listener (frames are per attempt). */
     let detach = () => {}
@@ -2078,7 +2082,6 @@ function createSideEngine(ctx, configOf) {
         })
         return
       }
-      finished = true
       sink.send('done', {
         id,
         text,
@@ -2140,9 +2143,12 @@ function createSideEngine(ctx, configOf) {
     }
     runs.clear()
     streamListeners.clear()
+    // 第二个流来源的订阅者也要清：只清 streamListeners 会在插件卸载后
+    // 留下仍被 `session/event` 桥持有的闭包（它捕获了整个 engine 状态）。
+    chunkListeners.clear()
   }
 
-  return { ask, cancel, dispose, capabilities, activeIds: () => [...runs.keys()] }
+  return { ask, cancel, dispose, capabilities }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2594,7 +2600,10 @@ export function apply(ctx, patchConfig) {
       writeError(res, 400, 'bad-request', '缺少 id')
       return
     }
-    writeOk(res, { cancelled: engine.cancel(id), active: engine.activeIds() })
+    // 只回本次取消的结果：`runs` 是跨会话的全局表，把它的 id 列表回给
+    // 任意可信页面等于泄露别的会话正在追问的卡片 id（而 cancel 本身也不
+    // 校验归属），Client 侧也没有任何地方消费这个字段。
+    writeOk(res, { cancelled: engine.cancel(id) })
   }
 
   /** `/config` — merge a partial config into the user layer and persist it. */
@@ -2707,7 +2716,16 @@ export function apply(ctx, patchConfig) {
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
     if (!isTrustedRequest(req, trustedHostsOf())) {
-      writeError(res, 403, 'forbidden', 'forbidden')
+      // 说明"为什么被拒 + 怎么放行"：这条 403 只会出现在 DSH 被绑到非回环
+      // 地址、或经反向代理访问时（Host 既不是 loopback，也不在 trustedHosts
+      // 里）。有意不自动信任绑定地址：插件读不到宿主的 bind 配置，猜一个就等于
+      // 自己把 DNS-rebinding 防线拆掉。
+      writeError(
+        res,
+        403,
+        'forbidden',
+        'Host 不在信任范围：请用 http://127.0.0.1:<端口> 访问，或把该地址写进 trustedHosts 配置',
+      )
       return
     }
     // Path parsing runs BEFORE the session gate now, because `ping` must be

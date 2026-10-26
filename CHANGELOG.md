@@ -1,5 +1,59 @@
 # Changelog
 
+## 2.1.4
+
+**主题：把「技术方案评审团」查出的 11 条缺陷一次修完。四套脚本全绿，新增 21 条回归断言。**
+排查依据：Software Architect / Application Security Engineer / Reality Checker 三方评审 + 源码复核 + 实测复现。
+
+### 修复
+
+- **B1（阻断，静默数据丢失）关闭的卡片在下次答题完成时被抹掉**。`syncPersisted()` 只从
+  「活跃卡片」重建整个持久化集合再整键覆盖，而 `close()` 只把卡片移出活跃区、durable 快照
+  仍留在 `store.state.history` 里，于是关掉的那张被静默删除（`contract-test` 原先把破坏后的
+  结果当成了期望值）。现在写的是并集：活跃卡片 ∪ 尚未关闭的历史条目，按 id 去重（活跃方
+  优先）后按 newest-first 截到 cap。删除路径本来就先改 `store.history` 再写盘，并集不会把
+  它们删掉的条目复活。
+- **B2（高，虚假安全保证）`agentPreset` 在 0.2.1-alpha.2+ 的 activation 面没被转发**。
+  `startSubagent` 只在旧 `start(provider, request)` 面转发 `agentPreset`，新面的 `request`
+  漏了它 → 子代理拿默认全套工具，而 start 帧仍按配置上报 `toolFilter: 'preset'`，卡片于是
+  对用户谎报「工具集由 preset 决定」。现在两个面都转发。
+- **B3（中高，降级链断裂）Rung 1 `sessions.using()` 没有 try/catch**。它一抛（会话归档、
+  形状漂移，或它内部的 `no-session-face`），整条「改发到主对话」就断在第一档，后面
+  `retain` / `inputActions` / `draft` 三档全部不可达。现在与 Rung 2 对称降级，
+  `prompt-rejected` 仍照旧抛给调用方（那是用户可见的拒绝，不是通道缺失）。
+- **B4（中，原生栏串卡）第二张卡开进原生右栏时第一张没有迁回浮层**。它只是被盖住——卡片
+  仍标 `native-rightbar`、store 里被过滤掉，流式输出继续往看不见的卡片里写，且 rail 上那张
+  永远关不掉。现在 `open()` 先把栏里其它卡片迁回 `flow`；`close()` 增加归属校验（栏被另一
+  张卡占用时不替它关）与 `contentId` 行匹配（多行时关「属于这张卡」的那行）；`openTab`
+  抛错时回滚 `cardId`，避免 CardHost 去渲染一张根本没有 tab 的卡。
+- **B5（中低）`/cancel` 把跨会话的全局 run id 列表回给页面**。`runs` 是跨会话的全局表，
+  回 `active` 等于泄露别的会话正在追问的卡片 id（`cancel` 本身也不校验归属），而 Client
+  从不消费它。现在只回 `{ cancelled }`。
+- **B6（中低，迁移被永久挡住）空的 v3 信封会阻断 v1/v2 迁移**。`raw !== null` 就直接
+  return，损坏的 JSON 或旧版本留下的空信封同样挡住。现在写盘时带 `writtenAt` 标记，只有
+  「本版本自己写的空信封」才算权威（用户确实清空了历史，绝不从 v2/v1 复活），没有该标记的
+  空信封与损坏 JSON 继续向下探测。
+- **B7（低，卸载泄漏）`dispose()` 只清了 `streamListeners`，漏了 `chunkListeners`**。第二个
+  流来源的订阅者会留下仍被 `session/event` 桥持有的闭包（它捕获整个 engine 状态）。
+- **B9（低，死重量）持久化写死 `slice(-12)`，而 `followUp` 只发 6 轮**。改成
+  `HISTORY_TURNS`，与上下文预算同一个上限。
+- **B10（低，死代码）`let finished = false` 只赋值不读取**，删除。
+- **B11（低，可诊断性）信任围栏的 403 只说 `forbidden`**。现在说明「Host 不在信任范围 +
+  怎么放行（127.0.0.1 或 `trustedHosts`）」。有意**不**自动信任绑定地址：插件读不到宿主的
+  bind 配置，猜一个就等于自己拆掉 DNS-rebinding 防线。
+- **B8（条件性，平台限制）配置里的 SMTP 密码以明文落在 `~/.dsh/` 下的用户层 JSON**。
+  写盘已带 `mode: 0o600`（POSIX 生效，Windows 忽略），代码注释与 README 均已注明；
+  无进程内可做的进一步缓解，**保留为已文档化的限制**，建议优先用环境变量。
+
+### 验证
+
+`node test/verify.mjs` / `contract-test.mjs` / `float-placement.mjs` / `smoke-test.mjs`：
+**57 / 1446 / 100 / 277 全绿（1880 条，0 失败）**。相对修复前 1859 条新增 21 条回归断言，
+逐条对应上面的缺陷：关卡片后历史仍在（contract）、activation 面转发 preset 且无能力时
+不带该字段（smoke）、`using()` 抛错降级而 `prompt-rejected` 仍抛（contract）、空/损坏 v3
+信封不挡迁移且自有空信封不被复活（contract）、原生栏单地址与关 tab 归属（contract）、
+`/cancel` 不泄露 `active`（smoke）。
+
 ## 2.1.3
 
 **主题：折叠态胶囊不再压在聊天输入框上（2026-10-25 实拍报告）。**

@@ -2273,15 +2273,18 @@ const reloadCtx = makeClientCtx({})
 reloadClient.module.apply(reloadCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 const reloaded = reloadClient.module.api.snapshot().cards
-report.equal(reloaded.length, 1, 'a fresh page replays the persisted card once')
+report.equal(reloaded.length, 2, 'a fresh page replays every persisted card (including the one closed before the reload)')
 report.equal(reloaded[0]?.question, '刷新后还在吗？', 'the replayed card keeps its question')
 report.equal(reloaded[0]?.text, '**Pro** contract answer', 'the replayed card keeps its answer')
 report.equal(reloaded[0]?.surface, 'flow', 'replayed cards come back on the flow stack')
 report.equal(reloaded[0]?.status, 'done', 'replayed cards are terminal, not "streaming"')
+// #6 回归：关闭的卡片在下一次答题完成时不能被 syncPersisted 抹掉。
+report.equal(reloaded[1]?.question, '会留下来吗？', '#6: the card closed before the reload is still in durable history')
 const reloadOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
 const reloadTree = expandTree(reloadOverlay.component())
-report.equal(byClass(reloadTree, 'dsa-card').length, 1, 'the replayed card is visible on the flow stack')
+report.equal(byClass(reloadTree, 'dsa-card').length, 2, 'both replayed cards are visible on the flow stack')
 report.ok(textOf(reloadTree).includes('刷新后还在吗？'), 'the replayed card shows its question')
+report.ok(textOf(reloadTree).includes('会留下来吗？'), 'the previously closed card shows its question too')
 
 // #6 manager actions: restore a closed card from history, then delete it
 // from both the durable set and the live store. These actions must run on the
@@ -2289,11 +2292,10 @@ report.ok(textOf(reloadTree).includes('刷新后还在吗？'), 'the replayed ca
 const managerActions = reloadOverlay.component().props.actions
 const restorableId = reloadClient.module.api.snapshot().history[0]?.id
 report.ok(typeof restorableId === 'string' && restorableId !== '', 'history holds the reloaded card id')
-// Close it first so restore actually re-creates a live card.
-const liveReloaded = reloadClient.module.api.snapshot().cards[0]
-if (liveReloaded !== undefined) managerActions.close(liveReloaded)
-report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'the live card is closed')
-report.equal(reloadClient.module.api.snapshot().history.length, 1, 'closing does not drop durable history')
+// Close every live card first so restore actually re-creates a live card.
+for (const live of [...reloadClient.module.api.snapshot().cards]) managerActions.close(live)
+report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'the live cards are closed')
+report.equal(reloadClient.module.api.snapshot().history.length, 2, 'closing does not drop durable history')
 const restoreOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
 report.equal(managerActions.restoreHistoryCard(restorableId), true, 'restoreHistoryCard re-creates the card')
 report.equal(reloadClient.module.api.snapshot().cards.length, 1, 'the restored card is live again')
@@ -2301,9 +2303,12 @@ report.equal(reloadClient.module.api.snapshot().cards[0]?.surface, 'flow', 'the 
 const restoredTree = expandTree(restoreOverlay.component())
 report.ok(textOf(restoredTree).includes('刷新后还在吗？'), 'the restored card renders its question')
 managerActions.deleteHistoryCard(restorableId)
-report.equal(reloadClient.module.api.snapshot().history.length, 0, 'deleteHistoryCard empties durable history')
+report.equal(reloadClient.module.api.snapshot().history.length, 1, 'deleteHistoryCard drops exactly the deleted entry')
 report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'deleteHistoryCard also removes the live card')
-report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 0, 'the deletion is persisted immediately')
+report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 1, 'the deletion is persisted immediately')
+managerActions.deleteHistoryCard(reloadClient.module.api.snapshot().history[0].id)
+report.equal(reloadClient.module.api.snapshot().history.length, 0, 'deleting the last entry empties durable history')
+report.equal(JSON.parse(sharedStorage.getItem(PERSIST_KEY)).cards.length, 0, 'an empty durable set is written, not skipped')
 
 // 用户要求（2026-10-23）：主对话承载的问答不算卡片记录。侧边卡片的
 // durable history 只收 carrier === 'side'，所以「改发到主对话」的问答既不进
@@ -2761,6 +2766,55 @@ report.equal(v2Client.module.api.snapshot().cards[0]?.versions.length, 0, 'a v2 
 report.equal(JSON.parse(v2Storage.getItem(PERSIST_KEY))?.version, 3, 'the v2 import is written under v3')
 report.ok(v2Storage.getItem(PERSIST_V2_KEY) !== null, 'the v2 key is left in place (non-destructive migration)')
 
+// B6 回归（2026-10-26）：一个「空的 v3 信封」过去会永久挡住 v1/v2 迁移
+// （`raw !== null` 就直接 return）。只有本版本自己写下的空信封（带
+// writtenAt）才是权威；旧版本留下的空信封或损坏的 JSON 必须继续向下探测。
+const emptyV3Storage = createLocalStorageStub()
+emptyV3Storage.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards: [] }))
+emptyV3Storage.setItem(PERSIST_V2_KEY, JSON.stringify({
+  version: 2,
+  cards: [{ id: 'behind-empty', question: '被挡住过吗？', text: '被挡住过', status: 'done', createdAt: 1700000000000 }],
+}))
+const emptyV3Client = loadClientModule({ fetchImpl: hostFetch, storage: emptyV3Storage, language: 'zh-CN' })
+emptyV3Client.module.apply(makeClientCtx({}).ctx)
+await new Promise(resolve => setTimeout(resolve, 20))
+report.equal(
+  emptyV3Client.module.api.snapshot().cards[0]?.question,
+  '被挡住过吗？',
+  'an empty v3 envelope without writtenAt does not block the v2 migration',
+)
+// 反过来：本版本自己写的空信封（带 writtenAt）就是权威，绝不能把用户清空
+// 的历史从 v2 复活。
+const clearedStorage = createLocalStorageStub()
+clearedStorage.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards: [], writtenAt: Date.now() }))
+clearedStorage.setItem(PERSIST_V2_KEY, JSON.stringify({
+  version: 2,
+  cards: [{ id: 'cleared-card', question: '已经被删了', text: 'x', status: 'done', createdAt: 1700000000000 }],
+}))
+const clearedClient = loadClientModule({ fetchImpl: hostFetch, storage: clearedStorage, language: 'zh-CN' })
+clearedClient.module.apply(makeClientCtx({}).ctx)
+await new Promise(resolve => setTimeout(resolve, 20))
+report.equal(
+  clearedClient.module.api.snapshot().cards.length,
+  0,
+  'an owned empty envelope stays authoritative (a cleared history is not resurrected)',
+)
+// 损坏的 JSON 同样不能挡住迁移。
+const brokenV3Storage = createLocalStorageStub()
+brokenV3Storage.setItem(PERSIST_KEY, '{not json')
+brokenV3Storage.setItem(PERSIST_V2_KEY, JSON.stringify({
+  version: 2,
+  cards: [{ id: 'after-corrupt', question: '坏数据之后', text: 'y', status: 'done', createdAt: 1700000000000 }],
+}))
+const brokenV3Client = loadClientModule({ fetchImpl: hostFetch, storage: brokenV3Storage, language: 'zh-CN' })
+brokenV3Client.module.apply(makeClientCtx({}).ctx)
+await new Promise(resolve => setTimeout(resolve, 20))
+report.equal(
+  brokenV3Client.module.api.snapshot().cards[0]?.question,
+  '坏数据之后',
+  'a corrupt v3 payload falls through to the older key instead of hiding it',
+)
+
 // A v3 payload that already carries versions keeps them switchable.
 const v3Storage = createLocalStorageStub()
 v3Storage.setItem(PERSIST_KEY, JSON.stringify({
@@ -2959,6 +3013,62 @@ const usingCtx = {
 }
 report.equal((await ask(usingCtx)).via, 'sessions.using', 'rung 1 uses the documented using() helper')
 report.equal(usingCalls[1].mode, 'queue', 'the message is queued like a user submission')
+
+// B3 回归（2026-10-26）：Rung 1 过去没有 try/catch。`using()` 一抛异常
+// （会话归档、形状漂移，或它内部的 no-session-face），整条「改发到主对话」
+// 就断在第一档，后面 retain / inputActions / draft 三档全部不可达。
+const degradedRetainCalls = []
+const throwingUsingCtx = {
+  get: name => (name === 'sessions' ? {
+    using: async () => {
+      throw Object.assign(new Error('session archived'), { code: 'session-archived' })
+    },
+    retain: (id) => {
+      degradedRetainCalls.push({ retained: id })
+      return {
+        ready: Promise.resolve(),
+        binding: { session: { prompt: async () => ({ ok: true }) } },
+        release: () => {},
+      }
+    },
+  } : undefined),
+}
+const throwingUsingResult = await ask(throwingUsingCtx)
+report.equal(
+  throwingUsingResult.via,
+  'sessions.retain',
+  'a throwing using() degrades to the next rung instead of failing the whole submit',
+)
+report.equal(degradedRetainCalls.length, 1, 'the degraded rung is the one that actually carried the message')
+// A session face that offers no prompt() is the same kind of gap, not a rejection.
+const noFaceCtx = {
+  get: name => (name === 'sessions' ? {
+    using: async (_id, _options, operation) => operation({ binding: {} }),
+    retain: () => ({
+      ready: Promise.resolve(),
+      binding: { session: { prompt: async () => ({ ok: true }) } },
+      release: () => {},
+    }),
+  } : undefined),
+}
+report.equal((await ask(noFaceCtx)).via, 'sessions.retain', 'a using() face without prompt() degrades too')
+// `prompt-rejected` is a real, user-visible rejection: it must NOT be swallowed
+// into a silent fallback.
+const rejectingUsingCtx = {
+  get: name => (name === 'sessions' ? {
+    using: async () => ({ ok: false, error: { message: 'nope' } }),
+    retain: () => {
+      throw new Error('the fallback must not run after a rejection')
+    },
+  } : undefined),
+}
+let rejectedCode = null
+try {
+  await ask(rejectingUsingCtx)
+} catch (error) {
+  rejectedCode = error?.code
+}
+report.equal(rejectedCode, 'prompt-rejected', 'a prompt-rejected submit is rethrown, not degraded')
 
 const retainCalls = []
 const retainCtx = {
@@ -3293,6 +3403,56 @@ const betterHostTree = expandTree(mirroredDescriptors[0].component({ tab: { meta
 report.ok(
   textOf(betterHostTree).includes('该卡片已关闭'),
   'an embedded host whose card is gone says the card was closed',
+)
+
+// B4 回归（2026-10-26）：原生右栏只有一个地址。开第二张卡过去不会把第一张
+// 迁回浮层 —— 它只是被盖住了（卡片仍标 native-rightbar、store 里被过滤掉），
+// 于是 rail 上那张卡永远关不掉，close() 也可能替别人关 tab。
+await kindActions.submit(
+  {
+    text: '第一张卡的选中文本',
+    rect: { left: 5, top: 5, right: 200, bottom: 25, width: 195, height: 20 },
+    zone: 'task',
+    cross: false,
+    slotPath: ['sidebar.right.pane.tab'],
+    kind: 'text',
+  },
+  { question: '第一张卡', carrier: 'side' },
+)
+await new Promise(resolve => setTimeout(resolve, 120))
+const firstCard = kindClient.module.api.snapshot().cards.at(-1)
+report.equal(firstCard?.surface, 'native-rightbar', 'the first card takes the rail address')
+await kindActions.submit(
+  {
+    text: '第二张卡的选中文本',
+    rect: { left: 5, top: 5, right: 200, bottom: 25, width: 195, height: 20 },
+    zone: 'task',
+    cross: false,
+    slotPath: ['sidebar.right.pane.tab'],
+    kind: 'text',
+  },
+  { question: '第二张卡', carrier: 'side' },
+)
+await new Promise(resolve => setTimeout(resolve, 120))
+const afterSecondSubmit = kindClient.module.api.snapshot().cards
+const firstAfter = afterSecondSubmit.find(card => card.id === firstCard.id)
+const secondCard = afterSecondSubmit.find(card => card.question === '第二张卡')
+report.equal(firstAfter?.surface, 'flow', 'opening a second card migrates the first back to the overlay (one address)')
+report.equal(secondCard?.surface, 'native-rightbar', 'the newest card owns the rail address')
+report.ok(
+  afterSecondSubmit.filter(card => card.surface === 'native-rightbar').length === 1,
+  'at most one card is ever carried by the native rail',
+)
+const closedBefore = kindTabsClosed.length
+const secondRow = kindRailTabs.find(row => row.contentId === secondCard.id)
+report.ok(secondRow !== undefined, 'the second card has its own rail tab')
+kindActions.close(secondCard)
+report.equal(kindTabsClosed.length, closedBefore + 1, 'closing the rail card still closes a tab')
+const closedRow = kindTabsClosed.at(-1)
+report.equal(closedRow?.tabId, secondRow?.tabId, "the close targets THIS card's tab, not the other card's")
+report.ok(
+  kindRailTabs.every(row => row.contentId !== secondCard.id),
+  'the closed tab belonged to the card being closed',
 )
 
 console.log('\nrender proof timing')

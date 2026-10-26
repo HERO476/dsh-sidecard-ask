@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.3'
+    const CLIENT_VERSION = '2.1.4'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -2178,16 +2178,26 @@ window.__ModuleLoader__.load({
       }
 
       // Rung 1 — `using()`: the documented helper, present from 0.1.6-alpha.2.
+      // 与 Rung 2 必须对称地包 try/catch：`using()` 本身（或它内部的
+      // `no-session-face` 抛出）一失败就该降级到 retain → inputActions →
+      // draft，而不是让整个"改发到主对话"断在这里 —— 后两档存在的理由
+      // 正是这种情况。`prompt-rejected` 仍然照旧抛给调用方（那是用户可见的
+      // 拒绝，不是通道缺失）。
       if (sessionId !== null && typeof sessions?.using === 'function') {
-        const result = await sessions.using(sessionId, { source: 'gateway' }, async (reference) => {
-          const face = reference?.binding?.session
-          if (face === undefined || typeof face.prompt !== 'function') {
-            throw Object.assign(new Error('session face has no prompt()'), { code: 'no-session-face' })
-          }
-          return face.prompt(parts, 'queue')
-        })
-        accepted(result)
-        return { mode: 'session', via: 'sessions.using' }
+        try {
+          const result = await sessions.using(sessionId, { source: 'gateway' }, async (reference) => {
+            const face = reference?.binding?.session
+            if (face === undefined || typeof face.prompt !== 'function') {
+              throw Object.assign(new Error('session face has no prompt()'), { code: 'no-session-face' })
+            }
+            return face.prompt(parts, 'queue')
+          })
+          accepted(result)
+          return { mode: 'session', via: 'sessions.using' }
+        } catch (error) {
+          if (error?.code === 'prompt-rejected') throw error
+          console.warn(`[${PLUGIN_ID}] sessions.using 提交失败，尝试下一级：`, error)
+        }
       }
 
       // Rung 2 — `retain()` + explicit release: the same operation spelled out,
@@ -2307,8 +2317,22 @@ window.__ModuleLoader__.load({
         cardId: null,
         open(card) {
           if (!this.available() || typeof this.controller.openTab !== 'function') return false
+          // 同一个 kind 在原生栏里只有一个地址（见 cardId 的注释）：先把栏里
+          // 其它卡片迁回浮层，否则它们既不在栏里也不在浮层上，流式输出还会
+          // 继续往一张看不见的卡片里写。
+          for (const other of store.state.cards) {
+            if (other.id !== card.id && other.surface === 'native-rightbar') {
+              patchCard(other.id, { surface: 'flow' })
+            }
+          }
           this.cardId = card.id
-          this.controller.openTab(CARD_KIND, { params: { cardId: card.id }, revealIfOpened: true })
+          try {
+            this.controller.openTab(CARD_KIND, { params: { cardId: card.id }, revealIfOpened: true })
+          } catch (error) {
+            // 开栏失败就把地址回滚，免得 CardHost 去渲染一张根本没有 tab 的卡。
+            this.cardId = null
+            throw error
+          }
           return true
         },
         close(card) {
@@ -2319,6 +2343,10 @@ window.__ModuleLoader__.load({
           // and lets CardHost show its closed-card face.
           const controller = this.controller
           if (controller === null || controller === undefined) return false
+          // 归属校验：栏里那条同 kind 的 tab 若正被另一张卡片占用，就不能替它
+          // 关掉（否则关 A 会把 B 的 tab 一起关掉）。cardId === null 是"清理
+          // 残留 tab"的路径，此时按 kind 关是对的。
+          if (this.cardId !== null && this.cardId !== card.id) return false
           let rows = []
           try {
             rows = typeof controller.openTabs?.getSnapshot === 'function'
@@ -2328,6 +2356,12 @@ window.__ModuleLoader__.load({
           const row = Array.isArray(rows)
             ? rows.find(entry => entry?.kind === CARD_KIND
               && typeof entry?.tabId === 'string' && entry.tabId !== ''
+              // 单地址模型下这里只该有一行；万一宿主保留了多行，必须关"属于这张
+              // 卡片"的那一行（openTab 把 cardId 写进 params → contentId），
+              // 否则会替另一张卡片关掉它的 tab。
+              && (typeof entry?.contentId !== 'string'
+                || entry.contentId === ''
+                || entry.contentId === card.id)
               && (typeof entry?.sessionId !== 'string'
                 || store.state.sessionId === null
                 || entry.sessionId === store.state.sessionId))
@@ -5841,13 +5875,32 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           } catch { return [] }
         }
 
+        /** 是否是「本版本自己写下的空信封」（带 writtenAt 标记）。 */
+        function isOwnedEmptyEnvelope(raw) {
+          try {
+            const value = JSON.parse(raw)
+            return value !== null
+              && typeof value === 'object'
+              && value.version === 3
+              && Array.isArray(value.cards)
+              && Number.isFinite(value.writtenAt)
+          } catch {
+            return false
+          }
+        }
+
         function readPersisted() {
           let raw = null
           try {
             raw = window.localStorage?.getItem(PERSIST_KEY)
           } catch { return [] }
           const v3 = parseEnvelope(raw, 3).slice(0, 50)
-          if (v3.length > 0 || (raw !== null && raw !== undefined)) return v3
+          if (v3.length > 0) return v3
+          // 空的 v3 信封只有在「本版本自己写的」时候才算权威：它带 writtenAt，
+          // 说明用户确实把历史清空了，此时绝不能回落到 v2/v1 把旧记录复活。
+          // 而没有 writtenAt 的空信封（旧版本写的 / 迁移中途留下的）或损坏的
+          // JSON 必须继续向下探测 —— 否则 v1、v2 的数据会被永久挡住。
+          if (raw !== null && raw !== undefined && isOwnedEmptyEnvelope(raw)) return v3
           // v2 → v3: v2 entries have no `versions`, so the field is seeded empty.
           let v2raw = null
           try {
@@ -5881,7 +5934,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           let lastError = null
           for (;;) {
             try {
-              window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards: remaining }))
+              window.localStorage?.setItem(PERSIST_KEY, JSON.stringify({ version: 3, cards: remaining, writtenAt: Date.now() }))
               return remaining
             } catch (error) {
               lastError = error
@@ -5907,7 +5960,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             .filter(card => card.carrier === 'side'
               && (card.status === 'done' || card.status === 'stopped')
               && card.text !== '')
-            .slice(0, cap)
             .map(card => ({
               id: card.id,
               question: card.question,
@@ -5923,7 +5975,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               createdAt: Number.isFinite(card.createdAt) ? card.createdAt : Date.now(),
               provider: typeof card.provider === 'string' ? card.provider : '',
               elapsedMs: Number.isFinite(card.elapsedMs) ? card.elapsedMs : null,
-              history: Array.isArray(card.history) ? card.history.slice(-12) : [],
+              // 持久化的历史轮次与上下文预算同一个上限（HISTORY_TURNS）：
+              // 这里曾经写死 `slice(-12)`，而 followUp 只发 6 轮，多出来的
+              // 6 轮永远不会被读，是纯死重量。
+              history: Array.isArray(card.history) ? card.history.slice(-HISTORY_TURNS) : [],
               // P2-2: kept so a replayed rewrite card still offers "insert".
               actionId: typeof card.actionId === 'string' ? card.actionId.slice(0, 60) : null,
               // P2-5b: bounded, text-capped older answers. `question` is short
@@ -5947,7 +6002,24 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             store.set({ history: [] })
             return
           }
-          const persisted = writePersisted(finished)
+          // #6（2026-10-26 修复）：关闭一张卡片只把它从「活跃区」移除，
+          // durable 快照仍然留在 store.history 里。这里过去只从活跃卡片
+          // 重建整个集合再整键覆盖，于是「关掉的那张」会在下一次答题完成
+          // 时被静默抹掉（contract-test 把破坏后的结果当成了期望）。
+          // 现在写的是并集：活跃卡片 ∪ 尚未关闭的历史条目（按 id 去重，
+          // 活跃方优先），再按 newest-first 截到 cap。
+          // 删除路径（deleteCard / deleteHistoryCard / 改投主对话 /
+          // clearHistory）都是先改 store.history 再写盘，所以并集不会把它们
+          // 删掉的条目复活。
+          const liveIds = new Set(finished.map(entry => entry.id))
+          const kept = store.state.history.filter(entry => entry !== null
+            && typeof entry === 'object'
+            && typeof entry.id === 'string'
+            && !liveIds.has(entry.id))
+          const merged = [...finished, ...kept]
+            .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0))
+            .slice(0, cap)
+          const persisted = writePersisted(merged)
           store.set({ history: persisted })
         }
 
