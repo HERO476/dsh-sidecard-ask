@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.2'
+    const CLIENT_VERSION = '2.1.3'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -364,6 +364,17 @@ window.__ModuleLoader__.load({
     const FLOAT_GAP_SIDEBAR = 10
     const FLOAT_MIN_WIDTH = 240
     const FLOAT_MAX_WIDTH_LIMIT = 560
+    /**
+     * Vertical clearance (2.1.3). The layer used to be pinned `bottom:16px`,
+     * i.e. straight on top of the composer — which is what the 2026-10-25
+     * report ("挡住聊天框了") caught: the capsule covered the input box. The
+     * layer now measures the composer and sits just above it.
+     */
+    const FLOAT_GAP_BOTTOM = 16
+    const FLOAT_GAP_COMPOSER = 8
+    const FLOAT_BOTTOM_LIMIT = 240
+    /** The capsule is a status pill, not a card: it sizes to its content. */
+    const CAPSULE_MAX_WIDTH = 240
 
     /**
      * The floating layer's width for one frame.
@@ -392,6 +403,40 @@ window.__ModuleLoader__.load({
       // Left edge of a right-anchored layer of this width.
       const left = frame - FLOAT_GAP_RIGHT - width
       return { width, avail, capped: width < cap, bleeds: lane - left > 1 }
+    }
+
+    /**
+     * How far above the frame's bottom edge the floating layer sits (2.1.3).
+     *
+     * Pure, like {@link floatPlacement}, and mirrored by the tests.
+     * `composerTop` is the composer card's top edge, in frame coordinates. The
+     * composer is part of the conversation column, so the old fixed
+     * `bottom:16px` parked the layer straight on top of the input box; the
+     * layer is lifted until its own bottom edge clears the composer by
+     * `FLOAT_GAP_COMPOSER`.
+     *
+     * Two guards keep that lift honest: a composer whose top sits in the frame's
+     * upper half is not a bottom bar (the empty-session composer is vertically
+     * centred) and is ignored, and the result is clamped to `limit` so an
+     * unusually tall composer cannot push the layer over the conversation.
+     *
+     * @param {object} input - `frameHeight`, `composerTop`, `fallback`, `limit`.
+     * @returns {number} Bottom offset in px, never below `fallback`.
+     */
+    function floatBottom({
+      frameHeight,
+      composerTop = null,
+      fallback = FLOAT_GAP_BOTTOM,
+      limit = FLOAT_BOTTOM_LIMIT,
+    }) {
+      const base = Number.isFinite(fallback) ? Math.max(0, Math.round(fallback)) : FLOAT_GAP_BOTTOM
+      const frame = Number.isFinite(frameHeight) ? frameHeight : 0
+      if (frame <= 0 || !Number.isFinite(composerTop)) return base
+      // A centred composer is not a bottom bar; leave the layer where it was.
+      if (composerTop < frame / 2) return base
+      const clear = Math.round(frame - composerTop + FLOAT_GAP_COMPOSER)
+      const cap = Number.isFinite(limit) ? Math.max(base, limit) : FLOAT_BOTTOM_LIMIT
+      return Math.max(base, Math.min(clear, cap))
     }
 
     const DOCK_MIN_WIDTH = 280
@@ -2654,9 +2699,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
    \`floatPlacement\` through --dsa-float-w, so it grows left only as far as the
    conversation column allows. pointer-events stays off on the container so the
    empty area around the pill never eats a click meant for the conversation. */
-.dsa-float{pointer-events:none;position:fixed;right:var(--dsa-gap-right, 8px);bottom:16px;
+.dsa-float{pointer-events:none;position:fixed;right:var(--dsa-gap-right, 8px);bottom:var(--dsa-gap-bottom, 16px);
   display:flex;flex-direction:column;gap:8px;width:var(--dsa-float-w, 340px);max-width:92vw}
 .dsa-float > *{pointer-events:auto}
+/* Capsule mode (2.1.3): the layer is a status pill, not a card. It sizes to its
+   own content and stays right-aligned, so shrinking it is what pulls its left
+   edge back over the conversation — the layer is already flush with the frame's
+   right edge, so it has nowhere further right to go. */
+.dsa-float[data-dsa-float-mode="capsule"]{width:auto;align-items:flex-end;
+  max-width:min(var(--dsa-float-w, 340px), var(--dsa-capsule-max, 240px), 92vw)}
 /* Docked presentation (1.8.3): the same container, but pinned to the right
    rail's measured rectangle (inline left/top/width/height) instead of the
    frame's bottom-right corner. Right/bottom must be released, otherwise the
@@ -2671,8 +2722,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
   box-shadow:none;background:transparent;padding:10px 12px 8px}
 .dsa-float[data-dsa-float-mode="dock"] .dsa-answer{max-height:none;flex:1 1 auto;min-height:0;overflow:auto}
 .dsa-stack{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow:auto}
-.dsa-capsule{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;text-align:left;
-  padding:8px 12px;border-radius:999px;cursor:pointer;font:inherit;font-size:12px;line-height:18px;
+.dsa-capsule{display:flex;align-items:center;gap:6px;width:auto;max-width:100%;box-sizing:border-box;text-align:left;
+  padding:6px 10px;border-radius:999px;cursor:pointer;font:inherit;font-size:12px;line-height:16px;
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
   background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
   box-shadow:0 2px 10px rgba(0,0,0,.14)}
@@ -2685,7 +2736,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 .dsa-capsule-dot[data-status="error"]{background:var(--dsw-alias-state-error-primary, #c0392b)}
 .dsa-capsule-dot[data-status="stopped"]{background:var(--dsw-alias-state-warn-primary, #b8860b)}
 .dsa-capsule-label{font-weight:600;white-space:nowrap}
-.dsa-capsule-q{min-width:0;flex:1;color:var(--dsw-alias-label-secondary, #666);
+.dsa-capsule-q{min-width:0;flex:0 1 auto;color:var(--dsw-alias-label-secondary, #666);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsa-capsule-chev{flex:none;color:var(--dsw-alias-label-secondary, #888)}
 /* Delete confirmation (2.0.0). Fixed, not inline: a card docked into the right
@@ -4707,7 +4758,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         // Slot subtrees only: `.rightbar` and `[data-dsh-panel-host]` were
         // dropped in 2.1.2 — no supported build renders either marker, so they
         // were two dead branches in a selector that runs on every resize.
-        const selector = '[data-slot^="conversation"], [data-slot^="sidebar.right"]'
+        // 2.1.3: the composer card joins the list so a multi-line draft (which
+        // grows the box upward) re-measures the layer's vertical clearance
+        // instead of letting the pill sink back onto the input.
+        const selector = '[data-slot^="conversation"], [data-slot^="sidebar.right"], [data-composer-card]'
         const observed = new Set()
         const all = () => {
           try {
@@ -4743,11 +4797,25 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const railBox = rail === null ? null : rail.box
           const laneRight = laneRect === null ? rootWidth : laneRect.right
           const railLeft = railBox === null ? null : railBox.left
+          // 2.1.3: the composer occupies the bottom of the conversation column,
+          // so the layer's old fixed `bottom:16px` landed straight on top of the
+          // input box. Measure the composer card (the box the user types in) and
+          // lift the layer clear of it; `floatBottom` owns the guards.
+          const composerEl = one('[data-slot^="conversation"] [data-composer-card]')
+            ?? one('[data-composer-card]')
+          const composerRect = measure(composerEl)
+          const gapBottom = floatBottom({
+            frameHeight: rootHeight,
+            composerTop: composerRect === null ? null : composerRect.top,
+          })
+          node.style.setProperty('--dsa-gap-bottom', `${gapBottom}px`)
           const placement = floatPlacement({ frameWidth: rootWidth, laneRight, railLeft, maxWidth })
           node.style.setProperty('--dsa-float-w', `${placement.width}px`)
           node.style.setProperty('--dsa-gap-right', `${FLOAT_GAP_RIGHT}px`)
+          node.style.setProperty('--dsa-capsule-max', `${CAPSULE_MAX_WIDTH}px`)
           // Readable placement, so a user report can say WHERE the layer sat.
           node.dataset.layerWidth = String(placement.width)
+          node.dataset.layerBottom = String(gapBottom)
 
           // Docked presentation: the card fills the rail page's body instead of
           // floating over it. Only measured in `full` mode — a capsule/launcher
@@ -7429,6 +7497,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           renderRichText,
           pickSurface,
           floatPlacement,
+          floatBottom,
           railDock,
           compareVersions,
           electFamilyLeader,

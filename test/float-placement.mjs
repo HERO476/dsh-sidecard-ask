@@ -199,6 +199,40 @@ report.ok(pure.CLIENT_DEFAULTS.floatMaxWidth >= 240 && pure.CLIENT_DEFAULTS.floa
 // the layer must actually ship these hooks (a passing pure test is not enough)
 // ────────────────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────────────────
+// vertical clearance (2.1.3): the capsule must not sit on the composer
+//
+// Live report 2026-10-25 (screenshot): the capsule covered the chat input box.
+// The layer is already flush with the frame's right edge, so the only way it can
+// retreat is to shrink AND to move up off the composer. `floatBottom` owns the
+// second half; `floatPlacement` still owns the first.
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\ncomposer clearance')
+const bottom = pure.floatBottom
+report.ok(typeof bottom === 'function', 'floatBottom is exported for the tests')
+// A 900px frame whose composer card starts 140px above the bottom edge.
+report.equal(bottom({ frameHeight: 900, composerTop: 760 }), 148,
+  'the layer clears the composer by the 8px gap')
+report.equal(bottom({ frameHeight: 900, composerTop: null }), 16,
+  'with no composer in the DOM the layer keeps the old 16px anchor')
+report.equal(bottom({}), 16, 'an empty frame measurement falls back instead of throwing')
+report.equal(bottom({ frameHeight: 0, composerTop: 100 }), 16,
+  'a zero-height frame is treated as unmeasured')
+// The empty-session composer is vertically centred; lifting to it would park the
+// pill in the middle of the screen, which is why the upper half is rejected.
+report.equal(bottom({ frameHeight: 900, composerTop: 300 }), 16,
+  'a centred (hero) composer is not treated as a bottom bar')
+// 600 - 320 + 8 = 288, clamped to the 240px ceiling.
+report.equal(bottom({ frameHeight: 600, composerTop: 320 }), 240,
+  'a very tall composer cannot push the layer over the conversation')
+report.equal(bottom({ frameHeight: 900, composerTop: 895 }), 16,
+  'a composer flush with the bottom edge never lifts the layer above the fallback')
+report.equal(bottom({ frameHeight: 900, composerTop: 760, fallback: 300 }), 300,
+  'the fallback raises the floor: the layer never sits below it')
+report.equal(bottom({ frameHeight: 600, composerTop: 320, limit: 100 }), 100,
+  'the ceiling is a parameter too')
+
 console.log('\nsource hooks')
 const { readFileSync } = await import('node:fs')
 const { CLIENT_ENTRY } = await import('./harness.mjs')
@@ -229,6 +263,18 @@ report.ok(!/\.dsa-stack\{[^}]*position:\s*fixed/.test(source) && !/\.dsa-stack\{
   'the old fixed-position 400px stack is gone')
 report.ok(/\.dsa-float\{[^}]*right:var\(--dsa-gap-right/.test(source), 'the layer is anchored to the right edge')
 report.ok(/floatMode:\s*'capsule'/.test(source), 'the client mirror advertises the capsule default')
+// 2.1.3 (2026-10-25 live report): the capsule covered the chat input box. Pin
+// both halves of the fix — a variable vertical anchor that is measured from the
+// composer, and a pill that sizes to its own content.
+report.ok(/--dsa-gap-bottom/.test(source), 'the vertical anchor is a CSS variable, not a hardcoded 16px')
+report.ok(/bottom:var\(--dsa-gap-bottom/.test(source),
+  'the layer anchors above the composer instead of on top of it')
+report.ok(/\[data-composer-card\]/.test(source),
+  'the composer is located through its published DOM marker')
+report.ok(/floatBottom\(/.test(source), 'the layer calls the pure floatBottom helper')
+report.ok(/\.dsa-float\[data-dsa-float-mode="capsule"\]\{[^}]*width:auto/.test(source),
+  'capsule mode sizes to its content instead of the full layer width')
+report.ok(/\.dsa-capsule\{[^}]*width:auto/.test(source), 'the pill itself is content-sized')
 
 // The dock is a DOM-measured presentation: no published API exposes the rail's
 // rectangle, so the shipped code has to look the rail up by selector and hand the

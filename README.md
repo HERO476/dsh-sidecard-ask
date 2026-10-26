@@ -196,7 +196,7 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 
 非法值会被拒绝（设置页报错、接口返回 `invalid-config`），并把被忽略的项列在 `/state` 的 `problems` 里——不会静默吞掉。
 
-### 4.1 内置浮层的位置规则（`floatPlacement`）
+### 4.1 内置浮层的位置规则（`floatPlacement` / `floatBottom`）
 
 用户实测报告过一个问题：浮层是 `position:fixed; right:16px; width:min(400px,92vw)` 的实心卡片。
 实测那一次（1400px 宽的窗口）对话区右边界在 x≈971，而浮层左边界在 x≈858，**压住正文约 113px**，
@@ -218,7 +218,23 @@ bleeds = 对话区右边界 - left > 1          // 只有带宽 < 240px 时才�
 - 浮层**只使用对话区右侧的预留带**（右栏也在这条带里），窗口越窄它越窄，而不是越靠左。
 - `capped: true` 表示「上限没用满，是被可用带宽压住的」——这是正常的自适应，不是错误。
 - 挂载时、窗口 resize 时、右栏开合时（`ResizeObserver`）都会重算；流式刷新只重渲染，不动几何。
-- 浮层根节点带 `data-layer-width`（实际宽度）与 `data-dsa-float-mode`：报告问题时可直接读这两个值。
+- 浮层根节点带 `data-layer-width`（实际宽度）、`data-layer-bottom`（距窗口底的距离）与
+  `data-dsa-float-mode`：报告问题时可直接读这三个值。
+
+**垂直位置（2.1.3）**：宽度不是唯一的问题——浮层原本固定在 `bottom:16px`，而输入框就在会话列底部，
+折叠态胶囊必然压在输入框上（2026-10-25 实拍报告「挡住聊天框了」）。垂直位置由纯函数 `floatBottom` 决定：
+
+```js
+// floatBottom({ frameHeight, composerTop = null, fallback = 16, limit = 240 })
+if (composerTop 未知 || 帧高为 0) return 16      // 测不到就保持旧锚点
+if (composerTop < 帧高 / 2)      return 16       // 居中输入框（空会话）不是底栏，不抬
+bottom = clamp(帧高 - composerTop + 8, 16, 240)  // 抬到输入框上方 8px，上限 240px
+```
+
+`composerTop` 取自 DSH 的 `[data-composer-card]`（输入框那张卡片的顶边），该节点也进了
+`ResizeObserver`——输入多行时卡片会往上长，浮层跟着重算，不会重新沉回输入框上。
+取舍要讲清楚：抬起来之后它**改压最后一两行消息**，所以胶囊同时改成按内容收缩（≤240px、右对齐），
+尽量把覆盖面积压到最小。
 
 ### 4.2 右侧栏打开时「占满它」（`dockRail`，1.8.3）
 
@@ -782,10 +798,12 @@ node tools/compat-probe.mjs --json tools/.cache/matrix.json
    展开后标题栏右侧有**收起为胶囊（⇥）**与**删除这条追问对话（×）**——× 会把该卡片从浮层与追问历史里
    一并移除，**无法撤销**（有内容时会先弹插件内确认层；点浮层底部的「关闭」则只把它摘离浮层、历史仍保留在
    设置页的历史管理器里）。2.0.0 起不再有「隐藏整个浮层 / 只留一个计数圆点」这套形态。
-   用 F12 选中浮层根节点（`[data-dsa-root]`）读两个值自检：
+   用 F12 选中浮层根节点（`[data-dsa-root]`）读三个值自检：
    - `data-dsa-float-mode` 应为 `capsule` / `full`（铺满右栏时为 `dock`）；
-   - `data-layer-width` 应等于 `min(floatMaxWidth, 对话区右边界到帧右边缘的可用带宽)`。
-   **关键判据：胶囊/卡片的左边缘不得越过对话区（`[data-slot^="conversation"]`）的右边界**。
+   - `data-layer-width` 应等于 `min(floatMaxWidth, 对话区右边界到帧右边缘的可用带宽)`；
+   - `data-layer-bottom` 应等于 `帧高 - 输入框（`[data-composer-card]`）顶边 + 8`（空会话/测不到时为 16）。
+   **关键判据：胶囊/卡片的左边缘不得越过对话区（`[data-slot^="conversation"]`）的右边界，
+   下边缘不得落在输入框上**。
    把窗口从 1920px 拖到 900px、再开关一次右侧栏，浮层应随之变窄而不是往左压住正文；
    只有窗口窄到可用带宽不足 240px 时才允许压入（此时是设计内的降级，不是 bug）。
 9. **占满右侧栏（1.8.3，`dockRail`）**：先把右侧栏打开（任意面板，例如「团队任务板」），再追问一次 →
