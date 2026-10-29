@@ -2177,6 +2177,11 @@ console.log('\nhost cancel routing')
   cancelClient.module.apply(cancelCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
   const cancelOverlay = cancelCtx.find('shell.overlay', pure.IDS.overlay)
+  // 卡片的归属会话来自发起时的会话；停止必须带上它，而不是用户此刻切到的会话。
+  const cancelProbe = cancelCtx.find('conversation.input.right', pure.IDS.sessionProbe)
+  expandTree(cancelClient.shim.React.createElement(cancelProbe.component, { sessionId: 'session-alpha' }))
+  cancelClient.shim.flushEffects()
+  report.equal(cancelClient.module.api.snapshot().sessionId, 'session-alpha', 'the probe captured the asking session')
   cancelOverlay.component().props.actions.submit(
     {
       text: '取消路由节的选中文本',
@@ -2191,6 +2196,11 @@ console.log('\nhost cancel routing')
   await new Promise(resolve => setTimeout(resolve, 25))
   const streamingCard = cancelClient.module.api.snapshot().cards[0]
   report.equal(streamingCard?.status, 'streaming', 'the card is streaming when it is stopped')
+  report.equal(streamingCard?.sessionId, 'session-alpha', 'the card records the session that asked')
+  // 用户切走会话：当前会话变成 session-beta，卡片仍属于 session-alpha。
+  expandTree(cancelClient.shim.React.createElement(cancelProbe.component, { sessionId: 'session-beta' }))
+  cancelClient.shim.flushEffects()
+  report.equal(cancelClient.module.api.snapshot().sessionId, 'session-beta', 'the active session moved on')
   cancelOverlay.component().props.actions.cancel(streamingCard)
   const stoppedCard = cancelClient.module.api.snapshot().cards[0]
   report.equal(stoppedCard?.status, 'stopped', 'the card stops locally at once')
@@ -2198,6 +2208,11 @@ console.log('\nhost cancel routing')
   const cancelCall = calls.find(call => call.path === 'cancel')
   report.ok(cancelCall !== undefined, 'stopping a streaming card POSTs /cancel')
   report.equal(cancelCall?.body?.id, streamingCard?.id, 'the cancel POST names the card id')
+  report.equal(
+    cancelCall?.body?.sessionId,
+    'session-alpha',
+    "the cancel names the CARD's session after the user switched away",
+  )
   await new Promise(resolve => setTimeout(resolve, 150))
   const stateAfter = (await callRoute(cancelHost, '/state', { method: 'GET' })).json()
   report.equal(stateAfter.value.capabilities.activeRuns, 0, 'the host-side run registry drains after the cancel')
@@ -2224,6 +2239,9 @@ persistClient.module.apply(persistCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 const persistOverlay = persistCtx.find('shell.overlay', pure.IDS.overlay)
 const persistActions = persistOverlay.component().props.actions
+const persistProbe = persistCtx.find('conversation.input.right', pure.IDS.sessionProbe)
+expandTree(persistClient.shim.React.createElement(persistProbe.component, { sessionId: 'session-alpha' }))
+persistClient.shim.flushEffects()
 persistActions.submit(
   {
     text: '持久化节的选中文本',
@@ -2245,6 +2263,7 @@ report.equal(stored.cards[0]?.status, 'done', 'only terminal cards are persisted
 report.ok(typeof stored.cards[0]?.createdAt === 'number' && stored.cards[0].createdAt > 0, 'v3 entries carry a createdAt timestamp')
 report.equal(Array.isArray(stored.cards[0]?.versions), true, 'v3 entries carry a versions array')
 report.equal(stored.cards[0]?.versions.length, 0, 'a never-retried card carries no versions')
+report.equal(stored.cards[0]?.sessionId, 'session-alpha', 'v3 entries persist the asking session for later follow-ups')
 report.equal(
   persistClient.module.api.snapshot().history.length,
   1,
@@ -2278,6 +2297,7 @@ report.equal(reloaded[0]?.question, '刷新后还在吗？', 'the replayed card 
 report.equal(reloaded[0]?.text, '**Pro** contract answer', 'the replayed card keeps its answer')
 report.equal(reloaded[0]?.surface, 'flow', 'replayed cards come back on the flow stack')
 report.equal(reloaded[0]?.status, 'done', 'replayed cards are terminal, not "streaming"')
+report.equal(reloaded[0]?.sessionId, 'session-alpha', 'a replayed card keeps the session that asked')
 // #6 回归：关闭的卡片在下一次答题完成时不能被 syncPersisted 抹掉。
 report.equal(reloaded[1]?.question, '会留下来吗？', '#6: the card closed before the reload is still in durable history')
 const reloadOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
@@ -3280,6 +3300,8 @@ const kindTabsClosed = []
 // `openTabs.getSnapshot()` publishes `{ sessionId, tabId, kind, contentId }`.
 // The double keeps that inventory so the close path is exercised for real.
 const kindRailTabs = []
+// 独立的单调计数器：关闭会 splice，用 length+1 会在删除后重复发号。
+let kindRailSeq = 0
 const kindCtx = makeClientCtx({
   services: {
     sidebarRightTabs: nativeRegistry,
@@ -3288,9 +3310,12 @@ const kindCtx = makeClientCtx({
         kindTabsOpened.push({ kind, request })
         kindRailTabs.push({
           sessionId: 'session-alpha',
-          tabId: `kind-tab-${kindRailTabs.length + 1}`,
+          tabId: `kind-tab-${++kindRailSeq}`,
           kind,
-          contentId: request?.params?.cardId ?? '',
+          // 宿主的真实契约：page tab 的 contentId 是 `sidebar://<kind>`，
+          // 不是 `params.cardId`（dsh-client-ui-sidebar-right `placeTab()`）。
+          // 曾按 cardId 模拟，掩盖了「关闭恒失效」的回归。
+          contentId: `sidebar://${kind}`,
         })
       },
       closeIn: (sessionId, tabId) => {
@@ -3444,14 +3469,16 @@ report.ok(
   'at most one card is ever carried by the native rail',
 )
 const closedBefore = kindTabsClosed.length
-const secondRow = kindRailTabs.find(row => row.contentId === secondCard.id)
+// 真实宿主的 page tab contentId 是 `sidebar://<kind>`，卡片身份只在
+// navigation.params 里；关闭必须按 kind + 会话定位，不能再拿 cardId 比 contentId。
+const secondRow = kindRailTabs.find(row => row.kind === kindClient.module.api.pure.CARD_KIND)
 report.ok(secondRow !== undefined, 'the second card has its own rail tab')
 kindActions.close(secondCard)
 report.equal(kindTabsClosed.length, closedBefore + 1, 'closing the rail card still closes a tab')
 const closedRow = kindTabsClosed.at(-1)
 report.equal(closedRow?.tabId, secondRow?.tabId, "the close targets THIS card's tab, not the other card's")
 report.ok(
-  kindRailTabs.every(row => row.contentId !== secondCard.id),
+  kindRailTabs.every(row => row.tabId !== secondRow?.tabId),
   'the closed tab belonged to the card being closed',
 )
 
@@ -3459,21 +3486,6 @@ report.ok(
 // open——而浮层只挂载 `surface === 'flow' && open` 的卡，于是那张卡既不在栏里、
 // 也不在屏幕上，流式输出继续往看不见的卡里写。
 report.equal(firstAfter?.open, true, 'the migrated card is unfolded on the overlay, not silently hidden')
-
-// R2 回归（2026-10-29）：关卡片时认领 tab 的判据曾经是"contentId 为空就算我的"，
-// 于是关 A 会顺手关掉 B 的 tab。现在必须 contentId === 本卡 id，或宿主没报
-// contentId 且适配器仍持有本卡地址。
-kindRailTabs.push({
-  sessionId: 'session-alpha',
-  tabId: 'foreign-tab',
-  kind: kindClient.module.api.pure.CARD_KIND,
-  contentId: 'somebody-elses-card',
-})
-const closedBeforeForeign = kindTabsClosed.length
-kindActions.close({ id: 'ghost-card', surface: 'native-rightbar' })
-report.equal(kindTabsClosed.length, closedBeforeForeign, "a tab owned by another card is never closed for this one")
-report.ok(kindRailTabs.some(row => row.tabId === 'foreign-tab'), 'the foreign tab survives the attempted close')
-kindRailTabs.pop()
 
 // R3 回归（2026-10-29）：删历史条目只清了 store，没管原生栏的 tab——那张 tab 是
 // 宿主自己的状态，没有任何东西会再关它，于是页面里留下一张渲染已不存在卡片的
@@ -3492,10 +3504,20 @@ await kindActions.submit(
 await new Promise(resolve => setTimeout(resolve, 120))
 const thirdCard = kindClient.module.api.snapshot().cards.find(card => card.question === '第三张卡')
 report.equal(thirdCard?.surface, 'native-rightbar', 'the third card takes the rail address')
+// R2 回归（2026-10-29）：只有适配器当前持有的那张卡能关 tab。第三人称的
+// contentId 在真实宿主里恒为 `sidebar://<kind>`，不能当归属信号；归属只能看
+// `surfaces.native.cardId`。关一张不存在的卡不得动当前真正的 tab。
+const thirdRow = kindRailTabs.find(row => row.kind === kindClient.module.api.pure.CARD_KIND)
+const closedBeforeForeign = kindTabsClosed.length
+kindActions.close({ id: 'ghost-card', surface: 'native-rightbar' })
+report.equal(kindTabsClosed.length, closedBeforeForeign, "a tab owned by another card is never closed for this one")
+report.ok(kindRailTabs.some(row => row.tabId === thirdRow?.tabId), 'the real owner tab survives the attempted close')
 const closedBeforeDelete = kindTabsClosed.length
 kindActions.deleteHistoryCard(thirdCard.id)
 report.equal(kindTabsClosed.length, closedBeforeDelete + 1, 'deleting a history entry releases its rail tab')
-report.ok(kindRailTabs.every(row => row.contentId !== thirdCard.id), 'no rail tab survives the card it was showing')
+report.equal(kindTabsClosed.at(-1)?.tabId, thirdRow?.tabId, 'the delete closes the tab the card was showing')
+report.ok(kindRailTabs.every(row => row.tabId !== thirdRow?.tabId), 'no rail tab survives the card it was showing')
+
 
 // R4 回归（2026-10-29）：设置页把只读开关标成"推荐"，读者会以为它有效——而
 // 0.2.1-rc.3 的宿主没有工具白名单，这个开关根本不生效。
@@ -3509,6 +3531,124 @@ report.ok(
   'the tool-access hint names the host version where the switch is inert',
 )
 
+console.log('\nbetter-sidebar surface lifecycle')
+// 0.28.2 把每个描述符镜像到 DSH 原生右栏：tab id 由宿主 mint，页面 tab 只有
+// 一个地址。插件过去仍按 0.22 的 bottom-workbench 语义传 seed id、也不处理
+// 第二张卡——打开第二张会让第一张消失，关闭则永远关不掉真实 tab。
+{
+  const betterOwnTabs = []
+  const betterOpened = []
+  const betterClosed = []
+  const betterRail = []
+  const betterRailClosed = []
+  const betterCtx2 = makeClientCtx({
+    services: {
+      sidebarRightTabs: { register: () => () => {} },
+      sidebarRight: {
+        openTab: () => {},
+        closeIn: (sessionId, tabId) => {
+          const at = betterRail.findIndex(row => row.tabId === tabId)
+          betterRailClosed.push({ sessionId, tabId, kind: at >= 0 ? betterRail[at].kind : null })
+          if (at >= 0) betterRail.splice(at, 1)
+        },
+        close: tabId => { betterRailClosed.push({ tabId, sessionId: null, kind: null }) },
+        openTabs: { getSnapshot: () => betterRail.slice() },
+        mounted: { getSnapshot: () => 'session-alpha', subscribe: () => () => {} },
+      },
+      betterSidebar: {
+        version: '0.28.2',
+        features: fullFeatures,
+        registerTab: descriptor => { betterOwnTabs.push(descriptor); return () => {} },
+        openTab: seed => { betterOpened.push(seed) },
+        closeTab: (tabId, scope) => { betterClosed.push({ tabId, scope }) },
+        getSnapshot: () => ({ sessionId: 'session-alpha' }),
+      },
+    },
+  })
+  const betterClient2 = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+  betterClient2.module.apply(betterCtx2.ctx)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const betterOverlay2 = betterCtx2.find('shell.overlay', pure.IDS.overlay)
+  const betterActions2 = betterOverlay2.component().props.actions
+  // 前面的用例把宿主配置写成了 native-rightbar；本节的默认场景要回到 auto。
+  await betterActions2.saveConfig({ ...betterClient2.module.api.snapshot().config, sideSurface: 'auto' })
+  betterActions2.submit(
+    {
+      text: 'better 第一节选中文本',
+      rect: { left: 6, top: 6, right: 200, bottom: 26, width: 194, height: 20 },
+      zone: 'chat',
+      cross: false,
+      slotPath: ['conversation.chat.node'],
+      kind: 'text',
+    },
+    { question: '第一张 better 卡', carrier: 'side' },
+  )
+  await new Promise(resolve => setTimeout(resolve, 120))
+  const betterFirst = betterClient2.module.api.snapshot().cards[0]
+  report.equal(betterFirst?.surface, 'better-sidebar', 'the first card lands on the better surface')
+  betterActions2.submit(
+    {
+      text: 'better 第二节选中文本',
+      rect: { left: 6, top: 6, right: 200, bottom: 26, width: 194, height: 20 },
+      zone: 'chat',
+      cross: false,
+      slotPath: ['conversation.chat.node'],
+      kind: 'text',
+    },
+    { question: '第二张 better 卡', carrier: 'side' },
+  )
+  await new Promise(resolve => setTimeout(resolve, 120))
+  const betterCards = betterClient2.module.api.snapshot().cards
+  const betterSecond = betterCards.find(card => card.question === '第二张 better 卡')
+  const betterFirstAfter = betterCards.find(card => card.id === betterFirst.id)
+  report.equal(betterOpened.length, 2, 'each card asks better-sidebar to open')
+  report.equal(betterFirstAfter?.surface, 'flow', 'opening a second better card migrates the first to the overlay')
+  report.equal(betterFirstAfter?.open, true, 'the migrated better card is unfolded, not silently hidden')
+  report.equal(betterSecond?.surface, 'better-sidebar', 'the newest card owns the single better tab')
+  // 挂载真实宿主 tab：0.28.2 的 id 由宿主 mint，不是 seed 里的 cardId。
+  report.equal(betterOwnTabs.length, 1, 'better-sidebar received one descriptor')
+  expandTree(betterOwnTabs[0].component({
+    tab: { id: 'host-tab-42', meta: { cardId: betterSecond.id } },
+    scope: { sessionId: 'session-alpha' },
+  }))
+  betterClient2.shim.flushEffects()
+  betterActions2.close(betterSecond)
+  report.equal(betterClosed.length, 1, 'closing a better card asks the host to close its tab')
+  report.equal(betterClosed[0]?.tabId, 'host-tab-42', "the close uses the host's REAL tab id, not the seed id")
+  report.equal(betterClosed[0]?.scope?.sessionId, 'session-alpha', 'the close targets the card owner session')
+  // 删除历史条目时卡片可能从未在本次页面挂载过（刷新后恢复的栏 tab）：此时
+  // 只能按 kind + 会话在宿主清单里找到那张唯一 tab。
+  betterActions2.submit(
+    {
+      text: 'better 第三节选中文本',
+      rect: { left: 6, top: 6, right: 200, bottom: 26, width: 194, height: 20 },
+      zone: 'chat',
+      cross: false,
+      slotPath: ['conversation.chat.node'],
+      kind: 'text',
+    },
+    { question: '第三张 better 卡', carrier: 'side' },
+  )
+  await new Promise(resolve => setTimeout(resolve, 120))
+  const betterThird = betterClient2.module.api.snapshot().cards.find(card => card.question === '第三张 better 卡')
+  report.ok(betterThird !== undefined, 'the third card exists before its history entry is deleted')
+  // 单一地址的归属：第三张卡现在是 better tab 的唯一所有者，关一张别的卡
+  // 不能替它关 tab。
+  const betterClosedBeforeGhost = betterClosed.length
+  betterActions2.close({ id: 'ghost-better-card', surface: 'better-sidebar' })
+  report.equal(betterClosed.length, betterClosedBeforeGhost, 'a non-owner better card never closes the live tab')
+  betterRail.push({
+    sessionId: 'session-alpha',
+    tabId: 'better-host-tab-9',
+    kind: pure.CARD_KIND_BETTER,
+    contentId: `sidebar://${pure.CARD_KIND_BETTER}`,
+  })
+  betterActions2.deleteHistoryCard(betterThird.id)
+  report.equal(betterRailClosed.at(-1)?.tabId, 'better-host-tab-9', 'deleting history closes the unmounted better tab')
+  report.equal(betterRailClosed.at(-1)?.kind, pure.CARD_KIND_BETTER, 'the close targets the better tab kind')
+  report.ok(betterRail.every(row => row.tabId !== 'better-host-tab-9'), 'no better rail tab survives the deleted entry')
+}
+
 console.log('\nrender proof timing')
 // B7: the render proof used to be a blind 600ms timer against one global
 // `renderedCardId`. A lazy host that mounted AFTER the timer duplicated the
@@ -3519,6 +3659,7 @@ const proofTabsOpened = []
 const proofTabsClosed = []
 const proofDescriptors = []
 const proofRailTabs = []
+let proofRailSeq = 0
 const proofCtx = makeClientCtx({
   services: {
     sidebarRightTabs: { register: () => () => {} },
@@ -3527,9 +3668,9 @@ const proofCtx = makeClientCtx({
         proofTabsOpened.push({ kind, request })
         proofRailTabs.push({
           sessionId: 'session-alpha',
-          tabId: `proof-tab-${proofRailTabs.length + 1}`,
+          tabId: `proof-tab-${++proofRailSeq}`,
           kind,
-          contentId: request?.params?.cardId ?? '',
+          contentId: `sidebar://${kind}`,
         })
       },
       closeIn: (sessionId, tabId) => {

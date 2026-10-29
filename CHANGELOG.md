@@ -1,5 +1,40 @@
 # Changelog
 
+## 2.1.6
+
+**主题：修复桌面端 0.2.1-rc.3 / 网页端 0.2.1-rc.4 与 0.2.2-alpha.2 上的 4 个承载面与会话归属缺陷。**
+
+### 修复
+
+- **S1（高）默认 better 承载面开第二张卡时第一张消失**。better-sidebar 0.28.2 把每个
+  描述符镜像到 DSH 原生右栏，而该 tab 类型没有 `multiple`：同一 kind、同一会话只有
+  一个 page 地址，第二次 `openTab` 会把这个地址导航到新卡。插件过去只在 native
+  适配器做「迁回浮层」，better 适配器没有，于是第一张卡既不在栏里也不在浮层上，
+  流式输出继续写进看不见的卡片。现在 `surfaces.better.open()` 与 native 一样，先把
+  同会话其它 better 卡片迁回浮层并置 `open:true`。覆盖原生右栏为唯一地址的 0.28.x。
+- **S2（高）关闭/删除卡片不会关闭 better 承载面的 tab**。0.28.x 的原生 tab id 由宿主
+  mint（`tab1`…），插件传入的 seed id 被忽略，`closeTab(seed.id)` 是严格 no-op。
+  `CardHost` 现在从宿主传入的 `props.tab.id` 记录真实 tab id，关闭/删除用它；未挂载
+  过的卡片（刷新后恢复的栏 tab）按 kind + 会话在 `sidebarRight.openTabs` 清单里定位。
+  `deleteHistoryCard` / `clearHistory` 也会释放没有活跃卡片的 better tab。
+- **S3（中）显式 `native-rightbar` 下关闭/删除失效（2.1.5 R2 回归）**。宿主的 page tab
+  把 `contentId` 固定写成 `sidebar://<kind>`，不是卡片 id；R2 用
+  `entry.contentId === card.id` 判归属，匹配恒失败，关闭流程永远返回 false。现在
+  归属只看适配器持有的 `surfaces.native.cardId`，定位按 kind + 会话；`releaseNativeTab`
+  与删除路径随之恢复生效。测试替身也改为真实 `contentId` 语义。
+- **S4（中）切会话后停止/改投用错会话**。卡片过去不记录发起会话；用户在会话 A 追问、
+  切到 B 后点停止，`/cancel` 带的是 B，宿主 R6 归属校验按「没找到」处理，子代理继续
+  跑到超时；「改到主对话」也会投进 B。卡片现在在创建时记录 `sessionId`，停止、关闭、
+  删除、追问、重试、改投全部使用卡片自己的会话，并随 v3 历史持久化（旧条目无该字段
+  时回退当前会话）。
+
+### 验证
+
+`verify 57 / contract 1475 / float-placement 100 / smoke 279 = 1911 全绿`。净增 21 条
+回归断言：better 第二张卡迁移、真实宿主 tab id 关闭、非所有者不得替他人关 tab、
+未挂载 tab 的删除释放、原生 `contentId=sidebar://kind` 下的关闭与删除、切会话后
+`/cancel` 仍带原会话、v3 条目持久化与重放 `sessionId`。
+
 ## 2.1.5
 
 **主题：修完「技术方案评审团」在 0.2.1-rc.3（桌面 Electron 44.7.0 / 网页端同源）上复核出的 8 条缺陷。**

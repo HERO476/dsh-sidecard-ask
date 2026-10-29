@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.5'
+    const CLIENT_VERSION = '2.1.6'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -2264,6 +2264,23 @@ window.__ModuleLoader__.load({
       throw Object.assign(new Error(t('noMainCarrier')), { code: 'no-main-carrier' })
     }
 
+    /**
+     * The session a card belongs to, falling back to the active one.
+     *
+     * Cards outlive session switches (the overlay is root-scoped), so every
+     * follow-up transport must name the card's own session: the Host's `/cancel`
+     * treats a known-but-different session as "not found", and a prompt sent to
+     * the wrong session quotes the wrong conversation.
+     * @param {object|undefined} card - the card being acted on.
+     * @param {object} ctx - the client context (for the active-session fallback).
+     * @returns {string|null} the owning session, or the active one.
+     */
+    function cardSessionId(card, ctx) {
+      const own = card?.sessionId
+      if (typeof own === 'string' && own !== '') return own
+      return currentSessionId(ctx)
+    }
+
     /** Best-effort active session id from every sanctioned source. */
     function currentSessionId(ctx) {
       const captured = store.state.sessionId
@@ -2347,10 +2364,15 @@ window.__ModuleLoader__.load({
           // and lets CardHost show its closed-card face.
           const controller = this.controller
           if (controller === null || controller === undefined) return false
-          // 归属校验：栏里那条同 kind 的 tab 若正被另一张卡片占用，就不能替它
-          // 关掉（否则关 A 会把 B 的 tab 一起关掉）。cardId === null 是"清理
-          // 残留 tab"的路径，此时按 kind 关是对的。
-          if (this.cardId !== null && this.cardId !== card.id) return false
+          // 归属校验：只有"本卡就是适配器最后打开的那张"才能关。宿主的 page
+          // tab 把 contentId 固定写成 `sidebar://<kind>`（不是卡片 id），所以
+          // 过去用 `contentId === card.id` 判归属永远匹配失败、关闭恒失效
+          // （2.1.5 R2 的回归）。kind 单地址模型下 `cardId` 才是唯一归属信号。
+          if (this.cardId !== card.id) return false
+          // 卡片自己的会话优先：用户切走会话后关闭 A 的 tab，仍应落在 A。
+          const ownerSession = typeof card.sessionId === 'string' && card.sessionId !== ''
+            ? card.sessionId
+            : store.state.sessionId
           let rows = []
           try {
             rows = typeof controller.openTabs?.getSnapshot === 'function'
@@ -2360,18 +2382,11 @@ window.__ModuleLoader__.load({
           const row = Array.isArray(rows)
             ? rows.find(entry => entry?.kind === CARD_KIND
               && typeof entry?.tabId === 'string' && entry.tabId !== ''
-              // Ownership, not just kind. The tab belongs to this card when the
-              // host echoes the id it was opened with (`openTab` carries it in
-              // `params.cardId`, which the rail publishes as `contentId`), or
-              // when the host reported no id at all AND this adapter still holds
-              // that card's address. Claiming a tab merely because `contentId`
-              // was empty made "close A" close B's tab — and with it B's body.
-              && (entry.contentId === card.id
-                || ((entry.contentId === undefined || entry.contentId === null || entry.contentId === '')
-                  && this.cardId === card.id))
+              // 该 kind 只有一个 page 地址（不是 multiple），所以 kind +
+              // 会话就唯一定位本卡那张 tab；归属由上面的 adapter.cardId 保证。
               && (typeof entry?.sessionId !== 'string'
-                || store.state.sessionId === null
-                || entry.sessionId === store.state.sessionId))
+                || ownerSession === null
+                || entry.sessionId === ownerSession))
             : undefined
           if (row === undefined) return false
           try {
@@ -2398,6 +2413,14 @@ window.__ModuleLoader__.load({
         dispose: null,
         features: [],
         /**
+         * The card whose open last took the single better tab.
+         *
+         * 0.28.x hosts every better tab in the native rail under one page
+         * address per kind, so only the newest open owns it. Closing a card
+         * that is not this owner must not close someone else's tab.
+         */
+        cardId: null,
+        /**
          * Why this adapter is (not) usable, in the settings page's own words.
          * `null` means "usable"; a string explains the refusal.
          */
@@ -2421,20 +2444,56 @@ window.__ModuleLoader__.load({
         },
         open(card) {
           if (!this.available() || typeof this.service.openTab !== 'function') return false
+          // 0.28.x 把 better 的每个描述符镜像成原生右栏类型，而该类型没有
+          // `multiple`：同一 kind 在一个会话里只有一个 page 地址。再开一张卡
+          // 会把这个地址导航到新卡，上一张既不在栏里也没有回到浮层 —— 和
+          // native 适配器 2.1.5 R1 修的是同一个缺陷。这里同样先把同会话的
+          // 其它 better 卡片迁回浮层。
+          const targetSession = card.sessionId ?? store.state.sessionId ?? null
+          for (const other of store.state.cards) {
+            if (other.id === card.id || other.surface !== 'better-sidebar') continue
+            const otherSession = typeof other.sessionId === 'string' && other.sessionId !== ''
+              ? other.sessionId
+              : null
+            if (targetSession !== null && otherSession !== null && otherSession !== targetSession) continue
+            patchCard(other.id, { surface: 'flow', open: true })
+          }
           const tabId = `${CARD_KIND_BETTER}:${card.id}`
           // `meta` is the transport for the card id (feature `tabMeta`), and
           // `dedupeKey` on our descriptor is what collapses repeat opens onto
-          // the same tab; both are part of the stable consumer contract
-          // (`lib/types/client/service.d.ts`, unchanged across 0.22.0 → 0.22.1).
+          // the same tab; both are part of the stable consumer contract.
           this.service.openTab(
             { type: CARD_KIND_BETTER, id: tabId, title: card.question.slice(0, 32), meta: { cardId: card.id } },
-            store.state.sessionId === null ? undefined : { sessionId: store.state.sessionId },
+            typeof targetSession === 'string' && targetSession !== '' ? { sessionId: targetSession } : undefined,
           )
+          this.cardId = card.id
           return true
         },
         close(card) {
           if (!this.available() || typeof this.service.closeTab !== 'function') return false
-          this.service.closeTab(`${CARD_KIND_BETTER}:${card.id}`)
+          // 单一 page 地址：只有最后 open 的那张卡拥有栏里的 tab。
+          if (this.cardId !== card.id) return false
+          const sessionId = typeof card.sessionId === 'string' && card.sessionId !== ''
+            ? card.sessionId
+            : (store.state.sessionId ?? undefined)
+          const scope = typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : undefined
+          // 0.28.x 的原生 tab id 由宿主 mint（tab1…），不是我们传入的 seed id；
+          // CardHost 挂载时把真实 id 记进 embeddedTabIds。
+          const mountedId = embeddedTabIds.get(card.id)
+          if (typeof mountedId === 'string' && mountedId !== '') {
+            this.service.closeTab(mountedId, scope)
+            this.cardId = null
+            return true
+          }
+          // 卡片还没挂载过（或已从 store 移除）：按 kind + 会话在栏的清单里
+          // 找到唯一那张 tab，经原生控制器关闭。
+          if (closeRailRow(CARD_KIND_BETTER, sessionId)) {
+            this.cardId = null
+            return true
+          }
+          // 0.19 之前的 bottom workbench：seed id 就是 tab id。
+          this.service.closeTab(`${CARD_KIND_BETTER}:${card.id}`, scope)
+          this.cardId = null
           return true
         },
       },
@@ -2519,6 +2578,17 @@ window.__ModuleLoader__.load({
      * version) is detected and the card falls back to the flow stack.
      */
     let renderedCardId = null
+
+    /**
+     * Host tab ids for cards mounted by an external embedder, keyed by card id.
+     *
+     * better-sidebar's descriptor component receives the host `SidebarTab`, whose
+     * `id` is the tab id the native rail minted (`tab1`, …) — NOT the internal
+     * `sidecard-ask-better:<cardId>` seed id. Since 0.28.x every better-sidebar
+     * open lands in DSH's native rail, so `closeTab(seed.id)` is a strict no-op.
+     * The body records the real id here and `surfaces.better.close` uses it.
+     */
+    const embeddedTabIds = new Map()
 
     /**
      * Pick the surface for a new card.
@@ -5980,6 +6050,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               truncated: card.truncated === true,
               droppedChars: Number(card.droppedChars ?? 0),
               createdAt: Number.isFinite(card.createdAt) ? card.createdAt : Date.now(),
+              // 卡片归属的会话，随历史一起持久化；旧条目没有该字段时按 null 读。
+              sessionId: typeof card.sessionId === 'string' && card.sessionId !== '' ? card.sessionId : null,
               provider: typeof card.provider === 'string' ? card.provider : '',
               elapsedMs: Number.isFinite(card.elapsedMs) ? card.elapsedMs : null,
               // 持久化的历史轮次与上下文预算同一个上限（HISTORY_TURNS）：
@@ -6073,6 +6145,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
               elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
               createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
+              // 刷新后仍要能把追问/改投送回原来的会话；旧条目没有该字段。
+              sessionId: typeof entry.sessionId === 'string' && entry.sessionId !== '' ? entry.sessionId : null,
               // P2-5b: replayed versions stay switchable after a reload.
               versions: replayVersions(entry.versions),
               viewingVersion: null,
@@ -6123,6 +6197,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           provider: typeof entry.provider === 'string' && entry.provider !== '' ? entry.provider : null,
           elapsedMs: Number.isFinite(entry.elapsedMs) ? entry.elapsedMs : null,
           createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : 0,
+          // 旧历史没有这个字段：留 null，调用方回退到当前会话。
+          sessionId: typeof entry.sessionId === 'string' && entry.sessionId !== '' ? entry.sessionId : null,
           notified: true,
           versions: replayVersions(entry.versions),
           viewingVersion: null,
@@ -6137,6 +6213,81 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         })
 
         /**
+         * Close the one rail tab a kind owns in one session.
+         *
+         * The rail keeps one page tab per kind (no `multiple`), and its
+         * `contentId` is `sidebar://<kind>` rather than any card id. Both
+         * external surfaces therefore locate a tab by kind + session, never by
+         * the id a body was opened with.
+         * @param {string} kind - the tab kind registered with the rail.
+         * @param {string|null|undefined} sessionId - the owning session, when known.
+         * @returns {boolean} whether a tab was found and the rail accepted the close.
+         */
+        function closeRailRow(kind, sessionId) {
+          const controller = surfaces.native === null ? null : surfaces.native.controller
+          if (controller === null || controller === undefined) return false
+          let rows = []
+          try {
+            rows = typeof controller.openTabs?.getSnapshot === 'function'
+              ? controller.openTabs.getSnapshot()
+              : []
+          } catch { return false }
+          if (!Array.isArray(rows)) return false
+          const candidates = rows.filter(entry => entry?.kind === kind
+            && typeof entry?.tabId === 'string' && entry.tabId !== '')
+          // 会话已知时按会话匹配；会话未知（旧历史没有 sessionId）时只有
+          // 全进程恰好一张该 kind 的 tab 才敢关，否则可能误关别的会话。
+          const row = typeof sessionId === 'string' && sessionId !== ''
+            ? candidates.find(entry => typeof entry?.sessionId !== 'string'
+              || entry.sessionId === sessionId)
+            : (candidates.length === 1 ? candidates[0] : undefined)
+          if (row === undefined) return false
+          try {
+            if (typeof controller.closeIn === 'function' && typeof row.sessionId === 'string') {
+              controller.closeIn(row.sessionId, row.tabId)
+            } else if (typeof controller.close === 'function') {
+              controller.close(row.tabId)
+            } else {
+              return false
+            }
+            return true
+          } catch {
+            return false
+          }
+        }
+
+        /**
+         * Release a better-sidebar tab that no longer has a live card body.
+         *
+         * The descriptor component records the host's real tab id on mount;
+         * without that (a tab restored from a previous page load, or a delete
+         * before the body mounted) the rail inventory locates it by kind.
+         * @param {string} id - the card id whose tab should go away.
+         * @param {string|null|undefined} sessionId - the card's own session.
+         */
+        function releaseBetterTab(id, sessionId) {
+          const better = surfaces.better
+          if (better === null || better === undefined) return
+          if (better.service === null || typeof better.service?.closeTab !== 'function') return
+          // 单一 page 地址：只有最后 open 的那张卡拥有栏里的 tab；释放一张
+          // 不是当前所有者的历史条目，会把现在真正在栏里的卡片连带关掉。
+          if (better.cardId !== id) return
+          const scope = typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : undefined
+          const mountedId = embeddedTabIds.get(id)
+          if (typeof mountedId === 'string' && mountedId !== '') {
+            try { better.service.closeTab(mountedId, scope) } catch { /* the host may already be gone */ }
+            better.cardId = null
+            return
+          }
+          if (closeRailRow(CARD_KIND_BETTER, sessionId)) {
+            better.cardId = null
+            return
+          }
+          try { better.service.closeTab(`${CARD_KIND_BETTER}:${id}`, scope) } catch { /* legacy no-op */ }
+          better.cardId = null
+        }
+
+        /**
          * Close the right-rail tab when it is showing this card.
          *
          * The rail's tab is not derived from `store.cards`: deleting a card (or
@@ -6145,14 +6296,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
          * no longer exists, until the user closed it by hand. Only the tab this
          * adapter actually opened is touched; `close` re-checks ownership.
          * @param {string} id - the card id that is going away.
+         * @param {string|null|undefined} sessionId - the card's own session.
          */
-        function releaseNativeTab(id) {
+        function releaseNativeTab(id, sessionId) {
           const native = surfaces.native
           if (native === null || native === undefined) return
           if (native.controller === null || native.controller === undefined) return
           if (native.cardId !== id) return
           try {
-            native.close({ id })
+            native.close({ id, sessionId })
           } catch { /* the rail owns its tab's lifetime */ }
         }
 
@@ -6191,12 +6343,21 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           },
           /** Delete one entry from durable history (and its live card). */
           deleteHistoryCard(id) {
+            const entry = store.state.history.find(item => item.id === id)
             const next = store.state.history
               .filter(item => item.id !== id)
               .slice(0, historyCap())
             // A deleted entry must not keep a right-rail tab alive: the tab is
             // not part of the store, so nothing else would ever close it.
-            releaseNativeTab(id)
+            // The live card (when the manager is deleting one) carries the
+            // session the entry itself may predate.
+            const live = entry === undefined
+              ? store.state.cards.find(card => card.id === id)
+              : undefined
+            if (entry !== undefined || live !== undefined) {
+              releaseBetterTab(id, entry?.sessionId ?? live?.sessionId)
+            }
+            releaseNativeTab(id, entry?.sessionId ?? live?.sessionId)
             writePersisted(next)
             store.set({
               history: next,
@@ -6224,7 +6385,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const controller = controllers.get(id)
             if (controller !== undefined) {
               controller.abort()
-              void postJson('cancel', { id, sessionId: store.state.sessionId }).catch(() => {})
+              void postJson('cancel', { id, sessionId: cardSessionId(card, ctx) }).catch(() => {})
             }
             controllers.delete(id)
             pendingDeltas.delete(id)
@@ -6244,7 +6405,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             // A card restored from durable history has no live `surface`, so the
             // branch above cannot see its tab; this checks the adapter's own
             // address instead and is a no-op when nothing is on the rail.
-            releaseNativeTab(id)
+            releaseNativeTab(id, card.sessionId)
             const next = store.state.history
               .filter(item => item.id !== id)
               .slice(0, historyCap())
@@ -6278,7 +6439,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const railCard = surfaces.native?.cardId
             if (typeof railCard === 'string' && railCard !== ''
               && !store.state.cards.some(card => card.id === railCard)) {
-              releaseNativeTab(railCard)
+              const railSession = store.state.history.find(item => item.id === railCard)?.sessionId
+              releaseNativeTab(railCard, railSession)
+            }
+            // better 承载面同理：历史条目被清空后，只为「没有活跃卡片」的
+            // 条目释放它可能留下的栏 tab。
+            for (const entry of store.state.history) {
+              if (store.state.cards.some(card => card.id === entry.id)) continue
+              releaseBetterTab(entry.id, entry.sessionId)
             }
             try {
               for (const key of [PERSIST_KEY, PERSIST_V2_KEY, PERSIST_LEGACY_KEY]) {
@@ -6303,6 +6471,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               droppedChars: cut.droppedChars,
               zone: candidate.zone,
               carrier: payload.carrier,
+              // 发起会话：卡片可能活过会话切换，停止/改投/追问必须回到它。
+              sessionId: currentSessionId(ctx),
               status: 'pending',
               text: '',
               reasoning: '',
@@ -6330,7 +6500,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               try {
                 const result = await askInMainConversation({
                   ctx,
-                  sessionId: currentSessionId(ctx),
+                  sessionId: cardSessionId(card, ctx),
                   selection: candidate.text,
                   question: payload.question,
                   zone: candidate.zone,
@@ -6517,7 +6687,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             else {
               void askInMainConversation({
                 ctx,
-                sessionId: currentSessionId(ctx),
+                sessionId: cardSessionId(next, ctx),
                 selection: next.selection,
                 question: text,
                 zone: next.zone,
@@ -6585,7 +6755,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               // so POST /cancel too. Fire-and-forget on purpose — the card is
               // already stopped locally, and a dead host must not turn the
               // Stop button into a failure.
-              void postJson('cancel', { id: card.id, sessionId: store.state.sessionId }).catch(() => {})
+              void postJson('cancel', { id: card.id, sessionId: cardSessionId(card, ctx) }).catch(() => {})
             }
             patchCard(card.id, { status: 'stopped' })
           },
@@ -6593,7 +6763,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             try {
               const result = await askInMainConversation({
                 ctx,
-                sessionId: currentSessionId(ctx),
+                sessionId: cardSessionId(card, ctx),
                 selection: card.selection,
                 question: card.question,
                 zone: card.zone,
@@ -6634,7 +6804,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               controller.abort()
               // Same host-side release as the Stop button: closing a card
               // mid-stream must not leave the child running server-side.
-              void postJson('cancel', { id: card.id, sessionId: store.state.sessionId }).catch(() => {})
+              void postJson('cancel', { id: card.id, sessionId: cardSessionId(card, ctx) }).catch(() => {})
             }
             controllers.delete(card.id)
             // A closed card's buffered-but-unflushed deltas belong to nobody:
@@ -6767,6 +6937,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         const runSideCard = async (cardId) => {
           const card = store.state.cards.find(item => item.id === cardId)
           if (card === undefined) return
+          // 追问/重试沿用卡片自己的会话，而不是用户此刻切到的会话。
+          const ownerSession = typeof card.sessionId === 'string' && card.sessionId !== ''
+            ? card.sessionId
+            : currentSessionId(ctx)
+          if (typeof ownerSession === 'string' && ownerSession !== '' && card.sessionId !== ownerSession) {
+            patchCard(cardId, { sessionId: ownerSession })
+          }
           const controller = new AbortController()
           controllers.set(cardId, controller)
           // #9: wall time from the (re)start of THIS attempt to its terminal
@@ -6788,7 +6965,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             selection: card.selected,
             zone: card.zone,
             carrier: 'side',
-            sessionId: currentSessionId(ctx),
+            sessionId: ownerSession,
             history: card.history.slice(-HISTORY_TURNS).map(turn => ({
               question: String(turn?.question ?? '').slice(0, HISTORY_TURN_Q_CHARS),
               answer: String(turn?.answer ?? '').slice(0, HISTORY_TURN_A_CHARS),
@@ -7357,11 +7534,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const state = useStoreState()
           const cardId = hostCardIdOf(props)
           const card = state.cards.find(item => item.id === cardId)
+          // The embedder's REAL tab id (better-sidebar 0.28.x mints it and
+          // ignores the seed id we passed), recorded for close/delete.
+          const hostTabId = typeof props?.tab?.id === 'string' && props.tab.id !== '' ? props.tab.id : null
           // The proof hook MUST run before any early return (hook order), and
           // it is what lets `submit` detect a host that never rendered us.
           React.useEffect(() => {
             if (typeof cardId !== 'string' || cardId === '') return undefined
             renderedCardId = cardId
+            if (hostTabId !== null) embeddedTabIds.set(cardId, hostTabId)
             // Mounting settles the render proof, even when this host mounted
             // late (a lazy tab panel slower than the 600ms timer) — the proof
             // must never fire after the card is demonstrably on screen.
@@ -7372,8 +7553,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             }
             return () => {
               if (renderedCardId === cardId) renderedCardId = null
+              if (hostTabId !== null && embeddedTabIds.get(cardId) === hostTabId) {
+                embeddedTabIds.delete(cardId)
+              }
             }
-          }, [cardId])
+          }, [cardId, hostTabId])
           if (card === undefined) {
             return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '' },
               h(Styles, null),
