@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.4'
+export const PLUGIN_VERSION = '2.1.5'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -1249,6 +1249,21 @@ export async function sendSmtpMessage(endpoint, mail, { timeoutMs = 20_000, now 
 }
 
 /**
+ * Plain-language hints for the filesystem errnos that actually reach a save on
+ * Windows/macOS/Linux. The raw `EACCES: permission denied, open '…'` line is
+ * accurate but tells a user nothing about what to do; the code stays on the
+ * wire (clients branch on it) and the hint is appended to the message.
+ */
+const ERRNO_HINTS = {
+  EACCES: '（没有写权限：检查文件是否被其它程序占用，或改用可写目录）',
+  EPERM: '（系统拒绝写入：文件可能被占用或只读）',
+  EROFS: '（所在磁盘是只读的）',
+  ENOSPC: '（磁盘空间不足，设置未保存）',
+  EBUSY: '（文件正被其它进程占用，请稍后重试）',
+  ENOENT: '（目标目录不存在）',
+}
+
+/**
  * Reduce any thrown value to a wire error the Client can present.
  * @param {unknown} error - the thrown value.
  * @param {string} fallbackCode - code to use when nothing better is known.
@@ -1258,7 +1273,15 @@ export function toWireError(error, fallbackCode = 'internal') {
   if (error !== null && typeof error === 'object') {
     const code = typeof error.code === 'string' && error.code !== '' ? error.code : undefined
     const message = typeof error.message === 'string' && error.message !== '' ? error.message : undefined
-    if (message !== undefined) return { code: code ?? fallbackCode, message }
+    if (message !== undefined) {
+      const hint = code !== undefined && Object.prototype.hasOwnProperty.call(ERRNO_HINTS, code)
+        ? ERRNO_HINTS[code]
+        : undefined
+      return {
+        code: code ?? fallbackCode,
+        message: hint === undefined || message.includes(hint) ? message : `${message}${hint}`,
+      }
+    }
   }
   return { code: fallbackCode, message: String(error) }
 }
@@ -1901,7 +1924,16 @@ function createSideEngine(ctx, configOf) {
 
     /** Detach this run's stream listener (frames are per attempt). */
     let detach = () => {}
-    const runRecord = { abort: () => controller.abort(), dispose: undefined }
+    const runRecord = {
+      abort: () => controller.abort(),
+      dispose: undefined,
+      // Which session asked. `runs` is process-global, so `/cancel` needs an
+      // owner to check against: without it any trusted page could abort any
+      // other session's run by guessing (or sniffing) a run id.
+      sessionId: typeof request.sessionId === 'string' && request.sessionId !== ''
+        ? request.sessionId
+        : null,
+    }
     runs.set(id, runRecord)
 
     try {
@@ -2123,10 +2155,28 @@ function createSideEngine(ctx, configOf) {
     }
   }
 
-  /** Abort one in-flight run. */
-  function cancel(id) {
+  /**
+   * Abort one in-flight run.
+   *
+   * `runs` is process-global: every session shares it. When both sides know the
+   * owning session and they differ, this is a cross-session cancel and is
+   * refused (it reports `false`, exactly like an unknown id, so it does not
+   * confirm that the id exists elsewhere). A request that cannot name its
+   * session is still honoured — older clients and scripted calls must keep
+   * working.
+   * @param {string} id - the run id.
+   * @param {string|null} [sessionId] - the session asking for the cancel.
+   * @returns {boolean} whether a run was aborted.
+   */
+  function cancel(id, sessionId = null) {
     const record = runs.get(id)
     if (record === undefined) return false
+    const owner = record.sessionId
+    if (typeof owner === 'string' && owner !== ''
+      && typeof sessionId === 'string' && sessionId !== ''
+      && owner !== sessionId) {
+      return false
+    }
     record.abort()
     return true
   }
@@ -2603,7 +2653,12 @@ export function apply(ctx, patchConfig) {
     // 只回本次取消的结果：`runs` 是跨会话的全局表，把它的 id 列表回给
     // 任意可信页面等于泄露别的会话正在追问的卡片 id（而 cancel 本身也不
     // 校验归属），Client 侧也没有任何地方消费这个字段。
-    writeOk(res, { cancelled: engine.cancel(id) })
+    // 归属校验：请求方必须带上自己的 sessionId，与 run 记录不一致时按"没
+    // 找到"处理（不回 403，避免把别的会话的 id 是否存在当成探测面）。
+    const sessionId = typeof body?.sessionId === 'string' && body.sessionId !== ''
+      ? body.sessionId
+      : null
+    writeOk(res, { cancelled: engine.cancel(id, sessionId) })
   }
 
   /** `/config` — merge a partial config into the user layer and persist it. */

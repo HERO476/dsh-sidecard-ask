@@ -367,6 +367,29 @@ report.equal(unknownCancel.value.cancelled, false, 'cancelling an unknown id is 
 report.equal(Object.hasOwn(unknownCancel.value, 'active'), false, '/cancel does not leak the global run registry')
 report.equal((await callRoute(c.harness, '/cancel', { body: {} })).status, 400, 'a missing id is refused')
 
+// R6 回归（2026-10-29）：`/cancel` 曾经不校验归属——`runs` 是进程级全局表，
+// 任何已认证页面只要拿到（或猜到）一个 run id 就能打断别的会话的追问。
+const c3 = await boot({ engineOptions: { delayMs: 25, frames: ['a', 'b', 'c', 'd', 'e', 'f'] } })
+const ownerPending = callRoute(c3.harness, '/ask', {
+  body: {
+    id: 'ask-owned',
+    question: '我的追问',
+    selection: '归属测试',
+    zone: 'chat',
+    sessionId: 'session-A',
+  },
+})
+await wait(40)
+const foreignCancel = (await callRoute(c3.harness, '/cancel', {
+  body: { id: 'ask-owned', sessionId: 'session-B' },
+})).json()
+report.equal(foreignCancel.value.cancelled, false, 'another session cannot cancel this run')
+const ownCancel = (await callRoute(c3.harness, '/cancel', {
+  body: { id: 'ask-owned', sessionId: 'session-A' },
+})).json()
+report.equal(ownCancel.value.cancelled, true, 'the owning session can cancel its own run')
+await ownerPending
+
 // ────────────────────────────────────────────────────────────────────────────
 // 5. configuration: validation, persistence, restart, reset
 // ────────────────────────────────────────────────────────────────────────────

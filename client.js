@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.4'
+    const CLIENT_VERSION = '2.1.5'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -707,9 +707,9 @@ window.__ModuleLoader__.load({
         setMinChars: '最小触发字符数',
         setConcurrency: '并发作答上限',
         setSideTools: '侧边作答工具权限',
-        setSideToolsReadonly: '只读（推荐）',
+        setSideToolsReadonly: '只读（需宿主支持，0.2.1 无效）',
         setSideToolsInherit: '继承当前会话',
-        setSideToolsHint: '在 0.2.1 上，只读靠探针自动拒写，不依赖此开关；要彻底收窄工具，请填写下面的 preset',
+        setSideToolsHint: '这个开关只在宿主支持工具白名单时才生效；0.2.1-rc.3 不支持，侧边作答会继承当前会话的全部工具。要真正收窄，请填写下面的 preset（0.2.1-rc.3 已支持）。',
         setSideAgentPreset: '只读 preset（可选）',
         setSideAgentPresetPlaceholder: '留空则不启用',
         setSideAgentPresetHint: '子代理以该 agent preset 启动，工具集由 preset 决定（0.2.1 唯一可靠的收窄通道）；留空时退回探针拒写',
@@ -982,9 +982,9 @@ window.__ModuleLoader__.load({
         setMinChars: 'Minimum selection length',
         setConcurrency: 'Max concurrent answers',
         setSideTools: 'Side answerer tool access',
-        setSideToolsReadonly: 'Read-only (recommended)',
+        setSideToolsReadonly: 'Read-only (needs host support; no-op on 0.2.1)',
         setSideToolsInherit: 'Inherit from the session',
-        setSideToolsHint: 'On 0.2.1 read-only is enforced by the write-refusing probe, not by this switch; set a preset below to narrow the tool set itself',
+        setSideToolsHint: 'This switch only works when the host supports a tool allow-list; 0.2.1-rc.3 does not, so the side answerer inherits every tool of the session. To really narrow it, set the preset below (supported on 0.2.1-rc.3).',
         setSideAgentPreset: 'Read-only preset (optional)',
         setSideAgentPresetPlaceholder: 'Leave empty to disable',
         setSideAgentPresetHint: 'Starts the subagent with this agent preset, so the preset decides the tool set — the only reliable narrowing channel on 0.2.1; when empty the write-refusing probe is the fallback',
@@ -2322,7 +2322,11 @@ window.__ModuleLoader__.load({
           // 继续往一张看不见的卡片里写。
           for (const other of store.state.cards) {
             if (other.id !== card.id && other.surface === 'native-rightbar') {
-              patchCard(other.id, { surface: 'flow' })
+              // `open: true` is load-bearing: the floating layer only mounts a
+              // card whose `surface === 'flow'` AND `open` is true, so migrating
+              // a card back to the flow while leaving it folded hid it on BOTH
+              // surfaces — not in the rail, not on screen, still streaming.
+              patchCard(other.id, { surface: 'flow', open: true })
             }
           }
           this.cardId = card.id
@@ -2356,12 +2360,15 @@ window.__ModuleLoader__.load({
           const row = Array.isArray(rows)
             ? rows.find(entry => entry?.kind === CARD_KIND
               && typeof entry?.tabId === 'string' && entry.tabId !== ''
-              // 单地址模型下这里只该有一行；万一宿主保留了多行，必须关"属于这张
-              // 卡片"的那一行（openTab 把 cardId 写进 params → contentId），
-              // 否则会替另一张卡片关掉它的 tab。
-              && (typeof entry?.contentId !== 'string'
-                || entry.contentId === ''
-                || entry.contentId === card.id)
+              // Ownership, not just kind. The tab belongs to this card when the
+              // host echoes the id it was opened with (`openTab` carries it in
+              // `params.cardId`, which the rail publishes as `contentId`), or
+              // when the host reported no id at all AND this adapter still holds
+              // that card's address. Claiming a tab merely because `contentId`
+              // was empty made "close A" close B's tab — and with it B's body.
+              && (entry.contentId === card.id
+                || ((entry.contentId === undefined || entry.contentId === null || entry.contentId === '')
+                  && this.cardId === card.id))
               && (typeof entry?.sessionId !== 'string'
                 || store.state.sessionId === null
                 || entry.sessionId === store.state.sessionId))
@@ -6129,6 +6136,26 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             : [],
         })
 
+        /**
+         * Close the right-rail tab when it is showing this card.
+         *
+         * The rail's tab is not derived from `store.cards`: deleting a card (or
+         * a history entry) only removed it from the stores, so a card that lived
+         * in the native rail left its tab behind — a body rendering an id that
+         * no longer exists, until the user closed it by hand. Only the tab this
+         * adapter actually opened is touched; `close` re-checks ownership.
+         * @param {string} id - the card id that is going away.
+         */
+        function releaseNativeTab(id) {
+          const native = surfaces.native
+          if (native === null || native === undefined) return
+          if (native.controller === null || native.controller === undefined) return
+          if (native.cardId !== id) return
+          try {
+            native.close({ id })
+          } catch { /* the rail owns its tab's lifetime */ }
+        }
+
         const actions = {
           openPopover(candidate) {
             // P2-2: the composer must be remembered BEFORE the popover's
@@ -6167,6 +6194,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const next = store.state.history
               .filter(item => item.id !== id)
               .slice(0, historyCap())
+            // A deleted entry must not keep a right-rail tab alive: the tab is
+            // not part of the store, so nothing else would ever close it.
+            releaseNativeTab(id)
             writePersisted(next)
             store.set({
               history: next,
@@ -6194,7 +6224,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const controller = controllers.get(id)
             if (controller !== undefined) {
               controller.abort()
-              void postJson('cancel', { id }).catch(() => {})
+              void postJson('cancel', { id, sessionId: store.state.sessionId }).catch(() => {})
             }
             controllers.delete(id)
             pendingDeltas.delete(id)
@@ -6211,6 +6241,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 surfaces.native.close(card)
               } catch { /* the right rail owns its lifecycle */ }
             }
+            // A card restored from durable history has no live `surface`, so the
+            // branch above cannot see its tab; this checks the adapter's own
+            // address instead and is a no-op when nothing is on the rail.
+            releaseNativeTab(id)
             const next = store.state.history
               .filter(item => item.id !== id)
               .slice(0, historyCap())
@@ -6237,6 +6271,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
            * by definition: it is the one action allowed to drop the old keys.
            */
           clearHistory() {
+            // A history-only card that happens to sit on the rail loses its
+            // durable entry here; leaving the tab up would show a body for an
+            // entry the manager no longer has. A card that is still live keeps
+            // its tab — this action does not touch running cards.
+            const railCard = surfaces.native?.cardId
+            if (typeof railCard === 'string' && railCard !== ''
+              && !store.state.cards.some(card => card.id === railCard)) {
+              releaseNativeTab(railCard)
+            }
             try {
               for (const key of [PERSIST_KEY, PERSIST_V2_KEY, PERSIST_LEGACY_KEY]) {
                 window.localStorage?.removeItem(key)
@@ -6542,7 +6585,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               // so POST /cancel too. Fire-and-forget on purpose — the card is
               // already stopped locally, and a dead host must not turn the
               // Stop button into a failure.
-              void postJson('cancel', { id: card.id }).catch(() => {})
+              void postJson('cancel', { id: card.id, sessionId: store.state.sessionId }).catch(() => {})
             }
             patchCard(card.id, { status: 'stopped' })
           },
@@ -6591,7 +6634,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               controller.abort()
               // Same host-side release as the Stop button: closing a card
               // mid-stream must not leave the child running server-side.
-              void postJson('cancel', { id: card.id }).catch(() => {})
+              void postJson('cancel', { id: card.id, sessionId: store.state.sessionId }).catch(() => {})
             }
             controllers.delete(card.id)
             // A closed card's buffered-but-unflushed deltas belong to nobody:

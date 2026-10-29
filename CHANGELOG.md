@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.1.5
+
+**主题：修完「技术方案评审团」在 0.2.1-rc.3（桌面 Electron 44.7.0 / 网页端同源）上复核出的 8 条缺陷。**
+四套脚本全绿（57 / 1454 / 100 / 279 = 1890），新增 10 条回归断言。
+
+### 修复
+
+- **R1（中）原生栏把卡迁回浮层时没展开，卡在两端同时不可见**。`surfaces.native.open()` 只把
+  被挤出的卡 `surface` 改回 `'flow'`，但浮层只挂载 `surface === 'flow' && open` 的卡
+  （`FloatingLayer`），于是那张卡既不在栏里、也不在屏幕上，流式输出还继续往它里面写。
+  现在迁移时一并置 `open: true`。
+- **R2（中）关 A 卡片会关掉 B 的 tab**。`close()` 认领 tab 的判据是"`contentId` 为空就算我的"，
+  而单地址模型下栏里那条 tab 可能正显示另一张卡；`this.cardId` 已被清空时（页面重载后）
+  就会误关别人的 tab，连带把别人的正文一起关掉。现在要求 `contentId === 本卡 id`，或
+  宿主没报 `contentId` 且适配器仍持有本卡地址。
+- **R3（中）删历史 / 删卡片不释放原生栏的 tab**。tab 是宿主自己的状态，不随 `store.cards`
+  变化；删掉卡片后页面里留着一张渲染"已不存在卡片"的空壳，直到用户手动关。新增
+  `releaseNativeTab(id)`，`deleteHistoryCard` / `deleteCard` / `clearHistory`（仅历史态卡）都会调用。
+- **R4（中）设置页把只读开关标成"只读（推荐）"，而 0.2.1-rc.3 上它根本不生效**。
+  宿主的 `SubagentCapabilities` 没有 `toolFilter`，`readOnlyToolFilter()` 返回的白名单会被丢弃，
+  侧边作答实际继承会话全部工具——卡片上的 `toolFilter: 'unsupported'` 是对的，但设置页的
+  "推荐"是假的。标签改为「只读（需宿主支持，0.2.1 无效）」。
+- **R5（低）`setSideToolsHint` 谎称"只读靠探针自动拒写"**。代码里没有任何"拒写探针"，
+  真实机制是 `toolFilter`（宿主不支持即失效）或 `agentPreset`（0.2.1-rc.3 支持）。文案改为
+  指向 preset，并写明版本前提。
+- **R6（中）`/cancel` 不校验归属**。`runs` 是进程级全局表，任何已认证页面拿到（或猜到）一个
+  run id 就能打断别的会话的追问。run 记录现在带 `sessionId`，`cancel(id, sessionId)` 在双方
+  都已知且不一致时按"没找到"处理；不带 `sessionId` 的老客户端保持可用。
+- **R8（低）写盘失败的报错只有 errno 原文**。`toWireError()` 现按 `EACCES` / `EPERM` / `EROFS` /
+  `ENOSPC` / `EBUSY` / `ENOENT` 追加中文处置提示，`error.code` 不变（程序分支仍按码判断）。
+
+### 评估后不改
+
+- **R7 `/state` 回配置文件的绝对路径**：该接口要求宿主登录（页面外是 `401 unauthorized`），
+  且这个字段是设置页"到底读的哪个文件"的唯一依据。已写进 README §隐私与安全第 16 条，
+  说明暴露面边界与转发时的处置办法。
+
 ## 2.1.4
 
 **主题：把「技术方案评审团」查出的 11 条缺陷一次修完。四套脚本全绿，新增 21 条回归断言。**

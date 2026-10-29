@@ -3455,6 +3455,60 @@ report.ok(
   'the closed tab belonged to the card being closed',
 )
 
+// R1 回归（2026-10-29）：单地址模型把被挤出的卡迁回浮层时只改了 surface，没改
+// open——而浮层只挂载 `surface === 'flow' && open` 的卡，于是那张卡既不在栏里、
+// 也不在屏幕上，流式输出继续往看不见的卡里写。
+report.equal(firstAfter?.open, true, 'the migrated card is unfolded on the overlay, not silently hidden')
+
+// R2 回归（2026-10-29）：关卡片时认领 tab 的判据曾经是"contentId 为空就算我的"，
+// 于是关 A 会顺手关掉 B 的 tab。现在必须 contentId === 本卡 id，或宿主没报
+// contentId 且适配器仍持有本卡地址。
+kindRailTabs.push({
+  sessionId: 'session-alpha',
+  tabId: 'foreign-tab',
+  kind: kindClient.module.api.pure.CARD_KIND,
+  contentId: 'somebody-elses-card',
+})
+const closedBeforeForeign = kindTabsClosed.length
+kindActions.close({ id: 'ghost-card', surface: 'native-rightbar' })
+report.equal(kindTabsClosed.length, closedBeforeForeign, "a tab owned by another card is never closed for this one")
+report.ok(kindRailTabs.some(row => row.tabId === 'foreign-tab'), 'the foreign tab survives the attempted close')
+kindRailTabs.pop()
+
+// R3 回归（2026-10-29）：删历史条目只清了 store，没管原生栏的 tab——那张 tab 是
+// 宿主自己的状态，没有任何东西会再关它，于是页面里留下一张渲染已不存在卡片的
+// 空壳，直到用户手动关掉。
+await kindActions.submit(
+  {
+    text: '第三张卡的选中文本',
+    rect: { left: 5, top: 5, right: 200, bottom: 25, width: 195, height: 20 },
+    zone: 'task',
+    cross: false,
+    slotPath: ['sidebar.right.pane.tab'],
+    kind: 'text',
+  },
+  { question: '第三张卡', carrier: 'side' },
+)
+await new Promise(resolve => setTimeout(resolve, 120))
+const thirdCard = kindClient.module.api.snapshot().cards.find(card => card.question === '第三张卡')
+report.equal(thirdCard?.surface, 'native-rightbar', 'the third card takes the rail address')
+const closedBeforeDelete = kindTabsClosed.length
+kindActions.deleteHistoryCard(thirdCard.id)
+report.equal(kindTabsClosed.length, closedBeforeDelete + 1, 'deleting a history entry releases its rail tab')
+report.ok(kindRailTabs.every(row => row.contentId !== thirdCard.id), 'no rail tab survives the card it was showing')
+
+// R4 回归（2026-10-29）：设置页把只读开关标成"推荐"，读者会以为它有效——而
+// 0.2.1-rc.3 的宿主没有工具白名单，这个开关根本不生效。
+const localeDict = kindClient.module.api.pure.dict
+report.ok(
+  !/推荐|recommended/i.test(localeDict.zh.setSideToolsReadonly + localeDict.en.setSideToolsReadonly),
+  'the read-only switch is not advertised as "recommended" while the host cannot honour it',
+)
+report.ok(
+  /0\.2\.1/.test(localeDict.zh.setSideToolsHint) && /0\.2\.1/.test(localeDict.en.setSideToolsHint),
+  'the tool-access hint names the host version where the switch is inert',
+)
+
 console.log('\nrender proof timing')
 // B7: the render proof used to be a blind 600ms timer against one global
 // `renderedCardId`. A lazy host that mounted AFTER the timer duplicated the
