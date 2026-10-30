@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.6'
+    const CLIENT_VERSION = '2.1.7'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -707,9 +707,9 @@ window.__ModuleLoader__.load({
         setMinChars: '最小触发字符数',
         setConcurrency: '并发作答上限',
         setSideTools: '侧边作答工具权限',
-        setSideToolsReadonly: '只读（需宿主支持，0.2.1 无效）',
+        setSideToolsReadonly: '只读（需宿主支持，0.2.x 无效）',
         setSideToolsInherit: '继承当前会话',
-        setSideToolsHint: '这个开关只在宿主支持工具白名单时才生效；0.2.1-rc.3 不支持，侧边作答会继承当前会话的全部工具。要真正收窄，请填写下面的 preset（0.2.1-rc.3 已支持）。',
+        setSideToolsHint: '这个开关只在宿主支持工具白名单时才生效；0.2.x 宿主（0.2.1-rc.3 实测、rc.5 复核）都不支持，侧边作答会继承当前会话的全部工具。要真正收窄，请填写下面的 preset（0.2.1 起支持）。',
         setSideAgentPreset: '只读 preset（可选）',
         setSideAgentPresetPlaceholder: '留空则不启用',
         setSideAgentPresetHint: '子代理以该 agent preset 启动，工具集由 preset 决定（0.2.1 唯一可靠的收窄通道）；留空时退回探针拒写',
@@ -982,9 +982,9 @@ window.__ModuleLoader__.load({
         setMinChars: 'Minimum selection length',
         setConcurrency: 'Max concurrent answers',
         setSideTools: 'Side answerer tool access',
-        setSideToolsReadonly: 'Read-only (needs host support; no-op on 0.2.1)',
+        setSideToolsReadonly: 'Read-only (needs host support; no-op on 0.2.x)',
         setSideToolsInherit: 'Inherit from the session',
-        setSideToolsHint: 'This switch only works when the host supports a tool allow-list; 0.2.1-rc.3 does not, so the side answerer inherits every tool of the session. To really narrow it, set the preset below (supported on 0.2.1-rc.3).',
+        setSideToolsHint: 'This switch only works when the host supports a tool allow-list; no 0.2.x host does (verified on 0.2.1-rc.3 and re-checked on rc.5), so the side answerer inherits every tool of the session. To really narrow it, set the preset below (supported since 0.2.1).',
         setSideAgentPreset: 'Read-only preset (optional)',
         setSideAgentPresetPlaceholder: 'Leave empty to disable',
         setSideAgentPresetHint: 'Starts the subagent with this agent preset, so the preset decides the tool set — the only reliable narrowing channel on 0.2.1; when empty the write-refusing probe is the fallback',
@@ -2368,7 +2368,12 @@ window.__ModuleLoader__.load({
           // tab 把 contentId 固定写成 `sidebar://<kind>`（不是卡片 id），所以
           // 过去用 `contentId === card.id` 判归属永远匹配失败、关闭恒失效
           // （2.1.5 R2 的回归）。kind 单地址模型下 `cardId` 才是唯一归属信号。
-          if (this.cardId !== card.id) return false
+          // 严格归属（只认 `cardId === card.id`）治好了 2.1.5 R2 的"串卡"，
+          // 却把另一种真实场景关在门外：页面重载后宿主会从布局里恢复出这张
+          // tab，而 `cardId` 是内存态、必然是 null —— 此时没有卡片认领它，
+          // 删除历史条目也永远关不掉，就是专家复现的"幽灵面板"。
+          // 规则改为：**已知别的卡拥有它才拒绝**；无主时按 kind + 会话定位。
+          if (this.cardId !== null && this.cardId !== card.id) return false
           // 卡片自己的会话优先：用户切走会话后关闭 A 的 tab，仍应落在 A。
           const ownerSession = typeof card.sessionId === 'string' && card.sessionId !== ''
             ? card.sessionId
@@ -2472,7 +2477,9 @@ window.__ModuleLoader__.load({
         close(card) {
           if (!this.available() || typeof this.service.closeTab !== 'function') return false
           // 单一 page 地址：只有最后 open 的那张卡拥有栏里的 tab。
-          if (this.cardId !== card.id) return false
+          // 同 native.close：无主（cardId 为 null，页面重载后）也要放行，
+          // 否则在历史管理器里删掉一条 better 卡，栏里那张 tab 永远留空。
+          if (this.cardId !== null && this.cardId !== card.id) return false
           const sessionId = typeof card.sessionId === 'string' && card.sessionId !== ''
             ? card.sessionId
             : (store.state.sessionId ?? undefined)
@@ -6271,7 +6278,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           if (better.service === null || typeof better.service?.closeTab !== 'function') return
           // 单一 page 地址：只有最后 open 的那张卡拥有栏里的 tab；释放一张
           // 不是当前所有者的历史条目，会把现在真正在栏里的卡片连带关掉。
-          if (better.cardId !== id) return
+          // 无主（null）时也放行：理由见 better.close。
+          if (better.cardId !== null && better.cardId !== id) return
           const scope = typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : undefined
           const mountedId = embeddedTabIds.get(id)
           if (typeof mountedId === 'string' && mountedId !== '') {
@@ -6302,10 +6310,42 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const native = surfaces.native
           if (native === null || native === undefined) return
           if (native.controller === null || native.controller === undefined) return
-          if (native.cardId !== id) return
+          // 无主（null）时也放行：理由见 native.close。
+          if (native.cardId !== null && native.cardId !== id) return
           try {
             native.close({ id, sessionId })
           } catch { /* the rail owns its tab's lifetime */ }
+        }
+
+        /**
+         * Close rail tabs that no live card can claim.
+         *
+         * The host persists the rail layout, so after a page reload our tab is
+         * restored — but "which card owns it" (`surfaces.native.cardId` /
+         * `surfaces.better.cardId`) is process memory, and cards themselves are
+         * not persisted. The result is a panel that renders "card closed" and
+         * that the old build could not even close (expert A1). When no card of
+         * this page owns the address, the tab is provably orphaned: close it.
+         */
+        function sweepOrphanRailTabs() {
+          const native = surfaces.native
+          if (native !== null && native !== undefined && native.cardId === null
+            && native.controller !== null && native.controller !== undefined) {
+            let rows = []
+            try {
+              rows = typeof native.controller.openTabs?.getSnapshot === 'function'
+                ? native.controller.openTabs.getSnapshot()
+                : []
+            } catch { rows = [] }
+            for (const row of Array.isArray(rows) ? rows : []) {
+              if (row?.kind !== CARD_KIND) continue
+              if (typeof row.sessionId !== 'string' || typeof row.tabId !== 'string') continue
+              try { native.controller.closeIn(row.sessionId, row.tabId) } catch { /* rail owns it */ }
+            }
+          }
+          // better 栏刻意不在这里扫：插件的 tab 只有在宿主真的 mount 它时才
+          // 存在，而 mount 是“当前页面有卡片”的证明；多窗口下另一个窗口的
+          // 活跃卡片与本页共享同一个 session，盲扫会替它关掉 tab。
         }
 
         const actions = {
@@ -6554,6 +6594,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                   if (renderedCardId === card.id) return
                   store.set({ surface: 'flow', surfaceNote: t('surfaceUnproven') })
                   patchCard(card.id, { surface: 'flow' })
+                  // 卡已经回到浮层，栏里那张 tab 就没有内容了；不关掉会留下
+                  // 一块"已移到浮层"的空面板，用户还得自己找它（专家 E）。
+                  try { surfaces.native.close(card) } catch { /* rail owns it */ }
+                  try { surfaces.better.close(card) } catch { /* host may be gone */ }
                   toast(t('surfaceUnproven'))
                   scheduleReport(0)
                 }, 600)
@@ -7386,6 +7430,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               if (registry === null || registry === undefined) return
               surfaces.native.registry = registry
               surfaces.native.controller = controller ?? null
+              // 布局恢复出来的 tab 没有卡片认领，注册完立刻清一次。
+              try { sweepOrphanRailTabs() } catch { /* best effort */ }
               // Register the tab TYPE first, then its body/title slots — and
               // roll the type back if a slot refuses to register.
               //
@@ -7418,7 +7464,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 slotDisposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
                   name: 'sidebar.right.pane.tab',
                   key: CARD_KIND,
-                }, props => h(CardHost, { props, actions }))))
+                }, props => h(CardHost, { props, actions, surface: 'native-rightbar' }))))
                 slotDisposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
                   name: 'sidebar.right.pane.tab.title',
                   key: CARD_KIND,
@@ -7494,9 +7540,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 component: props => h(CardHost, {
                   props: { tab: props?.tab, sessionId: props?.scope?.sessionId },
                   actions,
+                  surface: 'better-sidebar',
                 }),
               })
               surfaces.better.service = service
+              // 同 native：注册完清掉无主的 better 栏 tab。
+              try { sweepOrphanRailTabs() } catch { /* best effort */ }
               surfaces.better.dispose = typeof off === 'function' ? off : null
               disposers.push(() => {
                 try { surfaces.better.dispose?.() } catch { /* already disposed */ }
@@ -7525,12 +7574,17 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const navigation = props?.tab?.navigation ?? props?.navigation
           const fromParams = navigation?.params?.cardId
           if (typeof fromParams === 'string' && fromParams !== '') return fromParams
+          // 回退只对"宿主不给 tab 对象"的内置右栏成立（它本来就这么设计：
+          // 导航参数不进 tab 记录）。better-sidebar 一定给 tab；它的 meta 里
+          // 没有 cardId 时，这张 tab 不是卡片的，拿原生适配器的地址顶替会
+          // 渲染出**另一张卡**（专家 A1-host 的跨面误伤）。
+          if (props?.tab !== undefined && props.tab !== null) return undefined
           const recorded = surfaces.native.cardId
           return typeof recorded === 'string' && recorded !== '' ? recorded : undefined
         }
 
         /** Embedded card body used by both external hosts. */
-        function CardHost({ props }) {
+        function CardHost({ props, surface }) {
           const state = useStoreState()
           const cardId = hostCardIdOf(props)
           const card = state.cards.find(item => item.id === cardId)
@@ -7578,7 +7632,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             h(Styles, null),
             h(MemoAnswerCard, {
               card,
-              surfaceLabel: state.surface === 'better-sidebar' ? t('surfaceBetter') : t('surfaceNative'),
+              // 标签说的是"这张卡现在挂在哪个承载面"，与用户选的全局
+              // 偏好无关：两个宿主可能同时存在（原生栏 + better 镜像），
+              // 读 state.surface 会把 better 栏里的卡标成"原生右栏"（专家 A4）。
+              surfaceLabel: (surface ?? state.surface) === 'better-sidebar' ? t('surfaceBetter') : t('surfaceNative'),
               onCopy: element => actions.copy(card, element),
               onFollowUp: text => actions.followUp(card, text),
               onRetry: () => actions.retry(card),
@@ -7601,6 +7658,35 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           // Corrupt-but-parseable history must never block startup.
           console.warn(`[${PLUGIN_ID}] card history restore failed:`, error)
         }
+
+        // The adapters register asynchronously (ctx.inject callbacks), so the
+        // sweep above may run before the rail data exists; one delayed retry
+        // covers a layout that is restored after this line.
+        const orphanSweepTimer = setTimeout(() => {
+          try { sweepOrphanRailTabs() } catch { /* best effort */ }
+        }, 900)
+        disposers.push(() => clearTimeout(orphanSweepTimer))
+
+        // Cross-tab history sync. Two pages (desktop window + browser) each
+        // hold their own store and write the WHOLE array, so the last writer
+        // wins: A deletes an entry, B still has it in memory, B's next write
+        // resurrects it (expert MULTITAB). Adopting the on-disk envelope
+        // whenever another page writes makes B's next sync start from the
+        // authoritative set instead of its stale memory.
+        let storageListener = null
+        try {
+          if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+            storageListener = event => {
+              if (event !== null && event !== undefined && typeof event.key === 'string'
+                && event.key !== PERSIST_KEY) return
+              try { store.set({ history: readPersisted() }) } catch { /* read defensively */ }
+            }
+            window.addEventListener('storage', storageListener)
+            disposers.push(() => {
+              try { window.removeEventListener('storage', storageListener) } catch { /* gone */ }
+            })
+          }
+        } catch { /* a host without storage events simply has no cross-tab sync */ }
 
         // §4.5 family singleton: register this copy, (re)elect on every join
         // or leave, and gate the interaction surface on the verdict.

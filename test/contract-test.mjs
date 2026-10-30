@@ -4666,5 +4666,103 @@ report.ok(/attributeFilter: \['data-sidebar-right-open', 'data-dockkit-pane-acti
 report.equal(/attributeFilter: \[[^\]]*'class'/.test(clientSource), false,
   'class churn no longer wakes the layer')
 
+
+console.log('\nrail orphan sweep')
+// F1/F2 回归（2026-10-29 rc.5 评审）：宿主会持久化右侧栏布局，页面重载后把
+// 我们的 tab 还原出来；而"哪张卡拥有这张 tab"是进程内存（卡片本身也不持久
+// 化）。旧版既不认领也不关闭，留下一块渲染"卡片已关闭"、用户关不掉的幽灵
+// 面板。注册完成（含布局晚到的一次重试）后必须把无主的同 kind tab 清掉，
+// 且绝不能碰别的插件的 kinds。
+const sweepRows = [
+  { sessionId: 'session-alpha', tabId: 'sweep-own-tab', kind: pure.CARD_KIND },
+  { sessionId: 'session-alpha', tabId: 'sweep-foreign-tab', kind: 'someone-elses-kind' },
+]
+const sweepClosed = []
+const sweepCtx = makeClientCtx({
+  services: {
+    sidebarRightTabs: { register: () => () => {} },
+    sidebarRight: {
+      openTab: () => {},
+      closeIn: (sessionId, tabId) => {
+        const at = sweepRows.findIndex(row => row.tabId === tabId)
+        sweepClosed.push({ sessionId, tabId, kind: at >= 0 ? sweepRows[at].kind : null })
+        if (at >= 0) sweepRows.splice(at, 1)
+      },
+      openTabs: { getSnapshot: () => sweepRows.slice() },
+      mounted: { getSnapshot: () => 'session-alpha', subscribe: () => () => {} },
+    },
+  },
+})
+const sweepClient = loadClientModule({ fetchImpl: hostFetch, storage: createLocalStorageStub(), language: 'zh-CN' })
+sweepClient.module.apply(sweepCtx.ctx)
+await new Promise(resolve => setTimeout(resolve, 60))
+report.equal(sweepClosed.length, 1, 'a restored rail tab that no card claims is closed on registration')
+report.equal(sweepClosed[0]?.tabId, 'sweep-own-tab', 'the sweep only touches the plugin tab kind')
+report.equal(sweepClosed[0]?.sessionId, 'session-alpha', 'the sweep closes through the session that owns the row')
+report.ok(sweepRows.some(row => row.tabId === 'sweep-foreign-tab'), 'a foreign tab kind is never closed')
+
+// 归属门（本轮收紧）：已知别的卡拥有 tab 时仍然拒绝；只有"无主"才放行。
+// 反过来更重要：删除一条历史时，当前页面没有卡片认领栏位，也必须关掉那张
+// 同 kind 的 tab —— 旧版 cardId 为 null 直接 return false，永远关不掉。
+const orphanStorage = createLocalStorageStub()
+orphanStorage.setItem(PERSIST_KEY, JSON.stringify({
+  version: 3,
+  writtenAt: Date.now(),
+  cards: [{
+    id: 'orphan-history-entry',
+    question: '重载前问过的话',
+    text: '**Pro** contract answer',
+    status: 'done',
+    createdAt: Date.now() - 1000,
+    sessionId: 'session-alpha',
+    carrier: 'side',
+    versions: [],
+  }],
+}))
+const orphanRows = []
+const orphanClosed = []
+const orphanCtx = makeClientCtx({
+  services: {
+    sidebarRightTabs: { register: () => () => {} },
+    sidebarRight: {
+      openTab: () => {},
+      closeIn: (sessionId, tabId) => {
+        const at = orphanRows.findIndex(row => row.tabId === tabId)
+        orphanClosed.push({ sessionId, tabId, kind: at >= 0 ? orphanRows[at].kind : null })
+        if (at >= 0) orphanRows.splice(at, 1)
+      },
+      openTabs: { getSnapshot: () => orphanRows.slice() },
+      mounted: { getSnapshot: () => 'session-alpha', subscribe: () => () => {} },
+    },
+  },
+})
+const orphanClient = loadClientModule({ fetchImpl: hostFetch, storage: orphanStorage, language: 'zh-CN' })
+orphanClient.module.apply(orphanCtx.ctx)
+await new Promise(resolve => setTimeout(resolve, 40))
+const orphanActions = orphanCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+report.equal(orphanClient.module.api.snapshot().history.length, 1, 'the seeded history entry is replayed')
+// 模拟"宿主在注册之后才还原布局"：这时 900ms 的重试清扫还没跑。
+orphanRows.push({ sessionId: 'session-alpha', tabId: 'late-restored-tab', kind: pure.CARD_KIND })
+orphanActions.deleteHistoryCard('orphan-history-entry')
+report.equal(orphanClosed.at(-1)?.tabId, 'late-restored-tab', 'deleting an entry with no owning card still closes its rail tab')
+report.equal(orphanClosed.at(-1)?.kind, pure.CARD_KIND, 'the close targets the card tab kind')
+report.equal(orphanRows.length, 0, 'no rail tab survives the deleted entry')
+report.equal(orphanClient.module.api.snapshot().history.length, 0, 'the deleted entry is gone from the manager too')
+
+// A4：承载面标签要说"这张卡现在挂在哪个宿主"，而不是用户选的全局偏好。
+// 两个宿主可能同时存在，读 state.surface 会把 better 栏里的卡标成原生右栏。
+report.ok(
+  /actions, surface: 'native-rightbar'/.test(clientSource),
+  'the native tab body pins its own surface label',
+)
+report.ok(
+  /surface: 'better-sidebar'/.test(clientSource),
+  'the better tab body pins its own surface label',
+)
+report.ok(
+  /\(surface \?\? state\.surface\) === 'better-sidebar'/.test(clientSource),
+  'the host label follows the pinned surface instead of the global preference',
+)
+
 report.summary()
 

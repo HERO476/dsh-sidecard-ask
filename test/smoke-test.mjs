@@ -347,6 +347,27 @@ report.ok(
   'the cancellation stopped the stream before every frame arrived',
 )
 
+// 归属收紧（rc.5 评审 CANCEL）：run 知道自己是哪个会话发起的，就不再接受
+// 不带 sessionId 或带错 sessionId 的取消 —— 否则任何拿到 run id 的页面都能
+// 中止别的会话的子代理。老客户端一直带 sessionId，所以这不打断既有调用方。
+const ownedBoot = await boot({ engineOptions: { delayMs: 25, frames: ['a', 'b', 'c', 'd', 'e', 'f'] } })
+const ownedPending = callRoute(ownedBoot.harness, '/ask', {
+  body: { id: 'ask-owned', question: '归属', selection: '归属文本', zone: 'chat', sessionId: 'session-alpha' },
+})
+await wait(60)
+const wrongSession = await callRoute(ownedBoot.harness, '/cancel', {
+  body: { id: 'ask-owned', sessionId: 'session-beta' },
+})
+report.equal(wrongSession.json().value.cancelled, false, 'cancel refuses another session run')
+const noSession = await callRoute(ownedBoot.harness, '/cancel', { body: { id: 'ask-owned' } })
+report.equal(noSession.json().value.cancelled, false, 'cancel refuses a call that omits the owning session')
+const ownerSession = await callRoute(ownedBoot.harness, '/cancel', {
+  body: { id: 'ask-owned', sessionId: 'session-alpha' },
+})
+report.equal(ownerSession.json().value.cancelled, true, 'cancel accepts the owning session')
+const ownedAnswer = await ownedPending
+report.ok(ownedAnswer.events().length > 0, 'the owned run still delivers its partial answer')
+
 // A run cancelled before ANY frame produces a plain error instead of an empty
 // "done": the Client shows the retryable error card.
 const c2 = await boot({ engineOptions: { delayMs: 60, frames: ['x'] } })

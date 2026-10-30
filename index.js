@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.6'
+export const PLUGIN_VERSION = '2.1.7'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -2172,10 +2172,12 @@ function createSideEngine(ctx, configOf) {
     const record = runs.get(id)
     if (record === undefined) return false
     const owner = record.sessionId
-    if (typeof owner === 'string' && owner !== ''
-      && typeof sessionId === 'string' && sessionId !== ''
-      && owner !== sessionId) {
-      return false
+    if (typeof owner === 'string' && owner !== '') {
+      // 归属判定必须是"两边都在且相等"：只要这个 run 知道自己在哪个会话，
+      // 没带 sessionId（或带错）的调用方一律拒绝 —— 否则任何拿到 run id 的
+      // 页面都能中止别的会话的子代理（专家 CANCEL）。老客户端一直带
+      // sessionId，因此这条收紧不会打断既有调用方。
+      if (typeof sessionId !== 'string' || sessionId === '' || owner !== sessionId) return false
     }
     record.abort()
     return true
@@ -2752,15 +2754,27 @@ export function apply(ctx, patchConfig) {
   const authRejection = req => {
     const connection = connectionService()
     if (connection === undefined) {
+      // 专家 AUTH-EDGE：这是 WEB 端的正常形态（宿主没把 connection 服务
+      // 暴露给插件），但它同时意味着"没有宿主级认证"—— 单条 info 等于把
+      // 风险静音，改成 warn，且每个进程仍只记一次。
       if (!authGateNoted) {
         authGateNoted = true
-        ctx.logger?.info?.('[sidecard-ask] 未挂载 connection 服务：API 仅保留 loopback/Origin 围栏')
+        ctx.logger?.warn?.('[sidecard-ask] 未挂载 connection 服务：API 仅保留 loopback/Origin 围栏，无宿主级认证')
       }
       return undefined
     }
     try {
       const rejection = connection.requestRejection(req)
-      return rejection === 401 || rejection === 403 ? rejection : undefined
+      if (rejection === 401 || rejection === 403) return rejection
+      // 旧实现把"任何非 401/403 的值"都当放行，包括对象/字符串这类仲裁器
+      // 可能用来表示"拒绝"的返回值（专家 AUTH-EDGE）。契约未公开，所以
+      // 只在明确表示放行时放行：undefined/null/false/200；其余按未认证
+      // 处理并留一条 warn，万一是契约误判能立刻被看见。
+      if (rejection === undefined || rejection === null || rejection === false || rejection === 200) {
+        return undefined
+      }
+      ctx.logger?.warn?.('[sidecard-ask] requestRejection 返回了意外的值，按未认证处理：', rejection)
+      return 403
     } catch (error) {
       // Fail closed: an unreadable auth service must not widen the surface.
       ctx.logger?.warn?.('[sidecard-ask] 鉴权校验异常，按未认证处理：', error?.message ?? error)
