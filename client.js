@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.7'
+    const CLIENT_VERSION = '2.1.8'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
