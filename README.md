@@ -167,6 +167,7 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `sideSurface` | `auto` \| `native-rightbar` \| `better-sidebar` \| `flow` | `auto` | **窗口模式（侧边承载面）**：自动挑选（先 dsh-better-sidebar，再内置浮层卡片）/ 强制 DSH 原生右侧栏（不参与自动）/ 强制 dsh-better-sidebar / 强制内置浮层卡片 | 立即 |
 | `maxChars` | 200–60000 | `4000` | **最大字符数**：超出部分头尾保留、中间截断并标注 | 立即 |
 | `floatMode` | `capsule` \| `full` | `capsule` | **内置浮层的默认形态**：胶囊（一行，最小遮挡）/ 完整卡片栈。运行时可即时收起为胶囊，但不写回本项——刷新后仍回到这里设的默认。旧配置里存过 `off` 的会在启动时校验失败、回退为 `capsule`，并在 `problems` 里给出提示（`index.js` 的 `sanitizeLayer`），无需手工迁移 | 立即 |
+| `autoExpandOnDone` | 布尔 | `true` | **答完自动展开卡片**：回答结束（`done` / `stopped` / `error`）时把浮层从胶囊切到卡片形态并展开该卡，答案正文直接显示在侧边卡片里。置 `false` 则始终停在胶囊，点一下才展开（2.1.9 起） | 立即 |
 | `floatMaxWidth` | 240–560 | `340` | **内置浮层宽度上限**（px）：实际宽度 = `min(本项, 对话区右侧可用带宽)`，可用带宽不足 240px 时才会压入对话区 | 立即 |
 | `dockRail` | 布尔 | `true` | **右侧栏打开时占满它**：答案卡铺满右栏标签条下方的内容区，读起来像栏内的一页，而不是 340px 的小浮层。收起为胶囊、点卡片底部「关闭」、右栏宽度 < 280px 或高度 < 240px 时自动回到常规浮层；实现靠测量右栏 DOM 矩形，**没有**走 DSH 的右栏 API（见 §4.2 与 §6.1） | 立即 |
 | `shortcut` | 形如 `Alt+Q`、`Ctrl+Shift+K` | `Alt+Q` | **快捷键**：唤起提问框（`trigger` 允许时） | 立即 |
@@ -546,6 +547,72 @@ dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[d
 
 > 另：2.0.2 CHANGELOG 里"桌面端在本机冷启动即崩"的结论，2026-10-22 **未能复现**——本次冷启动成功、
 > 宿主在 19387 正常服务。该条已按"与安装包/启动方式相关，需按版本复验"处理，不再当作既定事实。
+
+---
+
+### 5.6 2026-11-03 复核（v2.1.9 / dsh-better-sidebar 0.28.2）
+
+本轮把适配核对的**对象**从上表的 0.22.1（网页）/ 0.24.1（桌面）更新到本机实际运行的
+**0.28.2**（`SIDEBAR_SERVICE_VERSION = "0.28.2"`，`SIDEBAR_FEATURES` 14 项），并修掉四处
+按旧模型写的假设。证据分三类：**源码级**（读 0.28.2 的 `lib/types/client/service.d.ts`
+与 `src/client/*.ts`）、**替身复现**（`test/` 下的 0.28.2 形状替身）、**真机**（本轮**未做**，见末尾）。
+
+#### 0.28.2 的关键事实（相对 0.22.1 的漂移）
+
+| # | 事实 | 对适配的影响 |
+|---|---|---|
+| 1 | 组件类 seed 的 `openTab` 实际落到 **DSH 原生右栏**（`service.ts:1120-1145`），不再进 better 自己的 workbench | better 与 native **共用同一个物理容器**；`dockRail` 的锚点会指到别人的页面 |
+| 2 | tab id 由宿主 mint（`tab1…`），seed id 被忽略，`closeTab(seed.id)` 是 no-op | 关闭必须用 `CardHost` 记录的真实 id（2.1.6 S1 已做） |
+| 3 | 同 kind 每会话只有**一个 page 地址**（无 `multiple`） | 同会话再开一张 = 导航，旧卡必须迁回浮层（2.1.6 S2 已做） |
+| 4 | `isTabEnabled(type)` 禁用后 `openTab` **warn + return**，不抛错 | 禁用态会被误判成「承载面未证实」并弹假故障（2.1.9 A5 修） |
+| 5 | 每个注册类型自动进 `+` 菜单，并生成 guide 胶囊 | 点开是一张无 `cardId` 的空页（2.1.9 A4 用 `hidden: true` 修） |
+| 6 | `OpenTabSeed.target` 支持 `right/bottom/side`，另有 `preferNewPane` 与 split pane | 本插件不传 target（默认 right）；分栏时 panel 级回退会横跨两栏 |
+| 7 | 非当前会话的 `openTab` 是**排队**，不是拒绝；只有 on-screen 才 mount | 600 ms 渲染证明会把排队中的卡误判为失败（2.1.9 A6 修） |
+| 8 | 镜像注册的 `id` 是 `dsh-better-sidebar:<id>`、`kind` 是描述符 id | 两个适配器同 kind 相撞的旧缺陷**已清除**；但 `closeRailRow` 需容忍带前缀的 kind |
+
+> `.d.ts` 里 `openTab` 的注释写「每次 open 落在 bottom workbench」，而 `OpenTabSeed.target`
+> 的注释写默认 `'right'` 是原生右栏——两者矛盾，**只有 `src/client/service.ts` 给出真值**。
+> 下一位维护者不要只看 `.d.ts`。
+
+#### 本版修掉的适配缺陷
+
+| 编号 | 缺陷 | 修法 |
+|---|---|---|
+| A1 | 跨会话关闭/删除不关 better tab（进程级单槽 `cardId` 误判归属） | 归属改为按 `(kind, session)` 记（`owners` Map）；「本会话有别的卡持有才拒绝」，会话未知时退回单槽 |
+| A2 | 刷新后宿主还原的 better tab 无人认领、没有出口 | 空页渲染「关闭此页」；**只有本页真的挂载过**该 tab 才自动关（别的窗口的 tab 不抢） |
+| A3 | `dockRail` 把浮层卡铺到另一张卡自己的页面上 | `CardHost` 根节点声明 `data-dsa-card-id`；`findRail` 拒绝不属于本层的 body，全被拒时 `data-dsa-dock="occupied"` |
+| A4 | `+` 菜单两条「点开即空页」胶囊 | descriptor 加 `hidden: true`（保留可 open，只是不进菜单）；原生 guide 那条缺宿主语义材料，仍会显示 |
+| A5 | 禁用的 tab 类型仍被 `auto` 选中并报假故障 | `available()` 读 `isTabEnabled`，禁用即 `reason='tab-disabled'`，直接落浮层 |
+| A6 | 非当前会话的卡被 600 ms 证明迁走 | 证明只对「当前屏会话」武装 |
+| A7 | 自检看不出「到底有没有落栏」 | 上报增 `railTabs`（宿主清单里本插件行数）与 `mountedTabId`（最近一次真实挂载的宿主 tab id） |
+
+#### 安全相关（同一轮，详见 §十二）
+
+- `/config` 改 `feedbackSmtpHost/Port/Secure/User` 任一项 → **已存授权码作废**。否则「空密码 = 保留旧值」
+  等于把凭据交给新主机，而 `AUTH PLAIN` 是明文。
+- `/config` 写 `sideTools: "inherit"` 需要 `confirmInheritTools: true`。**这不是安全边界**
+  （同源脚本可以伪造这个字段），只让这次提权必须是有意的；同源信任边界由宿主权限决定。
+- 只读护栏改为 **fail-closed**：工具注册表答了却认不出任何只读工具时，除非另有 `agentPreset`
+  收窄，否则**拒跑**（新错误码 `no-readonly-guard`，卡片文案中英齐全）。
+- `cardId` 改为不可预测（`card-<base36 时间>-<序号>-<随机 6 位>`）；better tab 标题不再携带问题原文
+  （0.28.x 会把 title/meta 随布局持久化）；`tab.meta.cardId` 增加「属于本会话」校验。
+
+#### 0.28.2 新 API 的准入条件（采用前必须满足）
+
+- `updateTab(tabId, { title, path, meta }, sessionId)`：① 只允许 `embeddedTabIds` 里的自持 tabId；
+  ② `sessionId === card.sessionId`；③ **永不带 `path`**（那等于给出「在后台会话打开任意文件路径」的原语）。
+- `stateSubscription` / `getSnapshot`：只用来读，**禁止**用快照的 `sessionId` 重定向在飞请求。
+- `pluginSettings`：只放 UI 偏好，绝不放卡片正文或选中文本。
+
+#### 仍未验证（如实记录）
+
+- 真实浏览器 / Electron 页面里的**点按与视觉**：本机无 GUI 自动化。`dockRail` 的 `occupied`、
+  `hidden` 之后的 `+` 菜单、跨窗口清扫都**没有被真机执行**。
+- 桌面端：desktop profile 同样是 `dsh-better-sidebar ^0.28.2`，§5.3 的 0.24.1 核对**已过期**；
+  本版按同一套源码事实处理，但没跑桌面。
+- macOS / Linux：零用例，仓库没有 CI。
+- `openTabs` 是否跨窗口共享（`app.asar` 内的 `sidebar-right` 读不到）：因此「自动清扫」只采用
+  「本页挂载过」这一按页成立的判据，没有做 boot 期盲扫。
 
 ---
 

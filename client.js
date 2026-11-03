@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.8'
+    const CLIENT_VERSION = '2.1.9'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -206,6 +206,10 @@ window.__ModuleLoader__.load({
       // tool-narrowing channel 0.2.1 honors (see the settings row help text).
       sideAgentPreset: '',
       floatMode: 'capsule',
+      // 2.1.9：答完自动把浮层从胶囊展开成卡片。胶囊只渲染一行状态，答案要
+      // 点一下 › 才看得到；用户明确要求「提问完成之后直接在侧边卡片显示回答内容」。
+      // 置 false 可恢复旧行为（始终停在胶囊）。
+      autoExpandOnDone: true,
       floatMaxWidth: 340,
       // Docked presentation (1.8.3): when the right rail is on screen, the
       // answer paints inside the rail's rectangle instead of floating as a
@@ -463,6 +467,12 @@ window.__ModuleLoader__.load({
       // where a page goes. It also works on builds whose rail markers we have
       // never seen — including the leftover "card closed" tab, which still
       // occupies a page body.
+      //
+      // 0.28.x moved the side-card plugin's tabs INTO this same rail, so this
+      // marker now also matches a DIFFERENT card's page. `findRail` refuses a
+      // body that declares another card id (`data-dsa-card-id`) instead of
+      // painting our card on top of it; unmarked bodies (older hosts, leftover
+      // closed-card faces) stay eligible.
       '[data-dsa-rail-host]',
       '[data-sidebar-right-panel][data-sidebar-right-open] [data-dockkit-pane]',
       '[data-sidebar-right-panel][data-sidebar-right-open]',
@@ -539,17 +549,31 @@ window.__ModuleLoader__.load({
      *
      * @returns {{node: Element, box: {left: number, top: number, width: number, height: number}}|null}
      */
-    function findRail(scope) {
+    function findRail(scope, ownCardIds) {
       if (scope === null || scope === undefined || typeof scope.querySelector !== 'function') return null
+      const owns = ownCardIds instanceof Set ? ownCardIds : null
+      let occupied = false
       for (const selector of RAIL_SELECTORS) {
         let node = null
         try { node = scope.querySelector(selector) } catch { node = null }
         if (node === null || typeof node.getBoundingClientRect !== 'function') continue
+        // A body that names a card this layer does not own belongs to another
+        // side card (or another session's page). Docking into it would cover
+        // that card, so it is skipped and remembered as "occupied" — the layer
+        // then stays floating and says why through `data-dsa-dock`.
+        let cardId = null
+        try {
+          cardId = typeof node.getAttribute === 'function' ? node.getAttribute('data-dsa-card-id') : null
+        } catch { cardId = null }
+        if (typeof cardId === 'string' && cardId !== '' && (owns === null || !owns.has(cardId))) {
+          occupied = true
+          continue
+        }
         let box = null
         try { box = dockedBodyRect(node) } catch { box = null }
-        if (railOnScreen(box)) return { node, box }
+        if (railOnScreen(box)) return { node, box, occupied }
       }
-      return null
+      return occupied ? { node: null, box: null, occupied: true } : null
     }
 
     /**
@@ -627,6 +651,7 @@ window.__ModuleLoader__.load({
         answerNonStreaming: '当前 DSH 版本未提供流式帧，答案一次性返回',
         answerEmpty: '（没有内容）',
         cardClosed: '该卡片已关闭',
+        closeThisTab: '关闭此页',
         cardMovedToFlow: '该卡片已移至浮层显示',
         cardDelete: '删除这条追问对话',
         cardDeleteTitle: '删除这条追问对话？',
@@ -660,6 +685,7 @@ window.__ModuleLoader__.load({
         errorBusy: '并发追问已达上限（{n}），请稍后再试',
         errorNoSideEngineBody: '这台 DSH 组合没有可用的子代理 provider',
         errorNoParentBody: '当前没有活动的会话代理，无法发起独立作答',
+        errorNoReadonlyGuardBody: '这台宿主的工具注册表里认不出只读工具，为保证侧边作答不写工作区，本次已拒绝',
         errorAborted: '作答被取消或超时',
         errorUnreachableBody: '宿主接口不可达',
         errorUnauthorizedBody: '需要先通过 DSH 登录（宿主会话未认证）',
@@ -689,6 +715,8 @@ window.__ModuleLoader__.load({
         setFloatModeCapsule: '胶囊（不遮挡对话，可随时展开）',
         setFloatModeFull: '直接展开成卡片',
         setFloatModeHint: '浮层贴右侧边缘，只在空间不足时才可能压到对话区',
+        setAutoExpandOnDone: '答完自动展开卡片',
+        setAutoExpandOnDoneHint: '开启后，回答一结束就展开成卡片显示正文；关闭后保持一行胶囊，点一下才展开',
         setFloatMaxWidth: '浮层宽度上限（px）',
         setFloatMaxWidthHint: '空间不足时自动收窄，不会硬顶',
         setDockRail: '右侧栏打开时占满它',
@@ -902,6 +930,7 @@ window.__ModuleLoader__.load({
         answerNonStreaming: 'This DSH build publishes no stream frames; the answer arrived at once',
         answerEmpty: '(empty)',
         cardClosed: 'This card was closed',
+        closeThisTab: 'Close this tab',
         cardMovedToFlow: 'This card moved to the floating stack',
         cardDelete: 'Delete this follow-up conversation',
         cardDeleteTitle: 'Delete this follow-up conversation?',
@@ -935,6 +964,7 @@ window.__ModuleLoader__.load({
         errorBusy: 'Too many concurrent answers (limit {n}); try again shortly',
         errorNoSideEngineBody: 'This DSH composition has no usable subagent provider',
         errorNoParentBody: 'No active session agent to answer independently',
+        errorNoReadonlyGuardBody: 'This host\'s tool registry has no recognisable read-only tools, so the side answer was refused to keep the workspace untouched',
         errorAborted: 'The answer was cancelled or timed out',
         errorUnreachableBody: 'The host API is unreachable',
         errorUnauthorizedBody: 'Sign in to DSH first (the host session is not authenticated)',
@@ -964,6 +994,8 @@ window.__ModuleLoader__.load({
         setFloatModeCapsule: 'Capsule (never covers the conversation)',
         setFloatModeFull: 'Expanded card stack',
         setFloatModeHint: 'The layer is anchored to the right edge and only overlaps on very narrow frames',
+        setAutoExpandOnDone: 'Expand the card when the answer finishes',
+        setAutoExpandOnDoneHint: 'On: the answer appears in the card the moment it settles. Off: the one-line capsule stays until you click it',
         setFloatMaxWidth: 'Floating layer max width (px)',
         setFloatMaxWidthHint: 'Narrows automatically when there is not enough room',
         setDockRail: 'Fill the right rail while it is open',
@@ -1215,6 +1247,9 @@ window.__ModuleLoader__.load({
       busy: { key: 'errorBusy', vars: () => ({ n: store?.state?.config?.maxConcurrentAsks ?? 0 }) },
       'no-side-engine': { key: 'errorNoSideEngineBody' },
       'no-parent': { key: 'errorNoParentBody' },
+      // 2.1.9: the read-only guard now fails closed. The code must be named
+      // Client-side, or an English UI would show the Host's Chinese line.
+      'no-readonly-guard': { key: 'errorNoReadonlyGuardBody' },
       aborted: { key: 'errorAborted' },
       unreachable: { key: 'errorUnreachableBody' },
       // The Host now gates these routes on the DSH browser session, so both are
@@ -1604,6 +1639,23 @@ window.__ModuleLoader__.load({
     function setFloatMode(mode) {
       if (mode !== 'capsule' && mode !== 'full') return
       store.set({ floatMode: mode })
+    }
+
+    /**
+     * Bring a finished card on screen.
+     *
+     * The floating layer defaults to the `capsule` pill (one line of status), so
+     * an answer that finishes while collapsed never shows its text. Only a card
+     * carried by the flow layer needs this: a card in the right rail already has
+     * its own page, and an already-expanded card is left alone.
+     * @param {string} id - the card that just finished.
+     */
+    function revealFinishedCard(id) {
+      if (store.state.config.autoExpandOnDone === false) return
+      const card = store.state.cards.find(item => item.id === id)
+      if (card === undefined || card.surface !== 'flow') return
+      setFloatMode('full')
+      patchCard(id, { open: true })
     }
 
     /** Replace one card by id (immutably; a no-op when it is gone). */
@@ -2332,21 +2384,34 @@ window.__ModuleLoader__.load({
          * this id instead of guessing at a `tab.meta` that no longer exists.
          */
         cardId: null,
+        /** Per-session tab ownership; see `ownerKeyOf`. */
+        owners: new Map(),
         open(card) {
           if (!this.available() || typeof this.controller.openTab !== 'function') return false
           // 同一个 kind 在原生栏里只有一个地址（见 cardId 的注释）：先把栏里
           // 其它卡片迁回浮层，否则它们既不在栏里也不在浮层上，流式输出还会
           // 继续往一张看不见的卡片里写。
+          const openSession = typeof card.sessionId === 'string' && card.sessionId !== ''
+            ? card.sessionId
+            : store.state.sessionId
+          const openKey = ownerKeyOf(openSession)
           for (const other of store.state.cards) {
-            if (other.id !== card.id && other.surface === 'native-rightbar') {
-              // `open: true` is load-bearing: the floating layer only mounts a
-              // card whose `surface === 'flow'` AND `open` is true, so migrating
-              // a card back to the flow while leaving it folded hid it on BOTH
-              // surfaces — not in the rail, not on screen, still streaming.
-              patchCard(other.id, { surface: 'flow', open: true })
-            }
+            if (other.id === card.id || other.surface !== 'native-rightbar') continue
+            // Only the SAME session's other card loses its address: every
+            // session keeps its own tab, so migrating across sessions would
+            // yank a card out of a rail the user is still looking at.
+            const otherSession = typeof other.sessionId === 'string' && other.sessionId !== ''
+              ? other.sessionId
+              : store.state.sessionId
+            if (ownerKeyOf(otherSession) !== openKey) continue
+            // `open: true` is load-bearing: the floating layer only mounts a
+            // card whose `surface === 'flow'` AND `open` is true, so migrating
+            // a card back to the flow while leaving it folded hid it on BOTH
+            // surfaces — not in the rail, not on screen, still streaming.
+            patchCard(other.id, { surface: 'flow', open: true })
           }
           this.cardId = card.id
+          this.owners.set(openKey, card.id)
           try {
             this.controller.openTab(CARD_KIND, { params: { cardId: card.id }, revealIfOpened: true })
           } catch (error) {
@@ -2372,12 +2437,20 @@ window.__ModuleLoader__.load({
           // 却把另一种真实场景关在门外：页面重载后宿主会从布局里恢复出这张
           // tab，而 `cardId` 是内存态、必然是 null —— 此时没有卡片认领它，
           // 删除历史条目也永远关不掉，就是专家复现的"幽灵面板"。
-          // 规则改为：**已知别的卡拥有它才拒绝**；无主时按 kind + 会话定位。
-          if (this.cardId !== null && this.cardId !== card.id) return false
-          // 卡片自己的会话优先：用户切走会话后关闭 A 的 tab，仍应落在 A。
+          // 规则改为：**本会话里有别的卡拥有它才拒绝**；本会话无主时按
+          // kind + 会话定位（重载后的幽灵面板由此能关掉）。
+          //
+          // 2.1.9：归属按会话记。进程级单槽在跨会话时会误判「别的卡拥有它」，
+          // 让 A 会话的 tab 永远关不掉（专家复现的跨会话残留）。
           const ownerSession = typeof card.sessionId === 'string' && card.sessionId !== ''
             ? card.sessionId
             : store.state.sessionId
+          const knownSession = typeof card.sessionId === 'string' && card.sessionId !== ''
+          const holderId = this.owners.get(ownerKeyOf(ownerSession))
+          if (holderId !== undefined && holderId !== card.id) return false
+          // 会话未知（历史条目/幽灵 id）时，退回进程级单槽：没有任何会话认领
+          // 它，而栏里那张属于别的卡，就不能替它关。
+          if (holderId === undefined && !knownSession && this.cardId !== null && this.cardId !== card.id) return false
           let rows = []
           try {
             rows = typeof controller.openTabs?.getSnapshot === 'function'
@@ -2403,6 +2476,7 @@ window.__ModuleLoader__.load({
               return false
             }
             if (this.cardId === card.id) this.cardId = null
+            if (this.owners.get(ownerKeyOf(ownerSession)) === card.id) this.owners.delete(ownerKeyOf(ownerSession))
             return true
           } catch (error) {
             console.warn(`[${PLUGIN_ID}] the right rail refused the close:`, error)
@@ -2425,6 +2499,8 @@ window.__ModuleLoader__.load({
          * that is not this owner must not close someone else's tab.
          */
         cardId: null,
+        /** Per-session tab ownership; see `ownerKeyOf`. */
+        owners: new Map(),
         /**
          * Why this adapter is (not) usable, in the settings page's own words.
          * `null` means "usable"; a string explains the refusal.
@@ -2445,7 +2521,21 @@ window.__ModuleLoader__.load({
          */
         available() {
           if (this.service === null || this.error !== null) return false
-          return Array.isArray(this.features) && this.features.includes('tabMeta')
+          if (!(Array.isArray(this.features) && this.features.includes('tabMeta'))) return false
+          // 0.28.x: every registered type has its own on/off switch in the
+          // side-card plugin's settings, and `openTab` on a disabled type
+          // warns and returns instead of throwing. Treat it as "not usable"
+          // here so `auto` goes straight to the floating card instead of
+          // spending 600 ms proving a surface that deliberately refused.
+          try {
+            if (typeof this.service.isTabEnabled === 'function'
+              && this.service.isTabEnabled(CARD_KIND_BETTER) === false) {
+              this.reason = 'tab-disabled'
+              return false
+            }
+          } catch { /* the probe is optional */ }
+          if (this.reason === 'tab-disabled') this.reason = null
+          return true
         },
         open(card) {
           if (!this.available() || typeof this.service.openTab !== 'function') return false
@@ -2468,21 +2558,25 @@ window.__ModuleLoader__.load({
           // `dedupeKey` on our descriptor is what collapses repeat opens onto
           // the same tab; both are part of the stable consumer contract.
           this.service.openTab(
-            { type: CARD_KIND_BETTER, id: tabId, title: card.question.slice(0, 32), meta: { cardId: card.id } },
+            { type: CARD_KIND_BETTER, id: tabId, title: t('answerTitle'), meta: { cardId: card.id } },
             typeof targetSession === 'string' && targetSession !== '' ? { sessionId: targetSession } : undefined,
           )
           this.cardId = card.id
+          this.owners.set(ownerKeyOf(targetSession), card.id)
           return true
         },
         close(card) {
           if (!this.available() || typeof this.service.closeTab !== 'function') return false
-          // 单一 page 地址：只有最后 open 的那张卡拥有栏里的 tab。
-          // 同 native.close：无主（cardId 为 null，页面重载后）也要放行，
-          // 否则在历史管理器里删掉一条 better 卡，栏里那张 tab 永远留空。
-          if (this.cardId !== null && this.cardId !== card.id) return false
+          // 单一 page 地址（每个会话一个）：只有本会话里最后 open 的那张卡
+          // 拥有栏里的 tab。同 native.close：本会话无主（页面重载后）也要
+          // 放行，否则在历史管理器里删掉一条 better 卡，栏里那张 tab 永远留空。
           const sessionId = typeof card.sessionId === 'string' && card.sessionId !== ''
             ? card.sessionId
             : (store.state.sessionId ?? undefined)
+          const knownSession = typeof card.sessionId === 'string' && card.sessionId !== ''
+          const holderId = this.owners.get(ownerKeyOf(sessionId))
+          if (holderId !== undefined && holderId !== card.id) return false
+          if (holderId === undefined && !knownSession && this.cardId !== null && this.cardId !== card.id) return false
           const scope = typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : undefined
           // 0.28.x 的原生 tab id 由宿主 mint（tab1…），不是我们传入的 seed id；
           // CardHost 挂载时把真实 id 记进 embeddedTabIds。
@@ -2490,17 +2584,20 @@ window.__ModuleLoader__.load({
           if (typeof mountedId === 'string' && mountedId !== '') {
             this.service.closeTab(mountedId, scope)
             this.cardId = null
+            if (this.owners.get(ownerKeyOf(sessionId)) === card.id) this.owners.delete(ownerKeyOf(sessionId))
             return true
           }
           // 卡片还没挂载过（或已从 store 移除）：按 kind + 会话在栏的清单里
           // 找到唯一那张 tab，经原生控制器关闭。
           if (closeRailRow(CARD_KIND_BETTER, sessionId)) {
             this.cardId = null
+            if (this.owners.get(ownerKeyOf(sessionId)) === card.id) this.owners.delete(ownerKeyOf(sessionId))
             return true
           }
           // 0.19 之前的 bottom workbench：seed id 就是 tab id。
           this.service.closeTab(`${CARD_KIND_BETTER}:${card.id}`, scope)
           this.cardId = null
+          if (this.owners.get(ownerKeyOf(sessionId)) === card.id) this.owners.delete(ownerKeyOf(sessionId))
           return true
         },
       },
@@ -2549,6 +2646,29 @@ window.__ModuleLoader__.load({
      * @param {object} state - `store.state`.
      * @returns {object} the report body (allow-listed again on the Host).
      */
+    /**
+     * How many rail rows currently belong to this plugin.
+     *
+     * 0.28.x's `available` only says the descriptor registered — it cannot say
+     * the tab ever sat in the rail, because a disabled type or a missing guide
+     * entry makes `openTab` return silently. Counting the host's own inventory
+     * is the only first-hand signal, and it is what a bug report needs.
+     * @returns {number}
+     */
+    function clientRailTabCount() {
+      const controller = surfaces.native === null ? null : surfaces.native.controller
+      try {
+        const rows = typeof controller?.openTabs?.getSnapshot === 'function'
+          ? controller.openTabs.getSnapshot()
+          : []
+        if (!Array.isArray(rows)) return 0
+        return rows.filter(row => typeof row?.kind === 'string'
+          && (row.kind === CARD_KIND
+            || row.kind === CARD_KIND_BETTER
+            || row.kind === `dsh-better-sidebar:${CARD_KIND_BETTER}`)).length
+      } catch { return 0 }
+    }
+
     function buildClientReport(state) {
       return {
         // Read from the module's own version constant so the report can never
@@ -2567,6 +2687,10 @@ window.__ModuleLoader__.load({
           ...(surfaces.better.version === null ? {} : { version: surfaces.better.version }),
           ...(surfaces.better.reason === null ? {} : { reason: String(surfaces.better.reason) }),
           features: surfaces.better.features,
+          // First-hand proof that a page really exists in the rail, plus the
+          // last host tab id a body actually mounted with.
+          railTabs: clientRailTabCount(),
+          mountedTabId: lastMountedHostTabId,
         },
         // §4.5 family singleton verdict (host-side diagnostics only).
         family: {
@@ -2586,6 +2710,9 @@ window.__ModuleLoader__.load({
      */
     let renderedCardId = null
 
+    /** The host tab id the most recent embedded body mounted with. */
+    let lastMountedHostTabId = null
+
     /**
      * Host tab ids for cards mounted by an external embedder, keyed by card id.
      *
@@ -2595,7 +2722,28 @@ window.__ModuleLoader__.load({
      * open lands in DSH's native rail, so `closeTab(seed.id)` is a strict no-op.
      * The body records the real id here and `surfaces.better.close` uses it.
      */
+    /**
+     * The key an adapter records tab ownership under.
+     *
+     * Ownership is per SESSION, never process-global: each session has its own
+     * page address for a kind, so one slot could only ever describe the last
+     * opened card and would deny every other session its own close.
+     * @param {string|null|undefined} sessionId
+     * @returns {string} '' for "unknown session"
+     */
+    const ownerKeyOf = sessionId => (typeof sessionId === 'string' && sessionId !== '' ? sessionId : '')
+
     const embeddedTabIds = new Map()
+
+    /**
+     * Card ids this page has actually rendered a body for.
+     *
+     * Mount is the only thing that proves a tab belongs to THIS page: the host
+     * persists the rail layout, so another window can restore the same tab
+     * record while its card lives there. A restored-but-unmounted tab therefore
+     * gets a close button, never an automatic close.
+     */
+    const everMountedCards = new Set()
 
     /**
      * Pick the surface for a new card.
@@ -4911,8 +5059,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             } catch { return null }
           }
           const laneRect = measure(lane)
-          const rail = findRail(document)
-          const railBox = rail === null ? null : rail.box
+          const ownCards = new Set(store.state.cards.filter(item => item.surface === 'flow').map(item => item.id))
+          const rail = findRail(document, ownCards)
+          const railBox = rail === null || rail.box === null ? null : rail.box
+          const railOccupied = rail !== null && rail.occupied === true && railBox === null
           const laneRight = laneRect === null ? rootWidth : laneRect.right
           const railLeft = railBox === null ? null : railBox.left
           // 2.1.3: the composer occupies the bottom of the conversation column,
@@ -4965,7 +5115,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             ? 'dock'
             : (mode !== 'full'
               ? 'mode'
-              : (dockWanted ? (railBox === null ? 'no-rail' : 'rail-too-small') : 'off'))
+              : (dockWanted
+                ? (railBox !== null ? 'rail-too-small' : (railOccupied ? 'occupied' : 'no-rail'))
+                : 'off'))
           // The rail can appear AFTER this effect ran (opening it mounts new
           // nodes), and it can be re-created later: keep the observer pointed at
           // whichever node is currently accepted.
@@ -5725,6 +5877,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         h('label', { className: 'dsa-check' },
           h('input', {
             type: 'checkbox',
+            checked: draft.autoExpandOnDone !== false,
+            onChange: event => setDraft({ ...draft, autoExpandOnDone: event.target.checked }),
+          }),
+          t('setAutoExpandOnDone')),
+        h('span', { className: 'dsa-muted' }, t('setAutoExpandOnDoneHint')),
+        h('label', { className: 'dsa-check' },
+          h('input', {
+            type: 'checkbox',
             checked: draft.followUpSuggestions === true,
             onChange: event => setDraft({ ...draft, followUpSuggestions: event.target.checked }),
           }),
@@ -6240,7 +6400,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               : []
           } catch { return false }
           if (!Array.isArray(rows)) return false
-          const candidates = rows.filter(entry => entry?.kind === kind
+          const candidates = rows.filter(entry => (entry?.kind === kind
+            || entry?.kind === `dsh-better-sidebar:${kind}`)
             && typeof entry?.tabId === 'string' && entry.tabId !== '')
           // 会话已知时按会话匹配；会话未知（旧历史没有 sessionId）时只有
           // 全进程恰好一张该 kind 的 tab 才敢关，否则可能误关别的会话。
@@ -6276,15 +6437,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const better = surfaces.better
           if (better === null || better === undefined) return
           if (better.service === null || typeof better.service?.closeTab !== 'function') return
-          // 单一 page 地址：只有最后 open 的那张卡拥有栏里的 tab；释放一张
-          // 不是当前所有者的历史条目，会把现在真正在栏里的卡片连带关掉。
-          // 无主（null）时也放行：理由见 better.close。
-          if (better.cardId !== null && better.cardId !== id) return
+          // 单一 page 地址（每个会话一个）：只有本会话里最后 open 的那张卡
+          // 拥有栏里的 tab；释放一张不是本会话所有者的历史条目，会把现在
+          // 真正在栏里的卡片连带关掉。本会话无主时也放行（理由见 better.close）。
+          const knownSession = typeof sessionId === 'string' && sessionId !== ''
+          const holderId = better.owners.get(ownerKeyOf(sessionId))
+          if (holderId !== undefined && holderId !== id) return
+          if (holderId === undefined && !knownSession && better.cardId !== null && better.cardId !== id) return
           const scope = typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : undefined
           const mountedId = embeddedTabIds.get(id)
           if (typeof mountedId === 'string' && mountedId !== '') {
             try { better.service.closeTab(mountedId, scope) } catch { /* the host may already be gone */ }
             better.cardId = null
+            if (better.owners.get(ownerKeyOf(sessionId)) === id) better.owners.delete(ownerKeyOf(sessionId))
             return
           }
           if (closeRailRow(CARD_KIND_BETTER, sessionId)) {
@@ -6310,8 +6475,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const native = surfaces.native
           if (native === null || native === undefined) return
           if (native.controller === null || native.controller === undefined) return
-          // 无主（null）时也放行：理由见 native.close。
-          if (native.cardId !== null && native.cardId !== id) return
+          // 本会话无主时也放行：理由见 native.close。
+          const holderId = native.owners.get(ownerKeyOf(sessionId))
+          if (holderId !== undefined && holderId !== id) return
           try {
             native.close({ id, sessionId })
           } catch { /* the rail owns its tab's lifetime */ }
@@ -6349,6 +6515,41 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         }
 
         const actions = {
+          /**
+           * Close the rail page that is rendering `props`, by its host tab id
+           * when the host gave one, else by kind + session through the rail
+           * inventory. Used by the orphan page's own close button.
+           * @param {object} props - the body props the host handed `CardHost`.
+           * @returns {boolean} whether a close was issued.
+           */
+          closeRailTab(props) {
+            const tabId = typeof props?.tab?.id === 'string' && props.tab.id !== '' ? props.tab.id : null
+            const scopeId = typeof props?.scope?.sessionId === 'string' && props.scope.sessionId !== ''
+              ? props.scope.sessionId
+              : (props?.tab?.sessionId ?? null)
+            const controller = surfaces.native === null ? null : surfaces.native.controller
+            try {
+              if (tabId !== null && controller !== null && controller !== undefined) {
+                if (typeof controller.closeIn === 'function' && typeof scopeId === 'string') {
+                  controller.closeIn(scopeId, tabId)
+                  return true
+                }
+                if (typeof controller.close === 'function') {
+                  controller.close(tabId)
+                  return true
+                }
+              }
+            } catch { /* the rail owns its tab's lifetime */ }
+            if (typeof scopeId === 'string' && closeRailRow(CARD_KIND, scopeId)) return true
+            const better = surfaces.better
+            try {
+              if (tabId !== null && better?.service && typeof better.service.closeTab === 'function') {
+                better.service.closeTab(tabId, typeof scopeId === 'string' ? { sessionId: scopeId } : undefined)
+                return true
+              }
+            } catch { /* host may be gone */ }
+            return false
+          },
           openPopover(candidate) {
             // P2-2: the composer must be remembered BEFORE the popover's
             // textarea takes focus, otherwise "insert into composer" has no
@@ -6503,7 +6704,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const config = store.state.config
             const cut = truncateSelection(candidate.text, config.maxChars)
             const card = {
-              id: `card-${Date.now()}-${nextCardId++}`,
+              id: `card-${Date.now().toString(36)}-${nextCardId++}-${Math.random().toString(36).slice(2, 8)}`,
               question: payload.question,
               selection: candidate.text,
               selected: cut.text,
@@ -6589,6 +6790,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 // what the "moved to the flow stack" body below covers.
                 const proof = setTimeout(() => {
                   pendingProofs.delete(card.id)
+                  // A card whose session is not the one on screen is queued by
+                  // the host, not refused: the rail only mounts on-screen tabs.
+                  // Judging it "unproven" here moved a perfectly live card to
+                  // the flow stack and closed the tab it had just opened.
+                  const ownSession = typeof card.sessionId === 'string' && card.sessionId !== ''
+                    ? card.sessionId
+                    : null
+                  if (ownSession !== null && store.state.sessionId !== null
+                    && ownSession !== store.state.sessionId) return
                   const live = store.state.cards.find(item => item.id === card.id)
                   if (live === undefined || live.surface === 'flow') return
                   if (renderedCardId === card.id) return
@@ -6874,7 +7084,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             // and managed explicitly in the settings-page history manager.
           },
           async saveConfig(patch) {
-            const value = await postJson('config', patch)
+            // 宿主要求 inherit 显式确认（防误触/静默提权）；用户点"保存"本身
+            // 就是那个确认动作，恶意同源脚本仍可伪造 —— 它不是安全边界，
+            // 只让这种变更必须是有意的。
+            const body = patch?.sideTools === 'inherit' ? { ...patch, confirmInheritTools: true } : patch
+            const value = await postJson('config', body)
             store.set({
               config: { ...CLIENT_DEFAULTS, ...(value.config ?? {}) },
               problems: value.problems ?? [],
@@ -7046,6 +7260,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               })
               controllers.delete(cardId)
               syncPersisted()
+              // 2.1.9：答完就让答案出现在卡片里（胶囊态不再只显示一行状态）。
+              revealFinishedCard(cardId)
               // #5: background finish notification (guarded inside).
               const finished = store.state.cards.find(item => item.id === cardId)
               if (finished !== undefined) notifyCardFinish(finished)
@@ -7055,6 +7271,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               flushStreamBuffers()
               patchCard(cardId, { status: 'error', error, elapsedMs: Date.now() - startedAt })
               controllers.delete(cardId)
+              revealFinishedCard(cardId)
               const failed = store.state.cards.find(item => item.id === cardId)
               if (failed !== undefined) notifyCardFinish(failed)
             },
@@ -7536,6 +7753,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 title: () => t('answerTitle'),
                 description: () => t('settingsDesc'),
                 order: 120,
+                // 0.28.x: a registered type is added to the + menu automatically,
+                // and a guide entry opened with no card behind it renders this
+                // plugin's "card closed" page — two dead entries per session
+                // (native guide + this mirror). `hidden` keeps the type usable
+                // through `openTab` while dropping it from the menu.
+                hidden: true,
                 dedupeKey: tab => (tab?.meta?.cardId !== undefined ? String(tab.meta.cardId) : undefined),
                 component: props => h(CardHost, {
                   props: { tab: props?.tab, sessionId: props?.scope?.sessionId },
@@ -7587,7 +7810,16 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         function CardHost({ props, surface }) {
           const state = useStoreState()
           const cardId = hostCardIdOf(props)
-          const card = state.cards.find(item => item.id === cardId)
+          // A tab's `meta.cardId` is just a string the host persisted; it must
+          // not route this body to a card that lives in ANOTHER session.
+          const scopeId = typeof props?.scope?.sessionId === 'string' && props.scope.sessionId !== ''
+            ? props.scope.sessionId
+            : null
+          const card = state.cards.find(item => item.id === cardId
+            && (scopeId === null
+              || typeof item.sessionId !== 'string'
+              || item.sessionId === ''
+              || item.sessionId === scopeId))
           // The embedder's REAL tab id (better-sidebar 0.28.x mints it and
           // ignores the seed id we passed), recorded for close/delete.
           const hostTabId = typeof props?.tab?.id === 'string' && props.tab.id !== '' ? props.tab.id : null
@@ -7596,7 +7828,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           React.useEffect(() => {
             if (typeof cardId !== 'string' || cardId === '') return undefined
             renderedCardId = cardId
-            if (hostTabId !== null) embeddedTabIds.set(cardId, hostTabId)
+            everMountedCards.add(cardId)
+            if (hostTabId !== null) {
+              embeddedTabIds.set(cardId, hostTabId)
+              lastMountedHostTabId = hostTabId
+            }
             // Mounting settles the render proof, even when this host mounted
             // late (a lazy tab panel slower than the 600ms timer) — the proof
             // must never fire after the card is demonstrably on screen.
@@ -7605,6 +7841,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               clearTimeout(proof)
               pendingProofs.delete(cardId)
             }
+            // A body whose card is gone, for a tab THIS page mounted before:
+            // release it now. A tab restored by another window was never
+            // mounted here (`everMountedCards`), so it keeps its close button
+            // instead of being stolen from that window.
+            if (card === undefined && everMountedCards.has(cardId)) {
+              try { actions.closeRailTab(props) } catch { /* host may be gone */ }
+            }
             return () => {
               if (renderedCardId === cardId) renderedCardId = null
               if (hostTabId !== null && embeddedTabIds.get(cardId) === hostTabId) {
@@ -7612,10 +7855,26 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               }
             }
           }, [cardId, hostTabId])
+          // No live card claims this body: a tab the host restored from its
+          // persisted layout, or a card deleted before its body mounted. Give
+          // the page an exit — the old build rendered one grey line and left
+          // the user with no way to close it (A1 was fixed for the native
+          // sweep, never for this face).
           if (card === undefined) {
-            return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '' },
+            return h('div', {
+              className: 'dsa-settings',
+              'data-dsa-root': '',
+              'data-dsa-rail-host': '',
+              'data-dsa-card-id': typeof cardId === 'string' ? cardId : '',
+            },
               h(Styles, null),
-              h('div', { className: 'dsa-muted' }, t('cardClosed')))
+              h('div', { className: 'dsa-muted' }, t('cardClosed')),
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn',
+                'data-dsa-action': 'close-orphan-tab',
+                onClick: () => { try { actions.closeRailTab(props) } catch { /* host may be gone */ } },
+              }, t('closeThisTab')))
           }
           if (card.surface === 'flow') {
             // The proof already moved this card to the flow stack and this
@@ -7624,11 +7883,22 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             // note for a rail that keeps it.
             try { surfaces.native.close(card) } catch { /* the rail owns its lifecycle */ }
             try { surfaces.better.close(card) } catch { /* the host may already be gone */ }
-            return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '' },
+            return h('div', {
+              className: 'dsa-settings',
+              'data-dsa-root': '',
+              'data-dsa-rail-host': '',
+              'data-dsa-card-id': typeof cardId === 'string' ? cardId : '',
+            },
               h(Styles, null),
               h('div', { className: 'dsa-muted' }, t('cardMovedToFlow')))
           }
-          return h('div', { className: 'dsa-settings', 'data-dsa-root': '', 'data-dsa-rail-host': '', style: { padding: '10px' } },
+          return h('div', {
+            className: 'dsa-settings',
+            'data-dsa-root': '',
+            'data-dsa-rail-host': '',
+            'data-dsa-card-id': typeof cardId === 'string' ? cardId : '',
+            style: { padding: '10px' },
+          },
             h(Styles, null),
             h(MemoAnswerCard, {
               card,

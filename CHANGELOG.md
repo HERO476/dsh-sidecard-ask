@@ -1,5 +1,60 @@
 # Changelog
 
+## 2.1.9
+
+**主题：承载面适配对齐 dsh-better-sidebar 0.28.2，修掉两个已复现的用户可见缺陷。**
+
+触发是一次专家评审（架构 / 安全 / 验收三线独立复核）：0.28.x 把 better 的 tab 从它自己的
+workbench 搬进了 **DSH 原生右栏**，而本插件仍按「better 是一个独立面板」建模——落点矩阵、
+`dockRail` 锚点、tab 归属、菜单入口四处同时失真。四个发布闸门当时全绿（1928），
+但绿只证明旧契约面没坏。
+
+### 修复（适配）
+
+- **A1 跨会话关闭/删除不关 tab**：归属从进程级单槽 `cardId` 改为按 `(kind, session)` 记录
+  （`owners` Map）。单槽在跨会话时会误判「别的卡拥有它」，让 A 会话的 tab 永远关不掉。
+  会话未知（历史条目、幽灵 id）时仍退回单槽，保住 2.1.5 R2 的归属语义。
+- **A2 重载后的幽灵面板没有出口**：无主 body 现在渲染「关闭此页」；**只有本页真的挂载过**
+  该 tab 才自动关闭。宿主会持久化栏布局，别的窗口恢复的同一张 tab 不会被本页抢走。
+- **A3 dockRail 铺到别人的页面上**：`CardHost` 根节点声明 `data-dsa-card-id`，
+  `findRail` 拒绝不属于本层卡片的 body；全部候选被占时 `data-dsa-dock="occupied"`，浮层保持浮动。
+- **A4 `+` 菜单里的空页胶囊**：better 描述符加 `hidden: true`——保留 `openTab` 可用，只是不再进菜单。
+  原生 guide 那一条缺宿主语义材料，仍会显示，已记入 README §5.6「仍未验证」。
+- **A5 禁用态被误判成故障**：`available()` 读 0.28.x 的 `isTabEnabled`，禁用即 `reason='tab-disabled'`，
+  `auto` 直接落浮层，不再先挂 600 ms 再报「承载面未证实」。
+- **A6 非当前会话的卡被证明迁走**：宿主对非当前屏的 `openTab` 是排队而不是拒绝，渲染证明
+  现在只对当前屏会话武装。
+- **A7 自检看不清真相**：上报增 `railTabs`（宿主清单里本插件行数）与 `mountedTabId`。
+
+### 修复（安全 / 归属）
+
+- `/config` 改 SMTP 主机/端口/TLS/账号任一项 → 已存授权码作废（凭据不再跟随新目标外送）。
+- `/config` 的 `sideTools: "inherit"` 需要 `confirmInheritTools: true`（防误触；不是安全边界）。
+- 只读护栏 **fail-closed**：注册表答了却认不出只读工具时拒跑（新错误码 `no-readonly-guard`，
+  客户端中英文案 + 错误码分类已补），不再静默继承父会话全部工具。
+- `cardId` 不可预测；better tab 标题不再携带问题原文；`tab.meta.cardId` 校验归属会话。
+- `closeRailRow` 容忍带 `dsh-better-sidebar:` 前缀的 kind；`/ask` 的 start 帧回带
+  `parentSessionId` / `requestedSessionId`，跨会话作答可被看见。
+
+### 新增（行为）
+
+- **答完自动展开卡片**：浮层默认是胶囊（一行状态），答案在那里只看得到「已完成」三个字。
+  现在回答结束（`done` / `stopped` / `error`）时自动把浮层切到卡片形态并展开该卡，
+  答案内容直接出现在侧边卡片里。设置页新增「答完自动展开卡片」开关（默认开）；
+  置 `autoExpandOnDone: false` 可恢复旧行为（始终停在胶囊，点一下才展开）。
+### 闸门
+
+- `node test/verify.mjs` → 58 / 0
+- `node test/contract-test.mjs` → 1499 / 0
+- `node test/float-placement.mjs` → 100 / 0
+- `node test/smoke-test.mjs` → 291 / 0
+- 合计 **1948**（2.1.8 基线 1928，新增 20 条：hidden、禁用门、SMTP 换目标清密码、
+  inherit 确认、`no-readonly-guard` 拒跑等）。
+
+### 未执行
+
+真实浏览器/Electron 点按与视觉、桌面 profile、macOS/Linux 均未验证；详见 README §5.6。
+
 ## 2.1.8
 
 **主题：交付《非 Node 宿主契约》文档，无代码改动。**

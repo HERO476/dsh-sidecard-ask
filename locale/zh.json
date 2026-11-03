@@ -41,5 +41,7 @@
   "versionViewing": "正在查看历史版本（只读）",
   "suggestionsLabel": "建议追问",
   "setFollowUps": "答案末尾给出建议追问",
-  "setFollowUpsHint": "开启后模型会用 <followups> 块在答案末尾给出 2–3 个可点的下一步问题，点一下即追问（不额外发请求）"
+  "setFollowUpsHint": "开启后模型会用 <followups> 块在答案末尾给出 2–3 个可点的下一步问题，点一下即追问（不额外发请求）",
+  "setAutoExpandOnDone": "答完自动展开卡片",
+  "setAutoExpandOnDoneHint": "开启后，回答一结束就展开成卡片显示正文；关闭后保持一行胶囊，点一下才展开"
 }

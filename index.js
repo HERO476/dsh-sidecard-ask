@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.8'
+export const PLUGIN_VERSION = '2.1.9'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -127,6 +127,9 @@ export const DEFAULT_CONFIG = {
    * floating layer is used either way.
    */
   dockRail: true,
+  // 2.1.9: expand the floating layer when an answer settles, so the answer is
+  // visible in the side card instead of hiding behind the capsule pill.
+  autoExpandOnDone: true,
   /**
    * One-click quick actions rendered beside the selection trigger.
    *
@@ -534,7 +537,7 @@ export function sanitizeLayer(raw, problems = []) {
     if (value !== null && (value === '' || looksLikeEmail(value))) out.feedbackSmtpFrom = value
     else problems.push('feedbackSmtpFrom: 必须是合法邮箱或空字符串，已忽略')
   }
-  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions', 'dockRail']) {
+  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions', 'dockRail', 'autoExpandOnDone']) {
     if (raw[boolKey] === undefined) continue
     if (typeof raw[boolKey] === 'boolean') out[boolKey] = raw[boolKey]
     else problems.push(`${boolKey}: 必须是布尔值，已忽略`)
@@ -1346,7 +1349,12 @@ export function readOnlyToolFilter(ctx) {
   if (!Array.isArray(known)) return undefined
   const names = new Set(known.map(schema => schema?.name).filter(name => typeof name === 'string'))
   const allow = READONLY_TOOL_NAMES.filter(name => names.has(name))
-  return allow.length === 0 ? undefined : { allow }
+  // A registry that answered but names NONE of our read-only tools cannot
+  // honour the guard. Returning `undefined` here made the child inherit every
+  // parent tool (fail-open) while the card only said "unsupported" — the guard
+  // disappeared exactly when a host upgrade renamed things.
+  if (allow.length === 0) return { blocked: 'no-readonly-guard' }
+  return { allow }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1762,6 +1770,7 @@ function createSideEngine(ctx, configOf) {
     ]
     const seen = new Set()
     let fallback
+    let live
     for (const agent of listed) {
       const id = agentSessionId(agent)
       if (id === undefined || seen.has(id)) continue
@@ -1769,11 +1778,16 @@ function createSideEngine(ctx, configOf) {
       const isArchived = archived.has(id)
       candidates.push({ id, archived: isArchived })
       if (fallback === undefined) fallback = { agent, id, archived: isArchived }
-      if (!isArchived) return { agent, id, archived: false, candidates }
+      if (live === undefined && !isArchived) live = { agent, id, archived: false }
     }
-    return fallback === undefined
+    // A caller that NAMED a session which is not live is answered by another
+    // one (the host's historical fallback — older clients depend on it), but the
+    // start frame now says WHICH session answered so the card can show it
+    // instead of silently publishing into an unfamiliar conversation.
+    const chosen = live ?? fallback
+    return chosen === undefined
       ? { agent: undefined, id: undefined, archived: false, candidates }
-      : { ...fallback, candidates }
+      : { ...chosen, candidates }
   }
 
   /**
@@ -1967,6 +1981,20 @@ function createSideEngine(ctx, configOf) {
       const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
       const presetSupported = caps?.agentPreset === true
       const presetInForce = config.sideTools === 'readonly' && preset !== '' && presetSupported
+      // 2.1.9: the read-only guard must fail CLOSED. Without a preset there is
+      // no other real narrowing channel on this host, so a guard we cannot
+      // build is a refusal, not an inheritance.
+      if (config.sideTools === 'readonly' && !presetInForce
+        && toolFilter !== undefined && toolFilter.blocked === 'no-readonly-guard') {
+        sink.send('error', {
+          id,
+          code: 'no-readonly-guard',
+          message: '这台宿主的工具注册表里认不出任何只读工具，无法保证侧边作答只读，已拒绝本次作答',
+          retryable: false,
+          fallback: 'main',
+        })
+        return
+      }
       // Style and the user's own extra instruction ride the SAME persona
       // string, so the "persona vs prompt" gate above covers all three of
       // them with one branch — there is no second injection point.
@@ -1979,7 +2007,7 @@ function createSideEngine(ctx, configOf) {
         signal: controller.signal,
         ...(personaSupported ? { persona: personaText } : {}),
         ...(presetInForce ? { agentPreset: preset } : {}),
-        ...(toolFilter === undefined || !toolFilterSupported ? {} : { toolFilter }),
+        ...(toolFilter === undefined || toolFilter.allow === undefined || !toolFilterSupported ? {} : { toolFilter }),
       })
       runRecord.dispose = run.dispose
 
@@ -2005,12 +2033,20 @@ function createSideEngine(ctx, configOf) {
           ? 'inherit'
           : (presetInForce
             ? 'preset'
-            : (toolFilter === undefined
-              ? 'unsupported'
-              : (toolFilterSupported ? 'applied' : 'unsupported'))),
+            : (toolFilter !== undefined && toolFilter.blocked !== undefined
+              ? 'blocked'
+              : (toolFilter === undefined
+                ? 'unsupported'
+                : (toolFilterSupported ? 'applied' : 'unsupported')))),
         agentPreset: presetInForce ? preset : null,
         persona: personaSupported ? 'section' : 'prompt',
         parentArchived: parent.archived === true,
+        // The session that actually owns this child. A mismatch with the
+        // requested session is shown on the card, never silently absorbed.
+        parentSessionId: parent.id ?? null,
+        requestedSessionId: typeof request.sessionId === 'string' && request.sessionId !== ''
+          ? request.sessionId
+          : null,
       })
 
       const childId = run.id
@@ -2696,6 +2732,25 @@ export function apply(ctx, patchConfig) {
     const accepted = sanitizeLayer(patch, problems)
     if (problems.length > 0) {
       writeError(res, 400, 'invalid-config', problems.join('；'))
+      return
+    }
+    // 2.1.9: changing WHERE mail is sent (host/port/tls/user) invalidates the
+    // stored authorization code. Keeping it made "host:" a one-field takeover:
+    // point the host at an attacker and the next /feedback hands them the
+    // password in cleartext AUTH PLAIN. Losing the password is recoverable;
+    // leaking it is not.
+    const endpointChanged = ['feedbackSmtpHost', 'feedbackSmtpPort', 'feedbackSmtpSecure', 'feedbackSmtpUser']
+      .some(key => accepted[key] !== undefined && String(accepted[key]) !== String(state.config[key] ?? ''))
+    if (endpointChanged && accepted.feedbackSmtpPass === undefined) {
+      delete userLayer.feedbackSmtpPass
+      problems.push('SMTP 目标已变更，已保存的授权码随之作废，请重新填写')
+    }
+    // The side answerer inheriting the whole tool set is the one irreversible
+    // kind of change here (a page-level script can ask the host to run with the
+    // session's tools). A written confirmation does not stop same-origin code,
+    // but it stops the accident and makes the intent auditable.
+    if (accepted.sideTools === 'inherit' && body.confirmInheritTools !== true) {
+      writeError(res, 400, 'privileged-key', 'sideTools=inherit 需要显式确认（confirmInheritTools: true）')
       return
     }
     userLayer = { ...userLayer, ...accepted }

@@ -41,5 +41,7 @@
   "versionViewing": "Viewing an older version (read-only)",
   "suggestionsLabel": "Suggested follow-ups",
   "setFollowUps": "Suggest follow-ups at the end",
-  "setFollowUpsHint": "The model ends each answer with a <followups> block of 2–3 next questions, rendered as clickable chips (no extra request)"
+  "setFollowUpsHint": "The model ends each answer with a <followups> block of 2–3 next questions, rendered as clickable chips (no extra request)",
+  "setAutoExpandOnDone": "Expand the card when the answer finishes",
+  "setAutoExpandOnDoneHint": "On: the answer appears in the card the moment it settles. Off: the one-line capsule stays until you click it"
 }

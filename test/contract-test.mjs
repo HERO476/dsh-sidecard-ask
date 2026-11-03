@@ -176,7 +176,7 @@ console.log('\nhost error localization')
 // Client's own dictionaries; codes whose message carries a live diagnostic
 // (the reason only exists inside the Host string) keep that string verbatim.
 {
-  const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'aborted',
+  const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'no-readonly-guard', 'aborted',
     // /feedback: the four codes the Client can phrase itself.
     'feedback-invalid', 'feedback-unconfigured', 'feedback-too-fast', 'feedback-too-many']
   const HOST_DYNAMIC_CODES = ['blocked-step', 'engine-error', 'internal',
@@ -4764,5 +4764,73 @@ report.ok(
   'the host label follows the pinned surface instead of the global preference',
 )
 
+console.log('\n2.1.9 side-card adaptation')
+// 0.28.x: every registered type is listed in the + menu automatically, and an
+// entry opened with no card behind it renders the "card closed" page. `hidden`
+// keeps the type openable while removing the dead menu entry.
+{
+  const captured = []
+  const ctx = makeClientCtx({
+    services: {
+      betterSidebar: {
+        version: '0.28.2',
+        features: fullFeatures,
+        registerTab: descriptor => { captured.push(descriptor); return () => {} },
+        openTab: () => {},
+        closeTab: () => {},
+        getSnapshot: () => ({ sessionId: 'session-a' }),
+      },
+    },
+  })
+  const hiddenClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+  hiddenClient.module.apply(ctx.ctx)
+  report.equal(captured.length, 1, 'the better descriptor is registered once')
+  report.equal(captured[0]?.hidden, true, 'the better type is hidden from the + menu')
+  report.equal(captured[0]?.id, pure.CARD_KIND_BETTER, 'hidden does not change the registered kind')
+}
+
+// A tab type the user switched off must be skipped by `auto`, not opened and
+// then "proven" for 600ms: a disabled `openTab` warns and returns instead of
+// throwing, so the proof used to move a live card to the flow stack and call
+// the user’s own setting a plugin failure.
+{
+  const opens = []
+  const ctx = makeClientCtx({
+    services: {
+      betterSidebar: {
+        version: '0.28.2',
+        features: fullFeatures,
+        isTabEnabled: () => false,
+        registerTab: () => () => {},
+        openTab: () => { opens.push(1) },
+        closeTab: () => {},
+        getSnapshot: () => ({ sessionId: 'session-a' }),
+      },
+    },
+  })
+  const disabledClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
+  disabledClient.module.apply(ctx.ctx)
+  const picked = disabledClient.module.api.pure.pickSurface('auto')
+  report.equal(picked.adapter.kind, 'flow', 'a disabled tab type is skipped by auto')
+  report.equal(picked.fellBack, false, 'skipping a disabled type is not reported as a failure')
+  picked.adapter.open?.({ id: 'card-x', question: 'q' })
+  report.equal(opens.length, 0, 'a disabled type never receives an open')
+}
+
+// 2.1.9：胶囊（默认形态）只渲染一行状态，答案要手动点开才看得到。
+// 用户要求「提问完成之后直接在侧边卡片显示回答内容」，所以完成即展开。
+{
+  const acts = overlay.component().props.actions
+  await acts.saveConfig({ ...client.api.snapshot().config, floatMode: 'capsule', autoExpandOnDone: true })
+  report.equal(client.api.snapshot().config.floatMode, 'capsule', 'the run starts from the one-line capsule')
+  await acts.submit({
+    text: '完成即展开的正文',
+    rect: { left: 6, top: 6, right: 200, bottom: 26, width: 194, height: 20 },
+    zone: 'chat', cross: false,
+    slotPath: ['conversation.chat.node'], kind: 'text',
+  }, { question: '完成即展开', carrier: 'side' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  report.equal(client.api.snapshot().floatMode, 'full', 'a finished answer expands the card out of the capsule')
+}
 report.summary()
 

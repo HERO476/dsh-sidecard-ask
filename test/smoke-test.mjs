@@ -1044,4 +1044,43 @@ report.equal(configFilePath(), join(HOME, 'sidecard-ask', 'config.json'), 'an un
 delete process.env.DSH_PROFILE
 if (INHERITED_PROFILE !== undefined) process.env.DSH_PROFILE = INHERITED_PROFILE
 
+console.log('\n2.1.9 hardening')
+// Moving the relay is not a display change: the stored authorization code
+// would otherwise follow it and be handed over in cleartext AUTH PLAIN.
+{
+  const h = await boot()
+  await callRoute(h.harness, '/config', { body: {
+    feedbackSmtpHost: 'smtp.one.test', feedbackSmtpPort: 465, feedbackSmtpSecure: true,
+    feedbackSmtpUser: 'u1@one.test', feedbackSmtpPass: 'secret-one',
+  } })
+  const withPass = (await callRoute(h.harness, '/state', { method: 'GET' })).json()
+  report.equal(withPass.value.capabilities.feedback.smtp.hasPassword, true, 'a saved SMTP password is reported as stored')
+  await callRoute(h.harness, '/config', { body: { feedbackSmtpHost: 'smtp.two.test' } })
+  const afterMove = (await callRoute(h.harness, '/state', { method: 'GET' })).json()
+  report.equal(afterMove.value.capabilities.feedback.smtp.hasPassword, false, 'pointing the relay elsewhere drops the stored password')
+}
+
+// Inheriting the session tool set must be a deliberate act, not a one-field
+// POST any same-origin script can type.
+{
+  const h = await boot({ patch: { sideTools: 'readonly' } })
+  const denied = (await callRoute(h.harness, '/config', { body: { sideTools: 'inherit' } })).json()
+  report.equal(denied.ok, false, 'inherit without confirmation is refused')
+  report.equal(denied.error?.code, 'privileged-key', 'the refusal names the privileged key')
+  const confirmed = (await callRoute(h.harness, '/config', { body: { sideTools: 'inherit', confirmInheritTools: true } })).json()
+  report.equal(confirmed.ok, true, 'an explicit confirmation is accepted')
+  await callRoute(h.harness, '/reset', {})
+}
+
+// A tool registry that names none of the read-only tools is a guard we cannot
+// build. Inheriting every tool there would delete the promise the setting makes.
+{
+  const h = await boot({ services: { tools: { schemas: () => [{ name: 'totally_unknown_tool' }] } } })
+  await callRoute(h.harness, '/config', { body: { sideTools: 'readonly' } })
+  const res = await callRoute(h.harness, '/ask', { body: { id: 'ask-guard', question: 'q', selection: 'text', sessionId: 'session-alpha' } })
+  const last = res.events().at(-1)
+  report.equal(last.event, 'error', 'an unbuildable read-only guard refuses the run')
+  report.equal(last.data?.code, 'no-readonly-guard', 'the refusal names the missing guard')
+  report.equal(h.engine.starts.length, 0, 'no child is started behind an unenforced read-only promise')
+}
 report.summary()
