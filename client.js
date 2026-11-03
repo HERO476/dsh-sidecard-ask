@@ -685,6 +685,7 @@ window.__ModuleLoader__.load({
         errorBusy: '并发追问已达上限（{n}），请稍后再试',
         errorNoSideEngineBody: '这台 DSH 组合没有可用的子代理 provider',
         errorNoParentBody: '当前没有活动的会话代理，无法发起独立作答',
+        errorParentSessionUnknownBody: '请求点名的会话不在这台宿主上；侧边作答不会借用别的会话',
         errorNoReadonlyGuardBody: '这台宿主的工具注册表里认不出只读工具，为保证侧边作答不写工作区，本次已拒绝',
         errorAborted: '作答被取消或超时',
         errorUnreachableBody: '宿主接口不可达',
@@ -964,6 +965,7 @@ window.__ModuleLoader__.load({
         errorBusy: 'Too many concurrent answers (limit {n}); try again shortly',
         errorNoSideEngineBody: 'This DSH composition has no usable subagent provider',
         errorNoParentBody: 'No active session agent to answer independently',
+        errorParentSessionUnknownBody: 'The session this request names is not on this host; the side answer will not borrow another one',
         errorNoReadonlyGuardBody: 'This host\'s tool registry has no recognisable read-only tools, so the side answer was refused to keep the workspace untouched',
         errorAborted: 'The answer was cancelled or timed out',
         errorUnreachableBody: 'The host API is unreachable',
@@ -1247,6 +1249,9 @@ window.__ModuleLoader__.load({
       busy: { key: 'errorBusy', vars: () => ({ n: store?.state?.config?.maxConcurrentAsks ?? 0 }) },
       'no-side-engine': { key: 'errorNoSideEngineBody' },
       'no-parent': { key: 'errorNoParentBody' },
+      // A named-but-unknown session is refused instead of answered from another
+      // conversation, so the reason must be phrased Client-side too.
+      'parent-session-unknown': { key: 'errorParentSessionUnknownBody' },
       // 2.1.9: the read-only guard now fails closed. The code must be named
       // Client-side, or an English UI would show the Host's Chinese line.
       'no-readonly-guard': { key: 'errorNoReadonlyGuardBody' },

@@ -24,6 +24,9 @@ depthLimit}`，`toolFilter` 与 `persona` 都不存在，于是 `sideTools: read
   从不设置该变量，per-profile 文件从未生效。改为优先读 `profileContext` 服务，env 仅作回退。
 - **R-06 end 帧的结束原因**：0.2.2 的 end 帧带 `outcome: {kind}` 而无 `stopReason`，SSE 的
   `status` 现在两者都读（`abandoned` 映射为 `aborted`）。
+- **R-04 点名的会话必须真的是它**：`/ask` 曾接受任意 `sessionId`，点名一个宿主不认识的
+  会话时回退到「第一个活跃会话」作答——猜中的 id 就能把答案挂进别人的对话。现在点名却
+  找不到会话时返回 `parent-session-unknown` 并拒绝，不再借用；不点名（老客户端）仍走原回退。
 - **R-09 只读白名单**：移除 `todo_write`（它会改待办列表）。
 - **R-10 降级不再静默丢配置**：保存时若发现旧文件里有本版本不认识的键，先写
   `config.<profile>.json.bak-<时间戳>` 再覆盖，并 warn 出掉了哪些键。
@@ -38,7 +41,7 @@ depthLimit}`，`toolFilter` 与 `persona` 都不存在，于是 `sideTools: read
 
 `test/harness.mjs` 的能力位改成真机形状 `{agentOptions, agentPreset, outputSchema, depthLimit}`，
 补了三组回归：无载体时 `readonly` 拒绝作答、真机能力位下拒绝、有载体时白名单照常下发。
-四套自测：61 + 1504 + 100 + 309 = **1974** 断言全绿（新增 R-02 围栏注入、R-10 未知键备份、R-11 413 三组回归，另加一条设置页提示语义断言）。
+四套自测：61 + 1508 + 100 + 312 = **1981** 断言全绿（新增 R-02 围栏注入、R-04 未知会话、R-10 未知键备份、R-11 413 四组回归，另加设置页提示语义断言）。
 
 ## 2.1.9
 

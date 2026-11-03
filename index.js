@@ -1843,6 +1843,7 @@ function createSideEngine(ctx, configOf) {
           id,
           archived: isArchived,
           candidates: id === undefined ? [] : [{ id, archived: isArchived }],
+          named: true,
         }
       }
     }
@@ -1868,8 +1869,8 @@ function createSideEngine(ctx, configOf) {
     // instead of silently publishing into an unfamiliar conversation.
     const chosen = live ?? fallback
     return chosen === undefined
-      ? { agent: undefined, id: undefined, archived: false, candidates }
-      : { ...chosen, candidates }
+      ? { agent: undefined, id: undefined, archived: false, candidates, named: false }
+      : { ...chosen, candidates, named: false }
   }
 
   /**
@@ -1971,12 +1972,28 @@ function createSideEngine(ctx, configOf) {
       })
       return
     }
+    const named = typeof request.sessionId === 'string' && request.sessionId !== ''
     const parent = resolveParent(request.sessionId)
     if (parent.agent === undefined) {
       sink.send('error', {
         id,
-        code: 'no-parent',
-        message: '当前没有活动的会话代理，无法发起独立作答',
+        code: named ? 'parent-session-unknown' : 'no-parent',
+        message: named
+          ? '请求里点名的会话在这台宿主上不存在；侧边作答不会借用别的会话（避免把答案挂到不认识的对话上）'
+          : '当前没有活动的会话代理，无法发起独立作答',
+        retryable: false,
+        fallback: 'main',
+      })
+      return
+    }
+    // A caller that NAMED a session must get THAT session. Borrowing another
+    // one answered from a conversation the card never pointed at, which is how
+    // a stale or guessed id could publish into an unrelated thread.
+    if (named && parent.named !== true) {
+      sink.send('error', {
+        id,
+        code: 'parent-session-unknown',
+        message: '请求里点名的会话不在这台宿主的活动列表里；侧边作答不会借用别的会话',
         retryable: false,
         fallback: 'main',
       })

@@ -428,7 +428,19 @@ report.equal((await callRoute(c.harness, '/cancel', { body: {} })).status, 400, 
 
 // R6 回归（2026-10-29）：`/cancel` 曾经不校验归属——`runs` 是进程级全局表，
 // 任何已认证页面只要拿到（或猜到）一个 run id 就能打断别的会话的追问。
-const c3 = await boot({ engineOptions: { delayMs: 25, frames: ['a', 'b', 'c', 'd', 'e', 'f'] } })
+// Two real sessions, so a run can belong to one of them: a caller that NAMES
+// a session now gets that session or a refusal (never a borrowed one).
+const c3Sessions = ['session-A', 'session-B'].map(id => ({ id, session: { header: { id } } }))
+const c3 = await boot({
+  engineOptions: { delayMs: 25, frames: ['a', 'b', 'c', 'd', 'e', 'f'] },
+  services: {
+    agents: {
+      get: id => c3Sessions.find(agent => agent.id === id),
+      roots: () => c3Sessions,
+      list: () => c3Sessions,
+    },
+  },
+})
 const ownerPending = callRoute(c3.harness, '/ask', {
   body: {
     id: 'ask-owned',
@@ -1177,6 +1189,20 @@ await withHome(async () => {
   report.equal(answer.status, 413, 'a body over the limit reports 413')
   report.equal(answer.json().error.code, 'bad-request', 'the wire envelope stays bad-request')
   report.ok(String(answer.json().error.message).includes('过大'), 'the message says the body was too large')
+})
+
+// R-04: a caller that NAMES a session must get THAT session. Borrowing the
+// first live agent answered from a conversation the card never pointed at, so a
+// stale or guessed id could publish into an unrelated thread.
+await withHome(async () => {
+  const stranger = await boot()
+  const answer = await callRoute(stranger.harness, '/ask', {
+    body: { id: 'ask-stranger', question: 'q', selection: 'text', sessionId: 'session-not-here' },
+  })
+  const last = answer.events().at(-1)
+  report.equal(last.event, 'error', 'a named session the host does not know is refused')
+  report.equal(last.data?.code, 'parent-session-unknown', 'the refusal names the unknown session')
+  report.equal(stranger.engine.starts.length, 0, 'no child is started for a borrowed conversation')
 })
 
 report.summary()

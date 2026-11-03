@@ -43,10 +43,14 @@ const engine = makeSubagentEngine({
   capabilities: { agentOptions: true, agentPreset: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
 })
 harness.services.subagents = engine.service
+// Two sessions: the Client moves its active session to `session-beta` partway
+// through this file, and a caller that NAMES a session now gets that session or
+// a refusal — the host must actually know the one the page is in.
+const contractSessions = [{ id: 'session-alpha' }, { id: 'session-beta' }, { id: 'session-main' }]
 harness.services.agents = {
-  get: id => (id === 'session-alpha' ? { id: 'session-alpha' } : undefined),
-  roots: () => [{ id: 'session-alpha' }],
-  list: () => [{ id: 'session-alpha' }],
+  get: id => contractSessions.find(agent => agent.id === id),
+  roots: () => contractSessions,
+  list: () => contractSessions,
 }
 harness.services.tools = {
   schemas: () => [{ name: 'read' }, { name: 'grep' }, { name: 'write' }],
@@ -179,7 +183,7 @@ console.log('\nhost error localization')
 // Client's own dictionaries; codes whose message carries a live diagnostic
 // (the reason only exists inside the Host string) keep that string verbatim.
 {
-  const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'no-readonly-guard', 'aborted',
+  const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'parent-session-unknown', 'no-readonly-guard', 'aborted',
     // /feedback: the four codes the Client can phrase itself.
     'feedback-invalid', 'feedback-unconfigured', 'feedback-too-fast', 'feedback-too-many']
   const HOST_DYNAMIC_CODES = ['blocked-step', 'engine-error', 'internal',

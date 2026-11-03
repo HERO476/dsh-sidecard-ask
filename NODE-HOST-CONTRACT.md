@@ -40,7 +40,7 @@
 
 `[源码]`
 
-- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2461`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
+- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2478`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
 - 硬依赖声明：**只有** `webServer`
 
   ```js
@@ -174,7 +174,7 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 
 ### 5.2 两道闸门，顺序不可换
 
-`[源码]` `routeHandler`（`index.js:3001`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 业务**。
+`[源码]` `routeHandler`（`index.js:3018`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 业务**。
 
 **闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1464`）：
 
@@ -185,7 +185,7 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 4. `sec-fetch-site: cross-site` → 拒。
 5. 有 `origin` → 必须与 `host` 的**完整 authority** 相同（端口不同即不同源）；无 `origin` → 放行。
 
-**闸门 2 · 会话认证** `authRejection(req)`（`index.js:2969`）—— 返回值语义是这份契约里最需要精确复制的一段：
+**闸门 2 · 会话认证** `authRejection(req)`（`index.js:2986`）—— 返回值语义是这份契约里最需要精确复制的一段：
 
 | `connection.requestRejection(req)` 返回 | 插件行为 |
 |---|---|
