@@ -122,4 +122,39 @@ const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
 report.ok(readme.includes('未知 DSH API'), 'README documents the unknown-API section')
 report.ok(readme.includes('替换方式'), 'README documents how to replace a placeholder')
 
+// NODE-HOST-CONTRACT.md pins named symbols to exact source lines — the one
+// thing a non-Node host implementer cannot guess. Code moves, and those
+// anchors rot silently: 2.1.9 shifted 23 of them without a single test going
+// red. Guard the citations the doc itself declares as `symbol`（`file.js:NNN`）;
+// anchor-first citations are out of scope here because their symbol is not
+// mechanically extractable.
+console.log('\ncontract doc anchors')
+const contractDoc = readFileSync(join(ROOT, 'NODE-HOST-CONTRACT.md'), 'utf8')
+const docSources = { 'index.js': hostSource.split('\n'), 'client.js': clientSource.split('\n') }
+// Two citation shapes the doc actually uses: `symbol(args)`（`file.js:NNN`） and
+// `file.js:NNN` `symbol`. Prose-only citations have no extractable symbol and
+// are out of scope.
+const DOC_ANCHOR_FORMS = [
+  { pattern: /`([A-Za-z_$][\w$.]*)(?:\([^`()]*\))?`[，,、]?\s*[（(]?`(index|client)\.js:(\d+)/g, pick: m => ({ symbol: m[1], file: `${m[2]}.js`, line: Number(m[3]) }) },
+  { pattern: /`(index|client)\.js:(\d+)`\s+`([A-Za-z_$][\w$.]*)/g, pick: m => ({ symbol: m[3], file: `${m[1]}.js`, line: Number(m[2]) }) },
+]
+const anchored = DOC_ANCHOR_FORMS.flatMap(form => [...contractDoc.matchAll(form.pattern)].map(form.pick))
+report.ok(anchored.length >= 12, 'contract doc pins named symbols to source lines', `found ${anchored.length}`)
+const vanished = anchored.filter(anchor => docSources[anchor.file][anchor.line - 1] === undefined)
+report.ok(
+  vanished.length === 0,
+  'every pinned line still exists in the shipped source',
+  `gone: ${vanished.map(a => `${a.symbol} ${a.file}:${a.line}`).join(', ')}`,
+)
+const drifted = anchored.filter(anchor => {
+  // a declaration may sit under a JSDoc header or a multi-line signature
+  const window = docSources[anchor.file].slice(Math.max(0, anchor.line - 3), anchor.line + 2).join('\n')
+  return !window.includes(anchor.symbol)
+})
+report.ok(
+  drifted.length === 0,
+  'every pinned line still names its symbol',
+  `drifted: ${drifted.map(a => `${a.symbol} @ ${a.file}:${a.line}`).join(', ')}`,
+)
+
 report.summary()

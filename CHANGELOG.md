@@ -37,6 +37,17 @@ depthLimit}`，`toolFilter` 与 `persona` 都不存在，于是 `sideTools: read
 - **R-07 文档纠错**：README 里「探针拒写」兜底从未存在（`CHANGELOG.md` 早期条目自己记过
   这句是错的），连同设置页提示一起删除，改为如实描述「无载体即拒绝」。
 
+### 文档与发布物卫生
+
+- **行号锚点全部重新对齐**：`NODE-HOST-CONTRACT.md` 引用的 29 处 `index.js:…` / `client.js:…`
+  逐条按本版实际行号核对（本版 `index.js` +202/−25、`client.js` +12/−7，锚点必然漂移；
+  2.1.9 就曾整批漂移而无人发现）。同时给 `test/verify.mjs` 加守卫断言：文档里
+  `symbol`（`file.js:NNN`）形式的 15 处引用一旦与源码不符即失败，锚点不再能静默腐烂。
+- **清理悬空引用**：`screenshots.json` 列了 6 张截图、仓库里实际只有 4 张，删除两条从未
+  存在过的条目（该文件不在 `files[]` 内，属于仓库侧资料，不影响安装）。
+- **行尾统一**：新增 `.gitattributes`（`* text=auto eol=lf`）。2.1.9 的发布包里
+  `CHANGELOG.md` 与 `locale/*.json` 混进了 CRLF、与仓库内容不一致；本版起打包行尾与仓库同源。
+
 ### 测试
 
 `test/harness.mjs` 的能力位改成真机形状 `{agentOptions, agentPreset, outputSchema, depthLimit}`，

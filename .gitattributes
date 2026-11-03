@@ -1,0 +1,8 @@
+# 统一行尾：本仓库曾在 CHANGELOG.md / locale/*.json 上混入 CRLF，
+# 导致 2.1.9 的 npm 包内行尾与仓库不一致。文本文件一律 LF，二进制文件不做转换。
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.jpg binary
+*.webp binary
