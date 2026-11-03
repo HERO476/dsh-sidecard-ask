@@ -287,8 +287,11 @@ export function makeSubagentEngine(options) {
   const frames = options.frames ?? ['这是', '一个', '流式', '答案']
   const delayMs = options.delayMs ?? 0
   const providerNames = options.providerNames ?? ['spawn']
+  // The REAL 0.2.2-alpha.3 capability object: four keys, and neither
+  // `toolFilter` nor `persona`. A double that advertised them made a green
+  // suite meaningless for the read-only guard.
   const capabilities = options.capabilities === undefined
-    ? { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }
+    ? { agentOptions: true, agentPreset: true, outputSchema: true, depthLimit: true }
     : options.capabilities
   const withLocalAgent = options.localAgent !== false
   const activationApi = options.activationApi === true

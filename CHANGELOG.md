@@ -1,5 +1,45 @@
 # Changelog
 
+## 2.1.10
+
+**主题：把专家评审的 9 项修复落地——只读承诺改为失败关闭，注入面、profile、宿主 API 三处对齐 0.2.2-alpha.3。**
+
+触发是一次三线独立评审（架构 / 安全 / 验收）。结论是「能加载、无硬崩」，但默认配置对
+0.2.2-alpha.3 不成立：`SubagentCapabilities` 只有 `{agentOptions, agentPreset, outputSchema,
+depthLimit}`，`toolFilter` 与 `persona` 都不存在，于是 `sideTools: readonly` 从来没有真正生效过。
+
+### 修复（阻断）
+
+- **R-01 只读必须失败关闭**。`readonly` 现在只有两条载体：配置的 `sideAgentPreset`（宿主
+  真的广告 `agentPreset`），或宿主真的广告 `toolFilter` 且白名单非空。两者都没有时返回
+  `readonly-unavailable` 并**不启动子代理**——不再静默继承父会话工具（在 danger-full-access
+  下子代理可以写盘、跑 bash，而卡片只说「unsupported」）。同时把默认值从 `readonly` 改成
+  `inherit`：宿主没有载体这件事不该由用户猜。设置页的 `inherit` 仍需显式确认。
+- **R-02 选区围栏可被闭合**。原来固定三反引号，选区里出现三反引号就能提前结束数据块、把
+  后半段变成顶层指令（选区可以来自网页/文档）。现在围栏长度 = 选区里最长反引号串 + 1。
+
+### 修复（中危 / 低危）
+
+- **R-03 每个 profile 的配置终于分开了**：`configFilePath()` 只读 `DSH_PROFILE`，而宿主进程
+  从不设置该变量，per-profile 文件从未生效。改为优先读 `profileContext` 服务，env 仅作回退。
+- **R-06 end 帧的结束原因**：0.2.2 的 end 帧带 `outcome: {kind}` 而无 `stopReason`，SSE 的
+  `status` 现在两者都读（`abandoned` 映射为 `aborted`）。
+- **R-09 只读白名单**：移除 `todo_write`（它会改待办列表）。
+- **R-10 降级不再静默丢配置**：保存时若发现旧文件里有本版本不认识的键，先写
+  `config.<profile>.json.bak-<时间戳>` 再覆盖，并 warn 出掉了哪些键。
+- **R-11 请求体过大返回 413**（原来一律 400）。
+- **A3 信任围栏认宿主绑定地址**：`webServer.host/port`（来自配置，不可被 `Host` 头左右）在
+  非回环且非通配时自动加入信任集，绑到具体内网地址的部署不再连 `/ping` 都被 403。
+- **A6 客户端注入包名**：`dsh-client-ui-slots` 在 0.2.2 不存在，改为 `dsh-client-ui-renderer`。
+- **R-07 文档纠错**：README 里「探针拒写」兜底从未存在（`CHANGELOG.md` 早期条目自己记过
+  这句是错的），连同设置页提示一起删除，改为如实描述「无载体即拒绝」。
+
+### 测试
+
+`test/harness.mjs` 的能力位改成真机形状 `{agentOptions, agentPreset, outputSchema, depthLimit}`，
+补了三组回归：无载体时 `readonly` 拒绝作答、真机能力位下拒绝、有载体时白名单照常下发。
+四套自测：61 + 1504 + 100 + 309 = **1974** 断言全绿（新增 R-02 围栏注入、R-10 未知键备份、R-11 413 三组回归，另加一条设置页提示语义断言）。
+
 ## 2.1.9
 
 **主题：承载面适配对齐 dsh-better-sidebar 0.28.2，修掉两个已复现的用户可见缺陷。**

@@ -12,7 +12,7 @@
 
 1. **这个插件不是"可选 Node"**：它 import 了 `node:fs` / `node:os` / `node:path` / `node:net` / `node:tls`，用了全局 `Buffer` 与 `process.env`，并且把 Node 的 `(req, res)` 双流对象**直接当成契约**（`req.on('data'|'end'|'error')`、`res.write` 分块刷出 SSE）。**换宿主 = 换运行时语义，不是换 HTTP 框架。**
 2. **硬依赖只有两条链路**：①`webServer` 注册路由 + 这套 req/res 语义；②前端 `window.__ModuleLoader__` + React + 具名槽位。其余（`subagents` / `tools` / `connection` / `sidebarRightTabs` / `sidebarRight` / `betterSidebar`）**全是软依赖**：拿不到就降级，插件照跑。
-3. **最容易被忽略的一条**：`Buffer` 与 `Buffer.byteLength` 被用于响应体长度与请求体拼接（`index.js:1478`、`index.js:1409`）。任何宿主必须提供 UTF-8 字节语义的等价物，否则 `content-length` 一算错就会挂住连接。
+3. **最容易被忽略的一条**：`Buffer` 与 `Buffer.byteLength` 被用于响应体长度与请求体拼接（`index.js:1455`、`index.js:1426`）。任何宿主必须提供 UTF-8 字节语义的等价物，否则 `content-length` 一算错就会挂住连接。
 
 ---
 
@@ -40,7 +40,7 @@
 
 `[源码]`
 
-- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` 导出四个具名符号：`name`、`inject`、`PLUGIN_VERSION`，以及默认的宿主注入函数（`export function inject` 同名常量与运行时函数在 DSH 里由 loader 解析）。
+- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2461`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
 - 硬依赖声明：**只有** `webServer`
 
   ```js
@@ -86,7 +86,7 @@
 
 ### 4.1 注册形状
 
-`[源码]` `index.js:2873` 起（prefix 分支在 `index.js:2876`）：
+`[源码]` `index.js:2928` 起（prefix 分支在 `index.js:2931`）：
 
 ```js
 ctx.webServer.register({ kind: 'prefix', path: '/sidecard-ask/api', handler })
@@ -116,13 +116,13 @@ ctx.webServer.register({ kind: 'exact', path: '/sidecard-ask/api/ping', handler 
 | `res` | `.headersSent` | 布尔 |
 | `res` | `.writableEnded` | 布尔 |
 | `res` | `.destroyed` | 布尔 |
-| `res` | `.on('close', cb)` | 只需 `'close``（`index.js:2628` 用它判断浏览器是否离开） |
+| `res` | `.on('close', cb)` | 只需 `'close``（`index.js:2664` 用它判断浏览器是否离开） |
 
 **关键点**：`res.write` 的**即时刷出**是 SSE 的全部基础。任何把响应体缓存在内存里最后一次性写出的宿主，会让流式卡片"整段答案在结束时一次性出现"，还可能导致心跳失效、被中间层判死。
 
 ### 4.3 请求体读取
 
-`[源码]` `index.js:1447` `readJsonBody`：
+`[源码]` `index.js:1537` `readJsonBody`：
 
 - 流式累积 chunk，累计超过 **`1 << 20` 字节（1 MiB）** 立即 `req.destroy()` 并抛 `{code:'too-large'}` → 客户端收 400。
 - **空体返回 `null`**（不是 `{}`，也不是错误）。
@@ -131,7 +131,7 @@ ctx.webServer.register({ kind: 'exact', path: '/sidecard-ask/api/ping', handler 
 
 ### 4.4 响应与错误形状
 
-`[源码]` `writeJson`（`index.js:1413`）设置的三个头是硬要求：
+`[源码]` `writeJson`（`index.js:1503`）设置的三个头是硬要求：
 
 ```
 content-type: application/json; charset=utf-8
@@ -139,7 +139,7 @@ cache-control: no-store
 content-length: Buffer.byteLength(body)     // UTF-8 字节数，不是字符串长度
 ```
 
-成功：`{"ok":true,"value":<任意>}`；失败：`{"ok":false,"error":{"code":"<token>","message":"<中文可读>"}}`（`writeError`，`index.js:1436`）。
+成功：`{"ok":true,"value":<任意>}`；失败：`{"ok":false,"error":{"code":"<token>","message":"<中文可读>"}}`（`writeError`，`index.js:1526`）。
 
 `[实测]` 线上真实响应（未登录访问）：
 
@@ -153,7 +153,7 @@ content-length: Buffer.byteLength(body)     // UTF-8 字节数，不是字符串
 
 ### 5.1 方法表
 
-`[源码]` `index.js:2728`：
+`[源码]` `index.js:2783`：
 
 ```js
 const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
@@ -174,18 +174,18 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 
 ### 5.2 两道闸门，顺序不可换
 
-`[源码]` `routeHandler`（`index.js:2786`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 业务**。
+`[源码]` `routeHandler`（`index.js:3001`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 业务**。
 
-**闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1374`）：
+**闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1464`）：
 
 1. 必须有 `host` 头，且能构成合法 authority，否则拒。
 2. `trustedHosts` 里带端口 → 比 `host:port` 全等；不带端口 → 只比 hostname。
 3. hostname 既非 loopback 又不在 `trustedHosts` → 拒。
-   - loopback 判定（`isLoopbackHostname`，`index.js:1360`）：`localhost`、`[::1]`、`127.x.y.z`（四段、每段 1–3 位数字且 ≤255）。**不含 `::ffff:127.0.0.1`、不含 `0.0.0.0`**。
+   - loopback 判定（`isLoopbackHostname`，`index.js:1450`）：`localhost`、`[::1]`、`127.x.y.z`（四段、每段 1–3 位数字且 ≤255）。**不含 `::ffff:127.0.0.1`、不含 `0.0.0.0`**。
 4. `sec-fetch-site: cross-site` → 拒。
 5. 有 `origin` → 必须与 `host` 的**完整 authority** 相同（端口不同即不同源）；无 `origin` → 放行。
 
-**闸门 2 · 会话认证** `authRejection(req)`（`index.js:2754`）—— 返回值语义是这份契约里最需要精确复制的一段：
+**闸门 2 · 会话认证** `authRejection(req)`（`index.js:2969`）—— 返回值语义是这份契约里最需要精确复制的一段：
 
 | `connection.requestRejection(req)` 返回 | 插件行为 |
 |---|---|
@@ -202,7 +202,7 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 
 ## §6 R5 · SSE 契约
 
-`[源码]` `openSse`（`index.js:1503`）：
+`[源码]` `openSse`（`index.js:1593`）：
 
 响应头：
 
@@ -230,7 +230,7 @@ data: <JSON>\n
 
 ## §7 R6 · 子代理（两代 API 并存）
 
-`[源码]` `index.js:1616` `subagentsService()` / `usesActivationApi()` / `startSubagent()`：
+`[源码]` `index.js:1706` `subagentsService()` / `usesActivationApi()` / `startSubagent()`：
 
 - 服务被认为"可启动"的条件：`typeof service.start === 'function' || typeof service.startActivation === 'function'`。
 - **旧面（≤0.2.1-alpha.1）**：`service.start(provider, request)` → 返回 `{ id, localAgent?, result: Promise, dispose }`。
@@ -238,13 +238,13 @@ data: <JSON>\n
   - `request` 是同一个 `SubagentStartRequest` 形状，插件会带 `prompt`、`parent`，并按能力追加 `persona` / `toolFilter` / **`agentPreset`**。
   - `delivery: 'caller'` 的语义是"子代理不进父会话的可见对话"——**这是产品语义，不是优化项**；宿主把它实现成默认归档进父会话，卡片就会污染主对话。
 - 还需要 `service.list()` 返回 provider 名数组（拿不到就视为空）。
-- 能力探测：`service.capabilities?.(provider)` 用于判断 `persona` / `toolFilter` 是否被支持；不支持时插件**如实上报** `toolFilter:'unsupported'` 而不是谎报 `'preset'`（`index.js:2004`）。
+- 能力探测：`service.capabilities?.(provider)` 用于判断 `persona` / `toolFilter` 是否被支持；不支持时插件**如实上报** `toolFilter:'unsupported'` 而不是谎报 `'preset'`（`index.js:2032`）。
 
 **事件契约**：
 
 ```js
-ctx.on('agent/assistant-stream', payload => …)   // index.js:1587
-ctx.on('session/event', (session, event) => …)   // index.js:1597（event.type === 'assistant/chunk'）
+ctx.on('agent/assistant-stream', payload => …)   // index.js:1595
+ctx.on('session/event', (session, event) => …)   // index.js:1605（event.type === 'assistant/chunk'）
 ```
 
 `[推断]` 插件用这两种事件把子代理的输出帧桥接到 SSE；宿主若不发这两类事件，`ask` 只会返回一个空流（不会 500）。做 Go 宿主时**先实现 `startActivation` + 一条能推 chunk 的事件通道**即可让生成链路活起来。
@@ -253,7 +253,7 @@ ctx.on('session/event', (session, event) => …)   // index.js:1597（event.type
 
 ## §8 R7 · 工具白名单
 
-`[源码]` `readOnlyToolFilter(ctx)`（`index.js:1337`）：
+`[源码]` `readOnlyToolFilter(ctx)`（`index.js:1422`）：
 
 - `ctx.get('tools')`；无服务或 `typeof tools.schemas !== 'function'` → 返回 `undefined`（= 不限制，子代理继承全量工具）。
 - `tools.schemas()` 抛错 → `undefined`。
@@ -264,10 +264,10 @@ ctx.on('session/event', (session, event) => …)   // index.js:1597（event.type
 
 ## §9 R8 · 文件系统与路径
 
-`[源码]` `index.js:1296` 起：
+`[源码]` `index.js:1299` 起：
 
 - `configDir()` = `${$DSH_HOME || ~/.dsh}/sidecard-ask`；**`$DSH_HOME` 为空白算未设置**；绝不使用 `process.cwd()`。
-- `configFilePath()` = 在 `$DSH_PROFILE` 匹配 `/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/` 时用 `config.<profile>.json`，否则退回共享的 `config.json`（profile 非法值**不得**进入路径）。
+- `configFilePath()` = 先取宿主的 `profileContext.name`（2.1.10 起；宿主进程从不设置 `$DSH_PROFILE`），没有该服务时回退 `$DSH_PROFILE`；名字匹配 `/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/` 才用 `config.<profile>.json`，否则退回共享的 `config.json`（非法值**不得**进入路径）。
 - 写入：`mkdirSync(dir,{recursive:true,mode:0700})` → 写 `<path>.tmp`（`mode: 0600`）→ `renameSync` 原子替换 → 失败时删临时文件并返回 `{ok:false,error}`。
 - 读取：文件不存在（`ENOENT`）按"未配置"处理；其它错误记 warn 并按未配置处理；损坏 JSON 同。
 
@@ -302,7 +302,7 @@ window.__ModuleLoader__.load({ id: 'dsh-sidecard-ask', factory(require) { const 
 
 ### 11.2 槽位与回退顺序
 
-`[源码]` `client.js:7360` 起，逐级回退（第一个存在的即用）：
+`[源码]` `client.js:7586` 起，逐级回退（第一个存在的即用）：
 
 | 用途 | 回退链 |
 |---|---|
@@ -313,7 +313,7 @@ window.__ModuleLoader__.load({ id: 'dsh-sidecard-ask', factory(require) { const 
 
 ### 11.3 右栏 DOM 标记（无公开契约，靠实测）
 
-`client.js:449` `RAIL_SELECTORS`：
+`client.js:464` `RAIL_SELECTORS`：
 
 ```
 [data-dsa-rail-host]                          // 插件自己的节点，最可靠
@@ -341,7 +341,7 @@ sidebarRight.closeIn(sessionId, tabId)
 
 ### 11.5 localStorage 键
 
-`client.js:5905`：`dsh-sidecard-ask:cards:v3` / `:v2` / `:v1`（v3 起带 `writtenAt`，用于区分"我们写空过"与"从未写过"）。预算：单字段 65 536 字符、总 2 000 000 字符、最多 10 张卡。宿主若替换存储后端，必须保留 `storage` 事件的跨窗口通知语义。
+`client.js:6066`：`dsh-sidecard-ask:cards:v3` / `:v2` / `:v1`（v3 起带 `writtenAt`，用于区分"我们写空过"与"从未写过"）。预算：单字段 65 536 字符、总 2 000 000 字符、最多 10 张卡。宿主若替换存储后端，必须保留 `storage` 事件的跨窗口通知语义。
 
 ---
 

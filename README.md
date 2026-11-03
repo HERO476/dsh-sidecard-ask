@@ -175,8 +175,8 @@ plugin_manager(action="install_bundle", target="D:\\Users\\34332\\AI\\dsh-sideca
 | `showInUnclassified` | 布尔 | `true` | 无法归类的区域是否也触发 | 立即 |
 | `minChars` | 0–200 | `2` | 少于该字符数的选区不触发 | 立即 |
 | `maxConcurrentAsks` | 1–12 | `3` | 侧边卡片并发作答上限，超出返回 `busy`（可重试） | 立即 |
-| `sideTools` | `readonly` \| `inherit` | `readonly` | 侧边作答者的工具权限：只读 / 继承当前会话。**注意**：0.2.1 的 `SubagentStartRequest` 没有 `toolFilter`，`readonly` 实际由「探针拒写」兜住（发一条会写盘的指令，被拒即判定只读链路有效）；要真正收窄工具集请用下一条 | 下一次提问 |
-| `sideAgentPreset` | 字符串，≤120 字符 | `''` | **只读 preset**：子代理以该 agent preset 启动，工具集由 preset 决定——这是 0.2.1 上唯一可靠的收窄通道（`agentPreset` 能力位存在时生效，否则退回探针）。留空 = 不启用 | 下一次提问 |
+| `sideTools` | `readonly` \| `inherit` | `inherit` | 侧边作答者的工具权限。**2.1.10 起默认 `inherit`**：0.2.2-alpha.3 的 `SubagentCapabilities` 只有 `{agentOptions, agentPreset, outputSchema, depthLimit}`，既没有 `toolFilter` 也没有 `persona`，宿主不提供任何只读载体。选 `readonly` 时，只有「下一条 preset」或宿主真的认 `toolFilter` 才成立，否则**直接拒绝作答**（`readonly-unavailable`）——不会继承、也没有任何“探针拒写”兜底（2.1.9 及更早的 README 那句话是错的，已删除） | 下一次提问 |
+| `sideAgentPreset` | 字符串，≤120 字符 | `''` | **只读 preset**：子代理以该 agent preset 启动，工具集由 preset 决定——这是 0.2.2 上唯一可靠的收窄通道（`agentPreset` 能力位存在时生效）。留空 = 不启用；此时 `sideTools: readonly` 若没有宿主 `toolFilter` 载体就会拒绝作答 | 下一次提问 |
 | `sideTimeoutMs` | 5000–3600000 | `180000` | 单次侧边作答超时 | 下一次提问 |
 | `sideProvider` | 字符串 \| `auto` | `auto` | 指定子代理 provider（`auto` 优先 `spawn`） | 下一次提问 |
 | `quickActions` | 动作数组（≤12 条） | 5 个内置动作 | **一键快捷动作**：选中后按钮旁的动作芯片。条目形如 `{id, enabled, shortcut}`；内置 id 为 `builtin:explain/translate/summarize/polish/fix`，自定义动作（非 `builtin:` 前缀）还需 `label`（≤20 字）与 `question`（≤500 字，可用 `{selection}` 内嵌选中正文）。设置页可视化编辑，用户层整表覆盖默认值 | 立即（快捷键下次按键生效） |
@@ -515,7 +515,7 @@ dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[d
 | 编号 | rc.3 事实 | 影响 | 2.1.2 处置 |
 |---|---|---|---|
 | D0 | tab 记录只有 `{id,kind,contentId,title}`，body 无 `tab` 属性、无 `tab.meta` | 原生栏卡片恒走「已关闭」兜底 + 600 ms 后被挪去浮层 | `hostCardIdOf()` 三级回退，含适配器记录的 cardId |
-| D1 | `SubagentStartRequest`/`Capabilities` 无 `toolFilter`、无 `persona` | `sideTools: readonly` 只靠探针拒写 | 新增 `sideAgentPreset`（`agentPreset` 是唯一真实收窄通道） |
+| D1 | `SubagentStartRequest`/`Capabilities` 无 `toolFilter`、无 `persona` | `sideTools: readonly` 没有载体 | 新增 `sideAgentPreset`（`agentPreset` 是唯一真实收窄通道）；2.1.10 起 `readonly` 无载体即**拒绝作答**，默认值改为 `inherit`（“探针拒写”从未实现，相关表述已删） |
 | D2 | 控制器无 `closeTab(kind, options)` | 关闭卡片后 tab 残留 | 改用 `openTabs.getSnapshot()` + `closeIn(sessionId, tabId)` |
 | D3 | locale 快照是 `{active, locales, revision}` | 切换语言不跟随 | 先读 `active` |
 | D4 | `persona` 能力位不存在 | persona 拼进 prompt（无损失） | 保持，文档标注 |

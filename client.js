@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.9'
+    const CLIENT_VERSION = '2.1.10'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -198,7 +198,7 @@ window.__ModuleLoader__.load({
       showInUnclassified: true,
       minChars: 2,
       maxConcurrentAsks: 3,
-      sideTools: 'readonly',
+      sideTools: 'inherit',
       sideTimeoutMs: 180000,
       sideProvider: 'auto',
       // Mirrors the Host's DEFAULT_CONFIG.sideAgentPreset: the preset that
@@ -737,10 +737,10 @@ window.__ModuleLoader__.load({
         setSideTools: '侧边作答工具权限',
         setSideToolsReadonly: '只读（需宿主支持，0.2.x 无效）',
         setSideToolsInherit: '继承当前会话',
-        setSideToolsHint: '这个开关只在宿主支持工具白名单时才生效；0.2.x 宿主（0.2.1-rc.3 实测、rc.5 复核）都不支持，侧边作答会继承当前会话的全部工具。要真正收窄，请填写下面的 preset（0.2.1 起支持）。',
+        setSideToolsHint: '只读需要宿主提供载体：要么下面填了 preset，要么宿主真的认工具白名单。0.2.2-alpha.3 两者都没有，所以选“只读”时会直接拒绝作答（不会继承、也没有任何兜底探针）；默认的“继承”就是子代理拿到当前会话的全部工具。要真正收窄，请填写下面的 preset。',
         setSideAgentPreset: '只读 preset（可选）',
         setSideAgentPresetPlaceholder: '留空则不启用',
-        setSideAgentPresetHint: '子代理以该 agent preset 启动，工具集由 preset 决定（0.2.1 唯一可靠的收窄通道）；留空时退回探针拒写',
+        setSideAgentPresetHint: '子代理以该 agent preset 启动，工具集由 preset 决定（0.2.2 上唯一可靠的收窄通道）；留空且宿主不提供只读载体时，只读模式会直接拒绝作答，而不是退回任何"探针"',
         setSideTimeout: '侧边作答超时（毫秒）',
         setSideTimeoutHint: '超过该时间未完成即停止作答',
         setSideProvider: '子代理 provider',
@@ -1016,10 +1016,10 @@ window.__ModuleLoader__.load({
         setSideTools: 'Side answerer tool access',
         setSideToolsReadonly: 'Read-only (needs host support; no-op on 0.2.x)',
         setSideToolsInherit: 'Inherit from the session',
-        setSideToolsHint: 'This switch only works when the host supports a tool allow-list; no 0.2.x host does (verified on 0.2.1-rc.3 and re-checked on rc.5), so the side answerer inherits every tool of the session. To really narrow it, set the preset below (supported since 0.2.1).',
+        setSideToolsHint: 'Read-only needs a carrier: either the preset below, or a host that really honours a tool allow-list. 0.2.2-alpha.3 offers neither, so choosing read-only REFUSES the run (it never inherits, and there is no fallback probe). The default, inherit, is exactly what the child would get anyway. To really narrow it, set the preset below.',
         setSideAgentPreset: 'Read-only preset (optional)',
         setSideAgentPresetPlaceholder: 'Leave empty to disable',
-        setSideAgentPresetHint: 'Starts the subagent with this agent preset, so the preset decides the tool set — the only reliable narrowing channel on 0.2.1; when empty the write-refusing probe is the fallback',
+        setSideAgentPresetHint: 'Starts the subagent with this agent preset, so the preset decides the tool set — the only reliable narrowing channel on 0.2.2; when it is empty and the host offers no read-only carrier, read-only mode refuses the run instead of falling back to any "probe"',
         setSideTimeout: 'Side answer timeout (ms)',
         setSideTimeoutHint: 'The answer stops once this time is exceeded',
         setSideProvider: 'Subagent provider',
@@ -4830,7 +4830,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           ? h('div', { className: 'dsa-muted' }, metaBits.join(' · '))
           : null,
         h(AnswerBody, { card: shown, containerRef: answerRef }),
-        card.toolFilter === 'unsupported'
+        (card.toolFilter === 'blocked' || card.toolFilter === 'unsupported')
           ? h('div', { className: 'dsa-muted' }, t('toolGuardUnavailable'))
           : (card.toolFilter === 'inherit' ? h('div', { className: 'dsa-muted' }, t('toolGuardInherited')) : null),
         card.toolFilter === 'preset' && typeof card.agentPreset === 'string'

@@ -32,7 +32,7 @@
  * @module dsh-sidecard-ask/host
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.9'
+export const PLUGIN_VERSION = '2.1.10'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -89,7 +89,16 @@ export const DEFAULT_CONFIG = {
   showInUnclassified: true,
   minChars: 2,
   maxConcurrentAsks: 3,
-  sideTools: 'readonly',
+  /**
+   * Tool set for side answers. `inherit` is the default because the shipped
+   * 0.2.2-alpha.3 host exposes NO read-only carrier: its
+   * `SubagentCapabilities` is `{agentOptions, agentPreset, outputSchema,
+   * depthLimit}`, so a `readonly` promise there cannot be enforced. Choosing
+   * `readonly` is an explicit request and fails CLOSED when no carrier
+   * exists; `inherit` is the honest default and is what the child would get
+   * anyway.
+   */
+  sideTools: 'inherit',
   sideTimeoutMs: 180_000,
   sideProvider: 'auto',
   /**
@@ -265,6 +274,31 @@ const NUMBERS = {
 }
 
 /**
+ * Longest run of consecutive backticks in `text`.
+ *
+ * The selection rides inside a fenced block, and a selection is arbitrary
+ * text (it can come from a web page or a document the user did not write).
+ * A fixed three-backtick fence is closed by the first \`\`\` in that text, so
+ * everything after it would be read as top-level instructions. The fence is
+ * therefore made longer than the longest run inside the payload.
+ * @param {string} text - the payload.
+ * @returns {number} the longest run length (0 when there are none).
+ */
+export function longestBacktickRun(text) {
+  let longest = 0
+  let current = 0
+  for (const char of String(text)) {
+    if (char === '`') {
+      current += 1
+      if (current > longest) longest = current
+    } else {
+      current = 0
+    }
+  }
+  return longest
+}
+
+/**
  * Tool names a read-only side answerer is allowed to keep.
  *
  * This is a WISH list, not a filter: `ctx.tools.restrict()` validates every
@@ -293,7 +327,6 @@ const READONLY_TOOL_NAMES = [
   'list_agents',
   'job_list',
   'job_output',
-  'todo_write',
 ]
 
 /** The child's persona: answer the question about the selection, nothing else. */
@@ -658,7 +691,11 @@ function composeSidePrompt(input) {
    * separator between the selection and its closing fence.
    */
   const assemble = (selection, historyTurns) => {
-    const parts = [sourceLine, 'Selection:', '```text', selection, '```']
+    // The fence must outgrow any backtick run in the selection (see
+    // `longestBacktickRun`): a fixed three-backtick fence can be closed from
+    // inside the payload.
+    const fence = '`'.repeat(Math.max(3, longestBacktickRun(selection) + 1))
+    const parts = [sourceLine, 'Selection:', `${fence}text`, selection, fence]
     if (historyTurns.length > 0) {
       const historyLines = ['Earlier turns on this card:']
       for (const turn of historyTurns) {
@@ -1266,6 +1303,11 @@ const ERRNO_HINTS = {
   ENOENT: '（目标目录不存在）',
 }
 
+/** HTTP status for a body failure: an oversized body is `413`, anything else 400. */
+function bodyFailureStatus(error) {
+  return error !== null && typeof error === 'object' && error.code === 'too-large' ? 413 : 400
+}
+
 /**
  * Reduce any thrown value to a wire error the Client can present.
  * @param {unknown} error - the thrown value.
@@ -1318,10 +1360,50 @@ export function configDir() {
  * harness, bare `node` runs) keeps the historical path exactly.
  * @returns {string} absolute file path.
  */
-export function configFilePath() {
-  const profile = typeof process.env.DSH_PROFILE === 'string' ? process.env.DSH_PROFILE.trim() : ''
-  const slug = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profile) ? profile : ''
+export function configFilePath(profileOverride = hostProfileName) {
+  return configPathFor(profileOverride)
+}
+
+/**
+ * Build the config file path for one profile name. The profile segment is
+ * restricted to a conservative token: this value reaches a filesystem path, so
+ * anything else falls back to the shared file rather than escaping the
+ * directory. An empty name (older harness, bare `node` runs) keeps the
+ * historical path exactly.
+ * @param {string} [profile] - the profile identity.
+ * @returns {string} absolute file path.
+ */
+export function configPathFor(profile) {
+  const fromEnv = typeof process.env.DSH_PROFILE === 'string' ? process.env.DSH_PROFILE.trim() : ''
+  const name = typeof profile === 'string' && profile.trim() !== '' ? profile.trim() : fromEnv
+  const slug = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name) ? name : ''
   return join(configDir(), slug === '' ? 'config.json' : `config.${slug}.json`)
+}
+
+/**
+ * The host's profile identity, captured once per `apply()`.
+ *
+ * `DSH_PROFILE` is exported for CLI children; the long-running host process
+ * never sets it, so an env-only lookup made every profile share one file. The
+ * host publishes the real identity as the `profileContext` service.
+ */
+let hostProfileName = ''
+
+/**
+ * Read the profile name out of the host's `profileContext` service.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - host plugin context.
+ * @returns {string} the profile name, or '' when the service is absent.
+ */
+export function profileNameFromContext(ctx) {
+  try {
+    const service = typeof ctx?.get === 'function' ? ctx.get('profileContext') : undefined
+    const name = service !== undefined && service !== null && typeof service.name === 'string'
+      ? service.name.trim()
+      : ''
+    return name
+  } catch {
+    return ''
+  }
 }
 
 /**
@@ -1984,12 +2066,24 @@ function createSideEngine(ctx, configOf) {
       // 2.1.9: the read-only guard must fail CLOSED. Without a preset there is
       // no other real narrowing channel on this host, so a guard we cannot
       // build is a refusal, not an inheritance.
-      if (config.sideTools === 'readonly' && !presetInForce
-        && toolFilter !== undefined && toolFilter.blocked === 'no-readonly-guard') {
+      // The read-only promise has exactly two carriers: a preset (honored by
+      // `startLocal`) and a tool filter the host actually advertises. When
+      // neither is in force the child WOULD inherit the parent's tools —
+      // write and bash included — so the honest answers are "refuse" or "say
+      // inherit"; pretending is not one of them. `sideTools: 'inherit'` is the
+      // documented opt-out and is confirmed in the settings page.
+      const filterInForce = toolFilterSupported
+        && toolFilter !== undefined
+        && Array.isArray(toolFilter.allow)
+      const guardInForce = presetInForce || filterInForce
+      if (config.sideTools === 'readonly' && !guardInForce) {
+        const blocked = toolFilter !== undefined && toolFilter.blocked !== undefined
         sink.send('error', {
           id,
-          code: 'no-readonly-guard',
-          message: '这台宿主的工具注册表里认不出任何只读工具，无法保证侧边作答只读，已拒绝本次作答',
+          code: blocked ? 'no-readonly-guard' : 'readonly-unavailable',
+          message: blocked
+            ? '这台宿主的工具注册表里认不出任何只读工具，无法保证侧边作答只读，已拒绝本次作答'
+            : '这台宿主没有只读工具载体（不提供 agentPreset，也不认 toolFilter），侧边作答会继承主对话的全部工具，已拒绝本次作答',
           retryable: false,
           fallback: 'main',
         })
@@ -2075,9 +2169,15 @@ function createSideEngine(ctx, configOf) {
           return
         }
         if (frame.type === 'end') {
+          // 0.2.2's end frame carries `outcome: {kind}` and no `stopReason`;
+          // the older field is read first so both host generations agree.
+          const outcomeKind = typeof frame.outcome?.kind === 'string' ? frame.outcome.kind : undefined
           sink.send('status', {
             id,
-            stopReason: typeof frame.stopReason === 'string' ? frame.stopReason : undefined,
+            stopReason: typeof frame.stopReason === 'string'
+              ? frame.stopReason
+              : (outcomeKind === 'abandoned' ? 'aborted' : undefined),
+            outcome: outcomeKind,
           })
         }
       }
@@ -2287,6 +2387,35 @@ function readPersistedConfig(logger) {
 }
 
 /**
+ * Copy the current file aside when a save would drop keys this build does not
+ * know about (a newer version's settings meeting an older one).
+ * @param {string} path - the file about to be replaced.
+ * @param {Record<string, unknown>} data - the layer being written.
+ * @param {object} [logger] - optional ctx.logger.
+ * @returns {string|undefined} the backup path, when one was written.
+ */
+function backupIfDroppingKeys(path, data, logger) {
+  let previous
+  try {
+    previous = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return undefined
+  }
+  if (previous === null || typeof previous !== 'object' || Array.isArray(previous)) return undefined
+  const lost = Object.keys(previous).filter(key => !Object.prototype.hasOwnProperty.call(data, key))
+  if (lost.length === 0) return undefined
+  const backup = `${path}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`
+  try {
+    copyFileSync(path, backup)
+    logger?.warn?.(`[sidecard-ask] 保存会丢弃未知配置项（${lost.join(', ')}），已备份到 ${backup}`)
+    return backup
+  } catch (error) {
+    logger?.warn?.('[sidecard-ask] 备份配置失败：', error?.message ?? error)
+    return undefined
+  }
+}
+
+/**
  * Persist the user layer atomically (write a sibling temp file, then rename).
  * Always writes THIS profile's file, never the shared one.
  * @param {Record<string, unknown>} data - the user layer.
@@ -2302,9 +2431,13 @@ function writePersistedConfig(data, logger) {
     // world-readable; the mode bits are no-ops on Windows but keep the
     // behavior correct on Linux/macOS.
     mkdirSync(dir, { recursive: true, mode: 0o700 })
+    // A downgrade (or a newer build's keys meeting an older one) used to drop
+    // unknown keys on the first save, permanently. Keep a copy of the file
+    // whenever the new layer is about to lose a key it does not know.
+    const backup = backupIfDroppingKeys(path, data, logger)
     writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
     renameSync(temp, path)
-    return { ok: true, path }
+    return { ok: true, path, ...(backup === undefined ? {} : { backup }) }
   } catch (error) {
     try {
       rmSync(temp, { force: true })
@@ -2326,6 +2459,10 @@ function writePersistedConfig(data, logger) {
  * @param {Record<string, unknown>|undefined} patchConfig - the bundle row config.
  */
 export function apply(ctx, patchConfig) {
+  // Re-scope the module's default config path to THIS host. A boot without a
+  // profile service therefore falls back to the shared file instead of keeping
+  // a previous host's name (two hosts in one process must not share a path).
+  hostProfileName = profileNameFromContext(ctx)
   const persisted = readPersistedConfig(ctx.logger)
   let state = normalizeConfig(patchConfig, persisted.present ? persisted.data : undefined)
   let userLayer = persisted.present ? sanitizeLayer(persisted.data) : {}
@@ -2507,11 +2644,34 @@ export function apply(ctx, patchConfig) {
     try {
       const connection = ctx.get('connection')
       const fromConnection = cleaned(connection?.trustedHosts)
-      if (fromConnection.length > 0) return fromConnection
+      if (fromConnection.length > 0) return [...fromConnection, ...bindAuthority()]
     } catch {
       /* optional service */
     }
-    return []
+    return bindAuthority()
+  }
+
+  /**
+   * The authority this host is actually bound to, when it is not loopback.
+   *
+   * `webServer.host` is the configured bind address, read from configuration
+   * rather than inferred from a request, so trusting it cannot be steered by a
+   * `Host` header. Anything wildcard-ish is ignored on purpose: a server bound
+   * to 0.0.0.0 answers on every interface and there is no single authority to
+   * name, so those deployments must declare `trustedHosts` explicitly.
+   */
+  function bindAuthority() {
+    try {
+      const server = ctx.get('webServer')
+      const rawHost = typeof server?.host === 'string' ? server.host.trim() : ''
+      const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost
+      const wildcard = host === '' || host === '0.0.0.0' || host === '::' || host === '*'
+      if (wildcard || isLoopbackHostname(rawHost)) return []
+      const port = typeof server?.port === 'number' ? server.port : undefined
+      return [port === undefined ? rawHost : `${rawHost}:${port}`]
+    } catch {
+      return []
+    }
   }
 
   /** `/state` — the Client's single source of truth at boot and after a save. */
@@ -2569,7 +2729,7 @@ export function apply(ctx, patchConfig) {
     try {
       body = await readJsonBody(req)
     } catch (error) {
-      writeError(res, 400, toWireError(error, 'bad-request').code, toWireError(error).message)
+      writeError(res, bodyFailureStatus(error), toWireError(error, 'bad-request').code, toWireError(error).message)
       return
     }
     const report = sanitizeClientReport(body)
@@ -2598,7 +2758,7 @@ export function apply(ctx, patchConfig) {
     try {
       body = await readJsonBody(req)
     } catch (error) {
-      writeError(res, 400, toWireError(error, 'bad-request').code, toWireError(error).message)
+      writeError(res, bodyFailureStatus(error), toWireError(error, 'bad-request').code, toWireError(error).message)
       return
     }
     const input = sanitizeFeedbackInput(body)
@@ -2651,7 +2811,7 @@ export function apply(ctx, patchConfig) {
     try {
       body = await readJsonBody(req)
     } catch (error) {
-      writeError(res, 400, toWireError(error, 'bad-request').code, toWireError(error).message)
+      writeError(res, bodyFailureStatus(error), toWireError(error, 'bad-request').code, toWireError(error).message)
       return
     }
     const sink = openSse(res)
@@ -2680,7 +2840,7 @@ export function apply(ctx, patchConfig) {
     try {
       body = await readJsonBody(req)
     } catch (error) {
-      writeError(res, 400, 'bad-request', toWireError(error).message)
+      writeError(res, bodyFailureStatus(error), 'bad-request', toWireError(error).message)
       return
     }
     const id = typeof body?.id === 'string' ? body.id : ''
@@ -2705,7 +2865,7 @@ export function apply(ctx, patchConfig) {
     try {
       body = await readJsonBody(req)
     } catch (error) {
-      writeError(res, 400, 'bad-request', toWireError(error).message)
+      writeError(res, bodyFailureStatus(error), 'bad-request', toWireError(error).message)
       return
     }
     if (body === null || typeof body !== 'object') {

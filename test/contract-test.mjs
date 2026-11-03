@@ -38,6 +38,9 @@ const harness = makeHostCtx({})
 const engine = makeSubagentEngine({
   emit: (event, ...args) => harness.emit(event, ...args),
   frames: ['**Pro** ', 'contract ', 'answer'],
+  // This host advertises both optional channels, so the read-only guard is
+  // enforceable here; the default (inherit) path is covered in smoke-test.mjs.
+  capabilities: { agentOptions: true, agentPreset: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
 })
 harness.services.subagents = engine.service
 harness.services.agents = {
@@ -52,7 +55,7 @@ harness.services.tools = {
 // capsule (1.5.0, user requirement), which renders one line and no card body.
 // These cases assert card *content*, so they ask for the expanded shape — the
 // capsule default itself is asserted in test/float-placement.mjs.
-host.apply(harness.ctx, { trigger: 'both', maxChars: 1200, floatMode: 'full' })
+host.apply(harness.ctx, { trigger: 'both', maxChars: 1200, floatMode: 'full', sideTools: 'readonly' })
 
 /** Serve the host's own responses to the client half as a fetch. */
 function hostFetch(url, init = {}) {
@@ -313,6 +316,13 @@ report.equal(
   false,
   'the allow-list never names a mutating tool',
 )
+
+// The readonly patch above must not leak into the persisted user layer: the
+// Client mirrors whatever /state reports and saves it back, so leaving it
+// readonly here would make every later card in this file inherit that setting
+// (and, on a host with no read-only carrier, refuse outright).
+const resetGuard = await callRoute(harness, '/config', { body: { sideTools: 'inherit', confirmInheritTools: true } })
+report.equal(resetGuard.json().value.config.sideTools, 'inherit', 'the read-only patch is not persisted by accident')
 
 // Replay the host's exact SSE text through the client's own parser: this is
 // the check that catches framing drift (a stray `\r\n`, a missing blank line,
@@ -1537,7 +1547,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     roots: () => [{ id: 'session-alpha' }],
     list: () => [{ id: 'session-alpha' }],
   }
-  host.apply(sugHost.ctx, { floatMode: 'full', sideSurface: 'flow', followUpSuggestions: true })
+  host.apply(sugHost.ctx, { sideTools: 'inherit', floatMode: 'full', sideSurface: 'flow', followUpSuggestions: true })
   const sugFetch = (url, init = {}) => {
     const path = String(url).replace('/sidecard-ask/api/', '')
     const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -1601,7 +1611,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     roots: () => [{ id: 'session-alpha' }],
     list: () => [{ id: 'session-alpha' }],
   }
-  host.apply(offHost.ctx, { floatMode: 'full', sideSurface: 'flow' })
+  host.apply(offHost.ctx, { sideTools: 'inherit', floatMode: 'full', sideSurface: 'flow' })
   const offFetch = (url, init = {}) => {
     const path = String(url).replace('/sidecard-ask/api/', '')
     const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -1824,7 +1834,7 @@ reasoningHost.services.agents = {
   list: () => [{ id: 'session-alpha' }],
 }
 // Full shape so the reasoning block renders (the capsule default shows one line).
-host.apply(reasoningHost.ctx, { floatMode: 'full' })
+host.apply(reasoningHost.ctx, { sideTools: 'inherit', floatMode: 'full' })
 const reasoningFetch = (url, init = {}) => {
   const path = String(url).replace('/sidecard-ask/api/', '')
   const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -2012,7 +2022,7 @@ console.log('\nstream coalescing')
 // still surface every buffered character (the flush-before-done order).
 {
   const coalesceHost = makeHostCtx({})
-  host.apply(coalesceHost.ctx, {})
+  host.apply(coalesceHost.ctx, { sideTools: 'inherit' })
   const encoder = new TextEncoder()
   const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
   const coalesceFetch = (url, init = {}) => {
@@ -2086,7 +2096,7 @@ console.log('\nstream buffer discard')
 // no longer exists.
 {
   const discardHost = makeHostCtx({})
-  host.apply(discardHost.ctx, {})
+  host.apply(discardHost.ctx, { sideTools: 'inherit' })
   const encoder = new TextEncoder()
   const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
   const discardFetch = (url, init = {}) => {
@@ -2150,7 +2160,7 @@ console.log('\nhost cancel routing')
     roots: () => [{ id: 'session-alpha' }],
     list: () => [{ id: 'session-alpha' }],
   }
-  host.apply(cancelHost.ctx, {})
+  host.apply(cancelHost.ctx, { sideTools: 'inherit' })
   const calls = []
   const cancelFetch = (url, init = {}) => {
     const path = String(url).replace('/sidecard-ask/api/', '')
@@ -2647,7 +2657,7 @@ console.log('\ndelete this follow-up conversation (2.0.0)')
 {
   const abortCalls = []
   const streamDeleteHost = makeHostCtx({})
-  host.apply(streamDeleteHost.ctx, {})
+  host.apply(streamDeleteHost.ctx, { sideTools: 'inherit' })
   const encoder = new TextEncoder()
   const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
   const streamDeleteFetch = (url, init = {}) => {
@@ -2884,7 +2894,7 @@ const noSaveEngine = makeSubagentEngine({
   emit: (event, ...args) => noSaveHost.emit(event, ...args),
   frames: ['答案'],
 })
-host.apply(noSaveHost.ctx, { historyMaxCards: 0 })
+host.apply(noSaveHost.ctx, { sideTools: 'inherit', historyMaxCards: 0 })
 noSaveHost.services.subagents = noSaveEngine.service
 noSaveHost.services.agents = harness.services.agents
 noSaveHost.services.tools = harness.services.tools
@@ -3527,8 +3537,12 @@ report.ok(
   'the read-only switch is not advertised as "recommended" while the host cannot honour it',
 )
 report.ok(
-  /0\.2\.1/.test(localeDict.zh.setSideToolsHint) && /0\.2\.1/.test(localeDict.en.setSideToolsHint),
-  'the tool-access hint names the host version where the switch is inert',
+  /0\.2\.2/.test(localeDict.zh.setSideToolsHint) && /0\.2\.2/.test(localeDict.en.setSideToolsHint),
+  'the tool-access hint names the host generation where the switch has no carrier',
+)
+report.ok(
+  /拒绝|refuses/i.test(localeDict.zh.setSideToolsHint + localeDict.en.setSideToolsHint),
+  'the hint promises a refusal, not an inheritance fallback',
 )
 
 console.log('\nbetter-sidebar surface lifecycle')
@@ -4183,7 +4197,7 @@ console.log('\nfeedback: /feedback route over a real socket')
 
   // Unconfigured first: an empty environment and no recipient.
   const coldHost = makeHostCtx({})
-  host.apply(coldHost.ctx, {})
+  host.apply(coldHost.ctx, { sideTools: 'inherit' })
   const coldRes = await callRoute(coldHost, '/feedback', {
     body: { title: '卡片不显示', body: '追问之后卡片没有出现，控制台无报错。' },
   })
@@ -4214,7 +4228,7 @@ console.log('\nfeedback: /feedback route over a real socket')
   process.env.DSH_SIDECARD_SMTP_URL = `smtp://relay%40example.test:secret@127.0.0.1:${relay.port}?starttls=0`
   try {
     const fbHost = makeHostCtx({})
-    host.apply(fbHost.ctx, { feedbackAddress: 'ops@example.test' })
+    host.apply(fbHost.ctx, { sideTools: 'inherit', feedbackAddress: 'ops@example.test' })
     const stateRes = (await callRoute(fbHost, '/state', { body: {} })).json()
     report.equal(stateRes.value?.capabilities?.feedback?.configured, true, '/state sees a ready transport once both halves exist')
     report.equal(stateRes.value?.capabilities?.feedback?.toMasked, 'o***@example.test', 'the advertised recipient stays masked')
@@ -4488,7 +4502,7 @@ console.log('\nfeedback: SMTP typed into the settings page')
   const typedRelay = await startRelay()
   try {
     const typedHost = makeHostCtx({})
-    host.apply(typedHost.ctx, {})
+    host.apply(typedHost.ctx, { sideTools: 'inherit' })
     const saved = await callRoute(typedHost, '/config', {
       body: {
         feedbackAddress: 'ops@example.test',
