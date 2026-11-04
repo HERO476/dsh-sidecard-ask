@@ -30,8 +30,10 @@
         minChars: 2
         # 侧边卡片作答的并发上限
         maxConcurrentAsks: 3
-        # readonly = 侧边作答者只带只读工具；inherit = 继承父代理的工具
-        sideTools: readonly
+        # inherit = 继承父代理的工具（2.1.11 起默认，与 index.js 的 DEFAULT_CONFIG
+        # 一致）；readonly = 只带只读工具，宿主没有只读载体
+        # （agentPreset 或 toolFilter）时直接拒绝作答，不会假装只读
+        sideTools: inherit
         # 侧边作答的超时（毫秒）
         sideTimeoutMs: 180000
         # 子代理 provider 名称；auto = 自动挑选已注册的 provider

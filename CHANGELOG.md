@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.1.11
+
+**主题：修 2.1.10 的漏改——bundle 补丁仍在把默认值钉回 `readonly`，导致默认配置下每一次追问都被拒绝。**
+
+2.1.10 把代码默认值改成了 `inherit`，也改了文档，但漏了 `cordis.patch.yml`。补丁是**默认值层**，
+合并时覆盖 `DEFAULT_CONFIG`，所以在当前宿主（0.2.2-alpha.3，`SubagentCapabilities` 无
+`toolFilter`/`persona`）上 `sideTools` 实际仍是 `readonly`，`/ask` 一律返回
+`readonly-unavailable`，一个子代理都不起。四套自测 1981 条全绿也没抓到，因为它们只断言
+「补丁里有 `trigger: selection`」，从不比对补丁值与代码默认值。
+
+### 修复
+
+- **P-01 补丁默认值与代码对齐**：`cordis.patch.yml` 的 `sideTools` 改为 `inherit`。**注意**：
+  已有 `<DSH_HOME>/sidecard-ask/config.json` 里持久化的 `readonly` 仍然优先，升级后需在设置页
+  把「侧边工具」切到「继承父代理」，否则仍会被拒绝（拒绝文案会直接告诉你这么做）。
+- **P-02 `readonly-unavailable` 的客户端文案**：`ERROR_CODES` 只登记了 `no-readonly-guard`，
+  英文界面下这条最常见的拒绝会退回宿主中文。现在补上中英文案并指明改法。
+- **P-03 README 三处纠错**：第十二章不再说「默认只读 / 只读白名单」（该白名单不存在，`readonly`
+  现在是无载体即拒绝）；第 70 行不再说补丁「给出全部默认配置」（实际 12 个键，其余取代码默认值）；
+  围栏描述改为「选区最长反引号串 + 1」，与 R-02 的实现一致。
+- **P-04 测试补上盲区**：`test/verify.mjs` 新增「bundle patch ↔ DEFAULT_CONFIG」一致性断言——
+  补丁里的每个键必须是真实配置键，值必须等于代码默认值，任何有意的差异必须登记在
+  `PATCH_DEFAULT_EXCEPTIONS` 里，且例外表本身会被检查是否失效。这条断言若在 2.1.10 就存在，
+  P-01 会被当场拦住。
+
 ## 2.1.10
 
 **主题：把专家评审的 9 项修复落地——只读承诺改为失败关闭，注入面、profile、宿主 API 三处对齐 0.2.2-alpha.3。**

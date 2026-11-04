@@ -66,6 +66,54 @@ report.ok(
   `imports: ${hostImports.join(', ')}`,
 )
 
+console.log('\nbundle patch ↔ DEFAULT_CONFIG parity')
+// The bundle patch is a *defaults* layer: it is merged over the code defaults,
+// so any key it names OVERRIDES `DEFAULT_CONFIG`. 2.1.10 shipped
+// `sideTools: readonly` here while index.js already said `inherit`, and 1981
+// green assertions never noticed — the regex checks above only ask whether a
+// line exists, never what it says. Pin every shipped default to the code
+// default; a deliberate divergence must be listed in PATCH_DEFAULT_EXCEPTIONS
+// with a reason, and the exception list itself is checked for staleness.
+const PATCH_DEFAULT_EXCEPTIONS = {}
+const patchDefaults = (() => {
+  const lines = patch.split('\n')
+  const start = lines.findIndex(line => /^\s*config:\s*$/.test(line))
+  if (start === -1) return {}
+  const configIndent = lines[start].match(/^\s*/)[0].length
+  const parsed = {}
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '') continue
+    const indent = line.match(/^\s*/)[0].length
+    if (indent <= configIndent) break // dedented: the config block ended
+    const trimmed = line.trim()
+    if (trimmed.startsWith('#')) continue
+    const match = trimmed.match(/^([A-Za-z][A-Za-z0-9]*):\s*(.*)$/)
+    if (match === null) continue
+    const raw = match[2].trim()
+    let value = raw
+    if (raw === 'true') value = true
+    else if (raw === 'false') value = false
+    else if (/^-?\d+(\.\d+)?$/.test(raw)) value = Number(raw)
+    else value = raw.replace(/^['"]|['"]$/g, '')
+    parsed[match[1]] = value
+  }
+  return parsed
+})()
+const patchKeys = Object.keys(patchDefaults)
+report.ok(patchKeys.length >= 8, 'patch defaults parse out of the YAML config block', `parsed: ${patchKeys.join(', ')}`)
+const unknownPatchKeys = patchKeys.filter(key => !Object.prototype.hasOwnProperty.call(host.DEFAULT_CONFIG, key))
+report.equal(unknownPatchKeys, [], 'every key in the bundle patch is a real DEFAULT_CONFIG key')
+const staleExceptions = Object.keys(PATCH_DEFAULT_EXCEPTIONS).filter(
+  key => !Object.prototype.hasOwnProperty.call(patchDefaults, key),
+)
+report.equal(staleExceptions, [], 'no PATCH_DEFAULT_EXCEPTIONS entry is stale (the key left the patch)')
+const divergentDefaults = patchKeys
+  .filter(key => Object.prototype.hasOwnProperty.call(host.DEFAULT_CONFIG, key))
+  .filter(key => !Object.prototype.hasOwnProperty.call(PATCH_DEFAULT_EXCEPTIONS, key))
+  .filter(key => JSON.stringify(patchDefaults[key]) !== JSON.stringify(host.DEFAULT_CONFIG[key]))
+  .map(key => `${key}: patch=${JSON.stringify(patchDefaults[key])} code=${JSON.stringify(host.DEFAULT_CONFIG[key])}`)
+report.equal(divergentDefaults, [], 'the bundle patch never silently overrides a code default')
+
 console.log('\nclient half')
 const loaded = loadClientModule()
 report.equal(loaded.registration.id, 'dsh-sidecard-ask', 'client registers the package id')

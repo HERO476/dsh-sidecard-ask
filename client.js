@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.10'
+    const CLIENT_VERSION = '2.1.11'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -687,6 +687,7 @@ window.__ModuleLoader__.load({
         errorNoParentBody: '当前没有活动的会话代理，无法发起独立作答',
         errorParentSessionUnknownBody: '请求点名的会话不在这台宿主上；侧边作答不会借用别的会话',
         errorNoReadonlyGuardBody: '这台宿主的工具注册表里认不出只读工具，为保证侧边作答不写工作区，本次已拒绝',
+        errorReadonlyUnavailableBody: '当前设为只读作答（sideTools: readonly），但这台宿主没有只读载体（预设或工具过滤），为保证不写工作区，本次已拒绝。可在设置页把侧边工具改为「继承父代理」',
         errorAborted: '作答被取消或超时',
         errorUnreachableBody: '宿主接口不可达',
         errorUnauthorizedBody: '需要先通过 DSH 登录（宿主会话未认证）',
@@ -967,6 +968,7 @@ window.__ModuleLoader__.load({
         errorNoParentBody: 'No active session agent to answer independently',
         errorParentSessionUnknownBody: 'The session this request names is not on this host; the side answer will not borrow another one',
         errorNoReadonlyGuardBody: 'This host\'s tool registry has no recognisable read-only tools, so the side answer was refused to keep the workspace untouched',
+        errorReadonlyUnavailableBody: 'The side answer is set to read-only (sideTools: readonly), but this host exposes no read-only carrier (preset or tool filter), so the answer was refused to keep the workspace untouched. Switch the side tool policy to "inherit" in settings.',
         errorAborted: 'The answer was cancelled or timed out',
         errorUnreachableBody: 'The host API is unreachable',
         errorUnauthorizedBody: 'Sign in to DSH first (the host session is not authenticated)',
@@ -1255,6 +1257,11 @@ window.__ModuleLoader__.load({
       // 2.1.9: the read-only guard now fails closed. The code must be named
       // Client-side, or an English UI would show the Host's Chinese line.
       'no-readonly-guard': { key: 'errorNoReadonlyGuardBody' },
+      // 2.1.11: `readonly-unavailable` is the failure a *default* install hits
+      // when the stored layer (or a downgraded config) still says `readonly`
+      // on a host with no read-only carrier — the most likely error a user
+      // ever sees, so it must not fall back to the Host's Chinese line.
+      'readonly-unavailable': { key: 'errorReadonlyUnavailableBody' },
       aborted: { key: 'errorAborted' },
       unreachable: { key: 'errorUnreachableBody' },
       // The Host now gates these routes on the DSH browser session, so both are
