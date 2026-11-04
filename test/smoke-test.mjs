@@ -9,14 +9,14 @@
  * Run: `node test/smoke-test.mjs`.
  */
 
-import { mkdtempSync, readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HOST_ENTRY, createReporter, makeHostCtx, makeSubagentEngine, callRoute, hostModuleUrl } from './harness.mjs'
+import { HOST_ENTRY, createReporter, makeHostCtx, makeSubagentEngine, callRoute, hostModuleUrl, tempDir } from './harness.mjs'
 
 // Persisted user config lives under $DSH_HOME; use a scratch directory so the
 // test never writes into a real profile.
-const HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-smoke-'))
+const HOME = tempDir('sidecard-ask-smoke-')
 process.env.DSH_HOME = HOME
 // The persisted file is profile-scoped, so an inherited $DSH_PROFILE (a test
 // run under a real harness) would point every assertion at the wrong file.
@@ -1138,7 +1138,7 @@ console.log('\n2.1.9 hardening')
 }
 /** Run `fn` with a private $DSH_HOME so one case cannot inherit another's save. */
 async function withHome(fn) {
-  const home = mkdtempSync(join(tmpdir(), 'sidecard-ask-case-'))
+  const home = tempDir('sidecard-ask-case-')
   const previousHome = process.env.DSH_HOME
   const previousProfile = process.env.DSH_PROFILE
   process.env.DSH_HOME = home

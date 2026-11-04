@@ -19,14 +19,49 @@
  * has none.
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const HOST_ENTRY = join(ROOT, 'index.js')
 export const CLIENT_ENTRY = join(ROOT, 'client.js')
 export const PACKAGE_JSON = join(ROOT, 'package.json')
+
+/**
+ * Temp directories created by the suites, removed when the process exits.
+ *
+ * Every suite boots the host against a throwaway `DSH_HOME`, and the ones that
+ * exercise persistence create one per case. Without this the runs leave dozens
+ * of `/tmp/sidecard-ask-*` trees behind (each suite runs in its own process, so
+ * the hook is registered per process).
+ */
+const TEMP_DIRS = []
+let tempHookInstalled = false
+
+/**
+ * `mkdtempSync` in `tmpdir()`, remembered for exit cleanup.
+ * @param {string} prefix - directory name prefix (a trailing `-` is usual).
+ * @returns {string} the created directory.
+ */
+export function tempDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  TEMP_DIRS.push(dir)
+  if (!tempHookInstalled) {
+    tempHookInstalled = true
+    process.on('exit', () => {
+      for (const path of TEMP_DIRS) {
+        try {
+          rmSync(path, { recursive: true, force: true })
+        } catch {
+          /* best effort: a locked file must not fail the run */
+        }
+      }
+    })
+  }
+  return dir
+}
 
 /**
  * A fresh, importable URL for the host half. The cache-busting tag is what

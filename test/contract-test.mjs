@@ -11,19 +11,18 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import net from 'node:net'
 import {
   ROOT, HOST_ENTRY, CLIENT_ENTRY, createReporter, makeHostCtx, makeSubagentEngine,
   callRoute, loadClientModule, makeClientCtx, expandTree, byClass, byTag, textOf, hostModuleUrl,
-  hostNodes, createLocalStorageStub,
+  hostNodes, createLocalStorageStub, tempDir,
 } from './harness.mjs'
 
 // The host persists user config under $DSH_HOME; point it at a scratch
 // directory so running the tests never touches the developer's real profile.
-process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-contract-'))
+process.env.DSH_HOME = tempDir('sidecard-ask-contract-')
 
 const report = createReporter('contract')
 const host = await import(hostModuleUrl('contract'))
@@ -1539,7 +1538,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
   // persisted layer BEATS the patch layer — without this swap the ON case would
   // be silently overridden and the toggle would look broken.
   const previousSugHome = process.env.DSH_HOME
-  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-sug-'))
+  process.env.DSH_HOME = tempDir('sidecard-ask-sug-')
   const sugHost = makeHostCtx({})
   const sugEngine = makeSubagentEngine({
     emit: (event, ...args) => sugHost.emit(event, ...args),
@@ -2892,7 +2891,7 @@ noSaveStorage.setItem(PERSIST_KEY, JSON.stringify({
 // the patch-level 0 below. The host reads $DSH_HOME at request time, so the
 // swap must stay active for the whole subtest.
 const previousDshHome = process.env.DSH_HOME
-process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-nosave-'))
+process.env.DSH_HOME = tempDir('sidecard-ask-nosave-')
 const noSaveHost = makeHostCtx({})
 const noSaveEngine = makeSubagentEngine({
   emit: (event, ...args) => noSaveHost.emit(event, ...args),
@@ -4496,7 +4495,7 @@ console.log('\nfeedback: settings surface')
 console.log('\nfeedback: SMTP typed into the settings page')
 {
   const previousHome = process.env.DSH_HOME
-  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sidecard-ask-smtp-'))
+  process.env.DSH_HOME = tempDir('sidecard-ask-smtp-')
   // This block is about the *page*-configured transport, so the ambient SMTP
   // environment must not leak in: the environment deliberately wins over the
   // page (see resolveSmtp), and this machine exports DSH_CRB_SMTP_URL.
