@@ -302,7 +302,7 @@ window.__ModuleLoader__.load({ id: 'dsh-sidecard-ask', factory(require) { const 
 
 ### 11.2 槽位与回退顺序
 
-`[源码]` `client.js:7591` 起，逐级回退（第一个存在的即用）：
+`[源码]` `client.js:7598` 起，逐级回退（第一个存在的即用）：
 
 | 用途 | 回退链 |
 |---|---|
@@ -341,7 +341,7 @@ sidebarRight.closeIn(sessionId, tabId)
 
 ### 11.5 localStorage 键
 
-`client.js:6071`：`dsh-sidecard-ask:cards:v3` / `:v2` / `:v1`（v3 起带 `writtenAt`，用于区分"我们写空过"与"从未写过"）。预算：单字段 65 536 字符、总 2 000 000 字符、最多 10 张卡。宿主若替换存储后端，必须保留 `storage` 事件的跨窗口通知语义。
+`client.js:6078`：`dsh-sidecard-ask:cards:v3` / `:v2` / `:v1`（v3 起带 `writtenAt`，用于区分"我们写空过"与"从未写过"）。预算：单字段 65 536 字符、总 2 000 000 字符、最多 10 张卡。宿主若替换存储后端，必须保留 `storage` 事件的跨窗口通知语义。
 
 ---
 
