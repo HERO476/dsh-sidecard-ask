@@ -43,5 +43,6 @@
   "setFollowUps": "Suggest follow-ups at the end",
   "setFollowUpsHint": "The model ends each answer with a <followups> block of 2–3 next questions, rendered as clickable chips (no extra request)",
   "setAutoExpandOnDone": "Expand the card when the answer finishes",
-  "setAutoExpandOnDoneHint": "On: the answer appears in the card the moment it settles. Off: the one-line capsule stays until you click it"
+  "setAutoExpandOnDoneHint": "On: the answer appears in the card the moment it settles. Off: the one-line capsule stays until you click it",
+  "errorReadonlyUnavailableBody": "The side answer is set to read-only (sideTools: readonly), but this host exposes no read-only carrier (preset or tool filter), so the answer was refused to keep the workspace untouched. Switch the side tool policy to \"inherit\" in settings."
 }
