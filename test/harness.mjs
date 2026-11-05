@@ -163,6 +163,11 @@ export function makeHostCtx(options = {}) {
       return services[name]
     },
   }
+  // A real Cordis service is reachable both as `ctx.webServer` and through
+  // `ctx.get('webServer')`. The plugin reads its bind authority via `get()`, so
+  // the double must expose the same object on both paths or `bindAuthority()`
+  // silently reports nothing and the trust-fence tests prove nothing.
+  if (services.webServer === undefined) services.webServer = ctx.webServer
   return {
     ctx,
     services,
@@ -223,7 +228,7 @@ export function makeReq({ method = 'POST', url = '/', headers = {}, body = null,
 
 /** A `res` that records status, headers, body and SSE frames. */
 export function makeRes() {
-  const closeHandlers = []
+  const listeners = new Map()
   const res = {
     status: 0,
     headers: {},
@@ -241,12 +246,28 @@ export function makeRes() {
     end(chunk) {
       if (chunk !== undefined) res.chunks.push(String(chunk))
       res.writableEnded = true
-      for (const listener of closeHandlers) listener()
+      res.emit('close')
       return res
     },
     on(event, listener) {
-      if (event === 'close') closeHandlers.push(listener)
+      const list = listeners.get(event) ?? []
+      list.push(listener)
+      listeners.set(event, list)
       return res
+    },
+    /**
+     * Fire one stream event, the way a real `ServerResponse` does. `error` in
+     * particular must reach a registered listener instead of being swallowed:
+     * an unhandled one is an uncaughtException in Node, which is exactly what
+     * the disconnect path has to survive.
+     */
+    emit(event, ...args) {
+      for (const listener of [...(listeners.get(event) ?? [])]) listener(...args)
+      return res
+    },
+    /** How many listeners are registered for one event. */
+    listenerCount(event) {
+      return (listeners.get(event) ?? []).length
     },
     /** The response body as text. */
     text() {

@@ -44,5 +44,6 @@
   "setFollowUpsHint": "开启后模型会用 <followups> 块在答案末尾给出 2–3 个可点的下一步问题，点一下即追问（不额外发请求）",
   "setAutoExpandOnDone": "答完自动展开卡片",
   "setAutoExpandOnDoneHint": "开启后，回答一结束就展开成卡片显示正文；关闭后保持一行胶囊，点一下才展开",
-  "errorReadonlyUnavailableBody": "当前设为只读作答（sideTools: readonly），但这台宿主没有只读载体（预设或工具过滤），为保证不写工作区，本次已拒绝。可在设置页把侧边工具改为「继承父代理」"
+  "errorReadonlyUnavailableBody": "当前设为只读作答（sideTools: readonly），但这台宿主没有只读载体（预设或工具过滤），为保证不写工作区，本次已拒绝。可在设置页把侧边工具改为「继承父代理」",
+  "setReadonlyBlocked": "⚠ 这台宿主当前没有任何只读载体：保持“只读”会让每一次追问都被拒绝。请改为“继承父代理”，或在下面填写一个 host 认得的 preset。"
 }

@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.11'
+    const CLIENT_VERSION = '2.1.12'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -740,6 +740,7 @@ window.__ModuleLoader__.load({
         setSideToolsReadonly: '只读（需宿主支持，0.2.x 无效）',
         setSideToolsInherit: '继承当前会话',
         setSideToolsHint: '只读需要宿主提供载体：要么下面填了 preset，要么宿主真的认工具白名单。0.2.2-alpha.3 两者都没有，所以选“只读”时会直接拒绝作答（不会继承、也没有任何兜底探针）；默认的“继承”就是子代理拿到当前会话的全部工具。要真正收窄，请填写下面的 preset。',
+        setReadonlyBlocked: '⚠ 这台宿主当前没有任何只读载体：保持“只读”会让每一次追问都被拒绝。请改为“继承父代理”，或在下面填写一个 host 认得的 preset。',
         setSideAgentPreset: '只读 preset（可选）',
         setSideAgentPresetPlaceholder: '留空则不启用',
         setSideAgentPresetHint: '子代理以该 agent preset 启动，工具集由 preset 决定（0.2.2 上唯一可靠的收窄通道）；留空且宿主不提供只读载体时，只读模式会直接拒绝作答，而不是退回任何"探针"',
@@ -1021,6 +1022,7 @@ window.__ModuleLoader__.load({
         setSideToolsReadonly: 'Read-only (needs host support; no-op on 0.2.x)',
         setSideToolsInherit: 'Inherit from the session',
         setSideToolsHint: 'Read-only needs a carrier: either the preset below, or a host that really honours a tool allow-list. 0.2.2-alpha.3 offers neither, so choosing read-only REFUSES the run (it never inherits, and there is no fallback probe). The default, inherit, is exactly what the child would get anyway. To really narrow it, set the preset below.',
+        setReadonlyBlocked: '⚠ This host exposes no read-only carrier right now: keeping "read-only" refuses every run. Switch to "inherit", or set a preset this host honours below.',
         setSideAgentPreset: 'Read-only preset (optional)',
         setSideAgentPresetPlaceholder: 'Leave empty to disable',
         setSideAgentPresetHint: 'Starts the subagent with this agent preset, so the preset decides the tool set — the only reliable narrowing channel on 0.2.2; when it is empty and the host offers no read-only carrier, read-only mode refuses the run instead of falling back to any "probe"',
@@ -5831,7 +5833,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           field(t('setSideTools'), select('sideTools', [
             ['readonly', t('setSideToolsReadonly')],
             ['inherit', t('setSideToolsInherit')],
-          ]), t('setSideToolsHint')),
+          ]),
+          // `/state.capabilities.readonly` is computed by the Host, so this
+          // warning appears BEFORE the user loses an answer. It is a warning and
+          // not an auto-switch: silently turning `readonly` into `inherit` would
+          // widen the child's tools without the user asking for it.
+          state.capabilities?.readonly?.requested === true && state.capabilities?.readonly?.viable === false
+            && draft.sideTools === 'readonly'
+            ? `${t('setSideToolsHint')} ${t('setReadonlyBlocked')}`
+            : t('setSideToolsHint')),
           field(t('setSideAgentPreset'), h('input', {
             className: 'dsa-input',
             value: String(draft.sideAgentPreset ?? ''),
@@ -7949,12 +7959,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         }, 900)
         disposers.push(() => clearTimeout(orphanSweepTimer))
 
-        // Cross-tab history sync. Two pages (desktop window + browser) each
-        // hold their own store and write the WHOLE array, so the last writer
-        // wins: A deletes an entry, B still has it in memory, B's next write
-        // resurrects it (expert MULTITAB). Adopting the on-disk envelope
-        // whenever another page writes makes B's next sync start from the
-        // authoritative set instead of its stale memory.
+        // Cross-tab history sync, SAME ORIGIN only. The desktop shell loads the
+        // page from `dsh-app://app/`, so its localStorage is a different store
+        // from the web page's `http://127.0.0.1:<port>` one: the two ends never
+        // see each other's writes and `storage` never fires across them. What
+        // this guards is two tabs of the SAME origin: each holds its own store
+        // and writes the WHOLE array, so the last writer wins and a delete in A
+        // is resurrected by B's next write (expert MULTITAB). Adopting the
+        // on-disk envelope whenever another page writes makes B's next sync
+        // start from the authoritative set instead of its stale memory.
         let storageListener = null
         try {
           if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {

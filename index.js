@@ -32,7 +32,7 @@
  * @module dsh-sidecard-ask/host
  */
 
-import { copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.11'
+export const PLUGIN_VERSION = '2.1.12'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -698,12 +698,18 @@ function composeSidePrompt(input) {
     const parts = [sourceLine, 'Selection:', `${fence}text`, selection, fence]
     if (historyTurns.length > 0) {
       const historyLines = ['Earlier turns on this card:']
+      const historyText = []
       for (const turn of historyTurns) {
-        historyLines.push(`Question: ${capTurn(turn.question, HISTORY_TURN_Q_CHARS)}`)
+        historyText.push(`Question: ${capTurn(turn.question, HISTORY_TURN_Q_CHARS)}`)
         const answer = capTurn(turn.answer, HISTORY_TURN_A_CHARS)
-        if (answer !== '') historyLines.push(`Answer: ${answer}`)
+        if (answer !== '') historyText.push(`Answer: ${answer}`)
       }
-      parts.push(historyLines.join('\n'))
+      // R-02 fenced the selection; the history is the same kind of payload — an
+      // earlier answer can quote fetched web text verbatim — so it needs the
+      // same treatment, fenced from its OWN longest backtick run. Without this
+      // the injection R-02 closed reopens one turn later through `history`.
+      const historyFence = '`'.repeat(Math.max(3, longestBacktickRun(historyText.join('\n')) + 1))
+      parts.push([...historyLines, `${historyFence}history`, ...historyText, historyFence].join('\n'))
     }
     parts.push(questionBlock)
     return parts.join('\n')
@@ -1407,6 +1413,23 @@ export function profileNameFromContext(ctx) {
 }
 
 /**
+ * Where the profile segment of the config path comes from on this host.
+ *
+ * `profile-context` is the desktop shell (it publishes the service); `env` is a
+ * CLI child that inherited `DSH_PROFILE`; `shared` means neither exists, so the
+ * two ends read the same `config.json`. The web shell reports `shared` — R-03
+ * only took effect where the service exists, and saying so beats pretending the
+ * isolation is universal.
+ * @param {string} [profile] - the captured profile name.
+ * @returns {'profile-context'|'env'|'shared'} the source.
+ */
+export function profileSource(profile = hostProfileName) {
+  if (typeof profile === 'string' && profile.trim() !== '') return 'profile-context'
+  const fromEnv = typeof process.env.DSH_PROFILE === 'string' ? process.env.DSH_PROFILE.trim() : ''
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(fromEnv) ? 'env' : 'shared'
+}
+
+/**
  * Build the read-only tool restriction for a child run.
  *
  * Returns `undefined` (no restriction at all → the child inherits the parent's
@@ -1912,6 +1935,32 @@ function createSideEngine(ctx, configOf) {
         }
       })(),
       activeRuns: runs.size,
+      // Whether the configured read-only promise can be honoured RIGHT NOW.
+      // `sideTools: 'readonly'` needs a carrier (a preset the host honours, or
+      // an advertised tool filter); without one every run is refused, and the
+      // settings page otherwise only finds out by losing an answer. Reporting
+      // it up front is what makes an upgrade from a persisted `readonly` (2.1.10
+      // changed only the defaults) visible instead of mysterious.
+      readonly: (() => {
+        const config = configOf()
+        if (config.sideTools !== 'readonly') {
+          return { requested: false, viable: true, carrier: 'none' }
+        }
+        let caps
+        try {
+          caps = providerCapabilities(resolveProvider(config.sideProvider))
+        } catch {
+          caps = undefined
+        }
+        const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
+        const presetOk = preset !== '' && caps?.agentPreset === true
+        const filterOk = caps?.toolFilter === true
+        return {
+          requested: true,
+          viable: presetOk || filterOk,
+          carrier: presetOk ? 'preset' : filterOk ? 'tool-filter' : 'none',
+        }
+      })(),
       // The parent the next side answer would be published under, and whether
       // the archived-session gate would reject it. This is what makes a
       // "作答失败（refusal）" report diagnosable from the settings page.
@@ -2314,9 +2363,9 @@ function createSideEngine(ctx, configOf) {
    * `runs` is process-global: every session shares it. When both sides know the
    * owning session and they differ, this is a cross-session cancel and is
    * refused (it reports `false`, exactly like an unknown id, so it does not
-   * confirm that the id exists elsewhere). A request that cannot name its
-   * session is still honoured — older clients and scripted calls must keep
-   * working.
+   * confirm that the id exists elsewhere). A caller that cannot name its
+   * session is refused too whenever the run knows its owner: "no sessionId"
+   * used to mean "skip the check", which is exactly the bypass CANCEL closed.
    * @param {string} id - the run id.
    * @param {string|null} [sessionId] - the session asking for the cancel.
    * @returns {boolean} whether a run was aborted.
@@ -2424,6 +2473,15 @@ function backupIfDroppingKeys(path, data, logger) {
   const backup = `${path}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`
   try {
     copyFileSync(path, backup)
+    // The backup carries the same secrets as the file it copies (the SMTP
+    // password among them), and `copyFileSync` takes no mode: harden it
+    // explicitly. No-op on Windows, correct on POSIX where umask would
+    // otherwise leave it 0644.
+    try {
+      chmodSync(backup, 0o600)
+    } catch {
+      /* best effort — a failed chmod must not lose the backup */
+    }
     logger?.warn?.(`[sidecard-ask] 保存会丢弃未知配置项（${lost.join(', ')}），已备份到 ${backup}`)
     return backup
   } catch (error) {
@@ -2658,14 +2716,23 @@ export function apply(ctx, patchConfig) {
     } catch {
       /* optional service */
     }
+    let gatePresent = false
     try {
       const connection = ctx.get('connection')
+      gatePresent = connection !== undefined && connection !== null
       const fromConnection = cleaned(connection?.trustedHosts)
       if (fromConnection.length > 0) return [...fromConnection, ...bindAuthority()]
     } catch {
       /* optional service */
     }
-    return bindAuthority()
+    // A3 widened the fence to the configured bind authority so a LAN-bound host
+    // is reachable at all — but that is only safe while a host auth gate exists.
+    // Without the `connection` service this fence is the ONLY control, and
+    // `authRejection()` deliberately allows such a host through; adding the bind
+    // authority there would hand every LAN peer an unauthenticated API (and,
+    // with the 2.1.11 default `sideTools: 'inherit'`, a child that inherits the
+    // parent's tools). Gate absent ⇒ loopback only, exactly like pre-A3.
+    return gatePresent ? bindAuthority() : []
   }
 
   /**
@@ -2714,6 +2781,15 @@ export function apply(ctx, patchConfig) {
         // introduced: the settings were inherited from the old shared file and
         // will be re-saved into the scoped one on the next save.
         persistedInheritedFrom: persisted.inheritedFrom,
+        // Which control actually protects this API: the host's own gate, or the
+        // loopback/bind fence alone. A `fence-only` host must not trust its own
+        // LAN bind address (see `trustedHostsOf`), so surfacing it is what makes
+        // that decision auditable from the settings page instead of a log line.
+        authGate: connectionService() === undefined ? 'fence-only' : 'host-gate',
+        // Where the profile segment of the config path came from. `shared`
+        // (no profileContext service, no DSH_PROFILE) is the web host's normal
+        // state — it is exactly why per-profile files never appear there.
+        profileSource: profileSource(),
         patchKeys: Object.keys(sanitizeLayer(patchConfig)),
       },
       capabilities: {
@@ -2838,8 +2914,20 @@ export function apply(ctx, patchConfig) {
     // aborted every run the moment the body had been read — observed live on
     // 0.1.7-rc.2. Only the RESPONSE closing before it ended means the browser
     // left, so that is the single source of cancellation here.
+    //
+    // A write to an already-destroyed socket does NOT throw: it emits `'error'`
+    // asynchronously on the response. With no listener that becomes an
+    // uncaughtException — one closed tab during a long run could take the whole
+    // host process down, not just that answer. So both signals stop the writer
+    // and abort the run, and `sink.end()` is idempotent.
+    const abandon = () => {
+      sink.end()
+      controller.abort()
+    }
+    res.on('error', abandon)
     res.on('close', () => {
-      if (res.writableEnded !== true) controller.abort()
+      if (res.writableEnded !== true) abandon()
+      else sink.end()
     })
     try {
       await engine.ask(body ?? {}, sink, controller.signal)

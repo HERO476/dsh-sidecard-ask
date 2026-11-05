@@ -66,6 +66,20 @@ report.ok(
   `imports: ${hostImports.join(', ')}`,
 )
 
+// `profileSource()` is what stops "per-profile config" from being an unqualified
+// claim: the web host publishes no `profileContext`, so it reports `shared` and
+// the settings page can say so instead of pretending the isolation is universal.
+{
+  const savedProfile = process.env.DSH_PROFILE
+  delete process.env.DSH_PROFILE
+  report.equal(host.profileSource('desktop'), 'profile-context', 'a captured profile name reports profile-context')
+  report.equal(host.profileSource(''), 'shared', 'no service and no env reports the shared file')
+  process.env.DSH_PROFILE = 'web'
+  report.equal(host.profileSource(''), 'env', 'a CLI child reports the env source')
+  if (savedProfile === undefined) delete process.env.DSH_PROFILE
+  else process.env.DSH_PROFILE = savedProfile
+}
+
 console.log('\nbundle patch ↔ DEFAULT_CONFIG parity')
 // The bundle patch is a *defaults* layer: it is merged over the code defaults,
 // so any key it names OVERRIDES `DEFAULT_CONFIG`. 2.1.10 shipped

@@ -1,5 +1,74 @@
 # Changelog
 
+## 2.1.12
+
+**主题：三方独立评审（架构 / 安全 / 验收）报出的 11 条缺陷落地修复，其中两条 P1 都是"只有真机才会踩"的路径。**
+
+触发是一次针对「最新版桌面端 + 网页端」的专项评审。宿主事实先摆清：桌面端 app.asar 内是
+`@deepseek-ai/dsh-desktop-runtime` **0.2.1-rc.5**（hostProtocolVersion 4），网页端共享依赖树是
+`@deepseek-ai/dsh` **0.2.2-alpha.2**，而 2.1.10 的文案声称对齐 **alpha.3** —— 同一份插件同时跑在
+三个宿主版本上，而 1986 条断言只建模了其中一种能力位形状。本轮修的是能静态确证的那部分。
+
+### 修复（阻断）
+
+- **F1 断连后写死 socket（可拖垮整个宿主进程）**。`handleAsk` 的 `res.on('close')` 只
+  `controller.abort()`，`sink.end()` 要等 `engine.ask` 结算；而 `res.write` 对已销毁的 socket
+  **不抛错**，是异步 emit `'error'`，全文件又没有 `res.on('error')` —— 未处理的 error 事件按
+  Node 语义是 uncaughtException。现在 `error` 与 `close` 两条路都走同一个 `abandon()`
+  （先 `sink.end()` 再 abort，`end()` 幂等）。
+- **F2 A3 把绑定地址并入信任集，却没有和鉴权闸门联动**。`trustedHostsOf()` 三条分支最后都
+  `return bindAuthority()`，与 `connection` 服务是否存在无关；而 `authRejection()` 在闸门缺席时
+  直接放行（代码注释自称"WEB 端的正常形态"）。两者叠加：绑到具体内网地址 + 闸门缺席 =
+  **同网段任意主机可无鉴权调用 `/state`、`/config`、`/ask`**，而 2.1.11 的默认 `sideTools`
+  已是 `inherit`，子代理直接继承父代理全部工具（含 bash/写盘）。现在闸门缺席时只信任回环，
+  `/state.provenance.authGate` 如实报 `host-gate` / `fence-only`。
+
+### 修复（中危）
+
+- **F3 历史轮没有围栏**。R-02 只给选区加了长度自适应围栏，`history` 的 `Question:/Answer:`
+  仍然拼在顶层指令区；而上一轮答案可以逐字引用 `web_fetch` 抓回来的网页文本 —— R-02 关掉的
+  注入通道一回合后自己又开了。现在历史块有自己的围栏，长度按**历史自身**的最长反引号串 +1。
+- **F4 R-10 的备份文件没设权限**。`copyFileSync` 不带 mode，而主文件专门写了 `0o600`，备份里
+  却有 SMTP 明文密码。补 `chmodSync(backup, 0o600)`（Windows no-op）。
+- **F5 网页端的 profile 隔离实际没生效**。R-03 的修复依赖宿主的 `profileContext` 服务：桌面端
+  有（47 处引用），网页端依赖树里 **0 处**、也不设 `DSH_PROFILE`，于是两端一直共用
+  `config.json`。不按端口派生假 profile（本机端口换过 5 次，会导致设置静默丢失），改为新增
+  `profileSource()` 并在 `/state.provenance.profileSource` 如实上报
+  `profile-context` / `env` / `shared`。
+- **F6 持久化 `readonly` 的升级陷阱**。2.1.10/2.1.11 只改了补丁默认值，用户 profile 里存着的
+  `readonly` 仍然生效，而两端宿主都没有只读载体 → **每一次追问都被拒绝**。这里刻意**不**自动
+  改写为 `inherit`：那是未经同意扩大子代理权限。改为 `/state.capabilities.readonly` 上报
+  `{requested, viable, carrier}`，设置页在"只读且无载体"时当场显示 ⚠ 警告。
+
+### 修复（低危 / 文档纠错）
+
+- **F7 `cancel()` 的 JSDoc 与实现相反**：注释写"不带 sessionId 仍放行"，实现一律拒绝。
+  注释已改，README §14.17"老客户端仍可取消"一并更正，并补"不带/带错/带对"三条断言。
+- **F8 iframe 内选区不触发**属功能边界：README §14.18 写明只支持主文档选区（跨源 iframe 在
+  浏览器里本就拿不到选区）。
+- **F9 "设置页的 `inherit` 仍需显式确认"说得过满**：那是客户端保存时带
+  `confirmInheritTools: true` 标记、宿主只校验字段存在，不构成身份校验也没有弹窗。2.1.10 条目
+  已就地加更正说明。
+- **F10 跨端历史同步的注释假设不成立**：桌面 `dsh-app://app/` 与网页
+  `http://127.0.0.1:<port>` 是两个 origin ⇒ 两套 localStorage，`storage` 事件不跨端，只有同端
+  多标签才同步。注释已改，README §14.21 写明。
+- **F11 文档行号锚点**：本轮代码改动使 22 处 `index.js` / `client.js` 行号引用漂移，已按
+  `test/verify.mjs` 的锚点守卫逐条重算（29 处引用重跑 29/29 命中）。
+
+### 测试
+
+`test/harness.mjs` 的假 `ctx` 只提供 `ctx.webServer` 属性、`ctx.get('webServer')` 返回
+`undefined`，导致 `bindAuthority()` 在测试里恒为空数组 —— A3 这条路径过去**在测试里根本不可观测**。
+现在两个入口指向同一对象，A3 的回归才真正有效。另补：SSE `error` 事件、历史围栏、
+`capabilities.readonly` 两种载体、`profileSource` 三种来源、备份文件 mode、`/cancel` 归属三态。
+四套自测：68 + 1510 + 100 + 331 = **2009** 条断言全绿。
+
+### 未验证
+
+真机 GUI 仍未跑（桌面端 1067 需登录、重启 DSH 需用户同意）：局域网免鉴权、断连不崩、
+桌面端 SSE 逐块透传三条都只在测试替身上验证过。alpha.3 与 0.2.2-rc.1 源码不可得，R-06 的
+`end.outcome` 与能力位差异无法复核。
+
 ## 2.1.11
 
 **主题：修 2.1.10 的漏改——bundle 补丁仍在把默认值钉回 `readonly`，导致默认配置下每一次追问都被拒绝。**
@@ -43,6 +112,9 @@ depthLimit}`，`toolFilter` 与 `persona` 都不存在，于是 `sideTools: read
   `readonly-unavailable` 并**不启动子代理**——不再静默继承父会话工具（在 danger-full-access
   下子代理可以写盘、跑 bash，而卡片只说「unsupported」）。同时把默认值从 `readonly` 改成
   `inherit`：宿主没有载体这件事不该由用户猜。设置页的 `inherit` 仍需显式确认。
+  （**2.1.12 更正**：这句当时说得过满。所谓"确认"是客户端保存时带 `confirmInheritTools: true`
+  标记，宿主的 `400 privileged-key` 也只校验这个字段——它防的是误调，不构成身份校验，也没有任何
+  确认弹窗。代码注释与 README §14 已按此更正。）
 - **R-02 选区围栏可被闭合**。原来固定三反引号，选区里出现三反引号就能提前结束数据块、把
   后半段变成顶层指令（选区可以来自网页/文档）。现在围栏长度 = 选区里最长反引号串 + 1。
 

@@ -1163,7 +1163,21 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
     `401 unauthorized`）。它**不是**无鉴权暴露面；如果你把 `/state` 的响应转发到别处，请自行删掉
     这个字段。同一响应里的 `persistedError` 会带上 errno 的中文提示（`EACCES` / `EPERM` /
     `ENOSPC` / `EBUSY` 等），原始错误码仍保留在 `error.code` 上供程序分支。
-17. **`/cancel` 校验归属（2.1.5）**：请求体带 `sessionId` 且与 run 的发起会话不一致时，按"没找到"
-    返回 `cancelled: false`（不回 403，避免把别的会话的 run id 是否存在当成探测面）。不带
-    `sessionId` 的老客户端仍然可以取消——向后兼容优先于收紧。
+17. **`/cancel` 校验归属（2.1.5 起收紧，2.1.7 补全）**：run 记录了发起会话时，请求体必须带**相等**的
+    `sessionId`；不带或带错一律按"没找到"返回 `cancelled: false`（不回 403，避免把别的会话的 run id
+    是否存在当成探测面）。只有 run 本身不知道归属（老引擎、无会话）时才放行——所以"老客户端不带
+    `sessionId` 也能取消"只在那种情况下成立，2.1.6 之前那句"向后兼容优先于收紧"已不再准确。
+18. **只支持主文档选区（2.1.12 明确）**：`readSelection()` 只读 `window.getSelection()`，iframe 内的
+    选区不触发浮按钮。PDF/HTML 预览面板里选中文字就是这种情况——不是坏了，是边界。跨源 iframe
+    在浏览器里本来就不可能拿到选区，同源 iframe 也需要宿主提供 API。
+19. **profile 隔离只在提供 `profileContext` 的宿主上生效（2.1.12 明确）**：桌面端 runtime 有该服务，
+    写 `config.<profile>.json`；网页端（0.2.2-alpha.2 依赖树）既没有该服务、也不设 `DSH_PROFILE`，
+    因此两端共用同一份 `config.json`。`/state.provenance.profileSource` 如实报
+    `profile-context` / `env` / `shared`，设置页不必猜"到底读的哪个文件"。
+20. **绑定地址只在存在鉴权闸门时才进信任集（2.1.12）**：绑到具体内网地址且 `connection` 服务缺席时，
+    只有回环可达（`/state.provenance.authGate` 报 `fence-only`）。闸门缺席时围栏是唯一控制，把
+    内网绑定地址也信任进去等于把 API 交给同网段任何主机。
+21. **跨端历史各存各的（2.1.12 更正）**：桌面端页面在 `dsh-app://app/`、网页端在
+    `http://127.0.0.1:<port>`，是两个 origin ⇒ 两套 `localStorage`，`storage` 事件不跨端；
+    只有同端多标签之间才同步。此前代码注释写成"桌面窗口 + 浏览器两个页面共享"，是错的。
 
