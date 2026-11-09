@@ -6,3 +6,15 @@
 *.ico binary
 *.jpg binary
 *.webp binary
+
+# ┄┄┄ 归档产物不进入源码归档（git archive / GitHub 源码 tarball）┄┄┄
+# 这两个目录是**过程证据**，不是插件的一部分：`.compat-report/` 是各版本兼容性
+# 探针的脚本 + 原始 JSON + 截图，`design-preview/` 是 1.8.x 的界面方案比选稿。
+# 它们对"为什么这样写"有价值，所以留在 git 里可追溯；但任何下载源码压缩包的人都
+# 不需要这 1.5MB 的一次性产物。npm 包本来就不含它们（见 package.json files[]）。
+.compat-report export-ignore
+design-preview export-ignore
+
+# 归档目录在 GitHub 语言统计里按文档计，不参与代码占比。
+.compat-report/** linguist-documentation
+design-preview/** linguist-documentation

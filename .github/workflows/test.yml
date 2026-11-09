@@ -1,0 +1,47 @@
+# 交付门禁：每次 push / PR 都跑一遍 test/ 的四个套件。
+#
+# 为什么需要：这套测试约 19 秒、2000+ 条断言，覆盖 manifest / 补丁↔默认值一致 /
+# 宿主线协议 / 客户端纯函数 / 文档行号锚点。在此之前它只在维护者手敲
+# `npm test` 时生效，一条回归可以悄悄合进 main（2.1.9 的 23 处锚点漂移就是这类问题）。
+#
+# 不需要 install：本仓库刻意零运行时依赖、零 devDependencies、零构建，
+# `npm test` 直接跑 node。所以这里没有 actions/cache，也没有 npm ci。
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines.node 说 >=20；24 覆盖当前 LTS 之后的一档，避免只在一个版本上绿。
+        node: ['20', '22', '24']
+        os: [ubuntu-latest]
+        include:
+          # 宿主半用到 Windows 专属的 mode 语义（chmod no-op、路径分隔），
+          # 一个 Windows 作业才能证明那条分支不是"只在 CI 之外可用"。
+          - node: '20'
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: node version
+        run: node --version
+      - name: npm test
+        run: npm test

@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.12'
+    const CLIENT_VERSION = '2.1.13'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -679,7 +679,7 @@ window.__ModuleLoader__.load({
         errorNoSideEngine: '这台 DSH 组合没有可用的子代理，无法在侧边卡片作答；可以改到主对话提问。',
         errorTooLarge: '请求体过大',
         errorBadRequest: '请求无效（问题或选中文本为空）',
-      errorFeedbackInvalid: '反馈内容不符合要求，检查标题与详细描述的长度',
+        errorFeedbackInvalid: '反馈内容不符合要求，检查标题与详细描述的长度',
         errorUnloaded: '插件正在卸载，无法受理新的追问',
         errorDuplicate: '该追问已在处理中，请等它完成',
         errorBusy: '并发追问已达上限（{n}），请稍后再试',
@@ -961,7 +961,7 @@ window.__ModuleLoader__.load({
         errorNoSideEngine: 'This DSH composition has no usable subagent, so the side card cannot answer; ask in the main chat instead.',
         errorTooLarge: 'The request body is too large',
         errorBadRequest: 'Invalid request (empty question or empty selection)',
-      errorFeedbackInvalid: 'The report does not meet the length limits — check the title and details',
+        errorFeedbackInvalid: 'The report does not meet the length limits — check the title and details',
         errorUnloaded: 'The plugin is unloading and cannot take new follow-ups',
         errorDuplicate: 'This follow-up is already being answered; wait for it to finish',
         errorBusy: 'Too many concurrent answers (limit {n}); try again shortly',
@@ -1555,6 +1555,97 @@ window.__ModuleLoader__.load({
       }, [actions])
     }
 
+    /** Everything a dialog may move focus to, in DOM order. */
+    const DIALOG_FOCUSABLE = 'button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+
+    /**
+     * Modal keyboard behaviour shared by the three dialogs (2.1.13).
+     *
+     * `role="dialog" aria-modal="true"` is a promise that focus stays inside the
+     * dialog and goes back where it came from. Before this hook the promise was
+     * false on both counts: Tab walked straight out of the card into the page
+     * behind it (so a keyboard user could end up typing into the main composer
+     * while the "modal" delete confirmation was still up), and closing a dialog
+     * dropped focus on `document.body`, forcing a full re-walk back to the
+     * button that opened it.
+     *
+     * Three deliberate limits:
+     *   - only `Tab` is intercepted; every other key keeps its existing meaning
+     *     (`Escape` is owned by each dialog's own handler);
+     *   - the cycle covers nodes that actually have layout, because the settings
+     *     page keeps hidden controls inside the same subtree and a `display:none`
+     *     button must not become a Tab stop;
+     *   - both halves are guarded for the test shim, which has a `document` with
+     *     no `querySelectorAll` and no `activeElement`.
+     * @param {{current: (Element|null)}} containerRef - the dialog's own node.
+     */
+    function useDialogFocus(containerRef) {
+      // Captured on the FIRST render, not inside the effect: React applies
+      // `autoFocus` during commit, so by the time effects run `activeElement` is
+      // already the dialog's own first field — restoring that would restore a
+      // node that is about to be unmounted.
+      const openedFrom = React.useRef(typeof document === 'undefined' ? null : (document.activeElement ?? null))
+      React.useEffect(() => {
+        const doc = typeof document === 'undefined' ? null : document
+        if (doc === null || typeof doc.addEventListener !== 'function') return undefined
+        const container = containerRef?.current ?? null
+        const restoreTo = openedFrom.current
+        const tabbable = () => {
+          if (container === null || typeof container.querySelectorAll !== 'function') return []
+          try {
+            return [...container.querySelectorAll(DIALOG_FOCUSABLE)].filter(node => typeof node.getClientRects !== 'function'
+              || node.getClientRects().length > 0)
+          } catch {
+            return []
+          }
+        }
+        const onKeyDown = (event) => {
+          if (event.key !== 'Tab' || container === null) return
+          const items = tabbable()
+          if (items.length === 0) return
+          const first = items[0]
+          const last = items[items.length - 1]
+          const active = doc.activeElement
+          const inside = active !== null && active !== undefined && typeof container.contains === 'function'
+            ? container.contains(active)
+            : false
+          if (event.shiftKey && (active === first || !inside)) {
+            event.preventDefault()
+            last.focus()
+          } else if (!event.shiftKey && (active === last || !inside)) {
+            event.preventDefault()
+            first.focus()
+          }
+        }
+        doc.addEventListener('keydown', onKeyDown, true)
+        return () => {
+          doc.removeEventListener('keydown', onKeyDown, true)
+          if (restoreTo === null || restoreTo === undefined) return
+          try {
+            // The opener can be gone by now (its card was closed or its row was
+            // deleted by the dialog itself); leaving focus alone beats throwing.
+            if (restoreTo.isConnected !== false && typeof restoreTo.focus === 'function') {
+              restoreTo.focus({ preventScroll: true })
+            }
+          } catch { /* the opener is detached */ }
+        }
+      }, [containerRef])
+    }
+
+    /**
+     * The coarse status word for one card.
+     *
+     * Shared by the footer text and the live region so the two can never say
+     * different things. Error cards are handled by the caller: the footer keeps
+     * its historical "追问" face there, while the live region must announce the
+     * failure, or a screen-reader user never learns the answer did not arrive.
+     */
+    function cardStatusLabel(card) {
+      return card.status === 'streaming' ? t('answerStreaming')
+        : card.status === 'done' ? (card.streaming === false ? t('answerNonStreaming') : t('answerDone'))
+          : card.status === 'stopped' ? t('answerStopped') : t('answerTitle')
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // §4.5 family singleton
     //
@@ -1940,6 +2031,33 @@ window.__ModuleLoader__.load({
       }
       // A bare modifier is not an accelerator either.
       if (['ctrl', 'control', 'alt', 'option', 'shift', 'meta', 'cmd', 'command', 'win'].includes(facts.key)) return null
+      return facts
+    }
+
+    /**
+     * Memoised `parseShortcut` for the global key handler (2.1.13).
+     *
+     * `onKeyDown` is a capture-phase listener on `document`, so it runs on EVERY
+     * keystroke in the page, and it used to re-`split`/`trim`/`toLowerCase` the
+     * same two or three accelerator strings each time (the main shortcut plus
+     * every quick action's). The config changes on a settings save, not per
+     * keystroke, so a tiny string→facts cache removes the repeated parsing.
+     *
+     * Deliberately NOT caching `quickActionsOf` next to it: that result embeds
+     * `t()` output, which depends on the active language, and the language can
+     * change without the config array identity changing. A stale-label cache is
+     * a worse bug than the allocation it would save.
+     */
+    const SHORTCUT_CACHE_LIMIT = 32
+    const shortcutCache = new Map()
+    function parseShortcutCached(accelerator) {
+      const key = typeof accelerator === 'string' ? accelerator : ''
+      if (shortcutCache.has(key)) return shortcutCache.get(key)
+      const facts = parseShortcut(key)
+      // A user can keep adding quick actions; 32 entries is far past any real
+      // config, so the clear is a backstop rather than a hot path.
+      if (shortcutCache.size >= SHORTCUT_CACHE_LIMIT) shortcutCache.clear()
+      shortcutCache.set(key, facts)
       return facts
     }
 
@@ -3060,6 +3178,16 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 .dsa-code{padding:0 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12));
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .dsa-muted{color:var(--dsw-alias-label-secondary, #666);font-size:11px;line-height:16px}
+/* Screen-reader-only carrier for the live status region (2.1.13).
+   The visible status line is not an aria-live region on purpose: the answer
+   text streams in 50ms deltas, and a live region wrapped around it would make a
+   screen reader re-read the whole growing answer on every flush. One clipped,
+   one-line status region per card announces the coarse state instead
+   (作答中 → 已完成 / 已停止 / 作答失败). Standard clip-rect recipe: it must stay
+   in the layout tree (display:none and visibility:hidden both remove it from the
+   accessibility tree and silence the announcement). */
+.dsa-sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
 /* Same contrast pass, applied to the popover's body copy: label-secondary
    measures ≈6:1 here and reads washed out at 11–13px. Secondary text inside
    .dsa-pop is re-derived from the primary label token instead, held one step
@@ -4419,6 +4547,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const [carrier, setCarrier] = React.useState(config.defaultCarrier)
       const [busy, setBusy] = React.useState(false)
       const areaRef = React.useRef(null)
+      const boxRef = React.useRef(null)
+      // Declared BEFORE the auto-focus effect on purpose: both run after mount in
+      // declaration order, and the trap has to record what was focused before
+      // the textarea steals focus, or "restore" would restore the textarea.
+      useDialogFocus(boxRef)
       const cut = truncateSelection(candidate.text, config.maxChars)
       const box = clampBox(candidate.rect, 420, 300, 'below')
       const quickActions = quickActionsOf(config)
@@ -4441,8 +4574,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 
       return h('div', {
         className: 'dsa-pop',
+        ref: boxRef,
         style: { left: `${box.left}px`, top: `${box.top}px` },
         role: 'dialog',
+        // The popover is modal in behaviour (Escape closes it, outside pointerdown
+        // closes it, Alt+1..9 stay inside it); aria-modal had been missing here
+        // while the two confirmation dialogs already had it.
+        'aria-modal': 'true',
         'aria-label': t('askTitle'),
         onMouseDown: event => event.stopPropagation(),
         onKeyDown: (event) => {
@@ -4574,10 +4712,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       // P2-2: only a rewrite answer, only with a live write path.
       const insertable = canInsertAnswer(card, composerWriteSupport())
       return h('div', { className: 'dsa-row' },
-        h('span', { className: 'dsa-muted' },
-          card.status === 'streaming' ? t('answerStreaming')
-            : card.status === 'done' ? (card.streaming === false ? t('answerNonStreaming') : t('answerDone'))
-              : card.status === 'stopped' ? t('answerStopped') : t('answerTitle')),
+        h('span', { className: 'dsa-muted' }, cardStatusLabel(card)),
         card.status === 'streaming'
           ? h('button', { type: 'button', className: 'dsa-btn', onClick: onCancel }, t('cancelAnswer'))
           : null,
@@ -4649,6 +4784,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
      * dialog must not throw away the decision the user is making.
      */
     function DeleteConfirmDialog({ title, body, detail, cancelLabel, confirmLabel, onCancel, onConfirm }) {
+      const boxRef = React.useRef(null)
+      useDialogFocus(boxRef)
       return h('div', {
         className: 'dsa-confirm-backdrop',
         onClick: event => {
@@ -4664,6 +4801,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       },
       h('div', {
         className: 'dsa-confirm',
+        ref: boxRef,
         role: 'dialog',
         'aria-modal': 'true',
         'aria-label': title,
@@ -4818,6 +4956,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 }, '×')
                 : null)
             : null),
+        // 2.1.13 a11y: one clipped live region per card (see `.dsa-sr-only`).
+        // It carries the coarse STATE, never the answer text: a live region
+        // wrapped around the 50ms delta stream would make a screen reader
+        // re-read a growing answer on every flush. `error` is announced here
+        // because the footer deliberately keeps its historical "追问" face for
+        // failed cards — without this branch a screen-reader user would never
+        // learn the answer never arrived.
+        h('span', {
+          className: 'dsa-sr-only',
+          role: 'status',
+          'aria-live': 'polite',
+          'aria-atomic': 'true',
+        }, card.status === 'error' ? t('errorTitle') : cardStatusLabel(card)),
         h('pre', { className: 'dsa-quote' }, shown.question),
         versions.length > 0
           ? h('div', { className: 'dsa-row dsa-versions' },
@@ -5317,6 +5468,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         onClose, onSubmit, onCopy,
       } = props
       const sending = status === 'sending'
+      const boxRef = React.useRef(null)
+      useDialogFocus(boxRef)
       // Escape closes it: a modal without a keyboard exit is a trap.
       React.useEffect(() => {
         if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
@@ -5342,6 +5495,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       },
       h('div', {
         className: 'dsa-feedback-dialog',
+        ref: boxRef,
         role: 'dialog',
         'aria-modal': 'true',
         'aria-label': t('feedbackDialogTitle'),
@@ -7390,7 +7544,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             return
           }
           const config = store.state.config
-          const facts = parseShortcut(config.shortcut)
+          const facts = parseShortcutCached(config.shortcut)
           if (matchesShortcut(event, facts)) {
             const candidate = readSelection() ?? store.state.trigger
             if (candidate !== null) {
@@ -7403,7 +7557,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           // the candidate falls back to the last raised trigger, exactly like
           // the main shortcut. A chip then submits straight to a side card.
           for (const action of quickActionsOf(config)) {
-            if (action.shortcut === '' || !matchesShortcut(event, parseShortcut(action.shortcut))) continue
+            if (action.shortcut === '' || !matchesShortcut(event, parseShortcutCached(action.shortcut))) continue
             const candidate = readSelection() ?? store.state.trigger
             if (candidate !== null) {
               event.preventDefault()
@@ -8152,7 +8306,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           validateFeedbackDraft,
           feedbackSubjectFor,
           feedbackPlainTextFor,
-            FEEDBACK_DEFAULTS,
+          FEEDBACK_DEFAULTS,
           shortcutFingerprint,
           followUpChips,
           formatElapsed,

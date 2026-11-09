@@ -1,0 +1,28 @@
+# 编辑器基线（不替代格式化器）。
+#
+# 这里只声明"编辑器不该擅自改变的事"：编码、行尾、缩进单位、行尾空白。
+# 刻意**不加** prettier 配置也不是疏忽：client.js 有 8200 行、index.js 有 3200 行，
+# 一次全量 prettier 写入会把真实改动淹没在整文件空白 diff 里，评审无法复核。
+# 需要的是"别再漂"，不是"重排一遍"，所以本文件 + 人工修正已漂的行即可。
+#
+# .gitattributes 已用 `* text=auto eol=lf` 强制行尾；这里同步声明，避免编辑器
+# 在保存时先写入 CRLF 再被 git 转换（那会让工作区与提交内容不一致）。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Markdown 用行尾两个空格表示硬换行，去掉会改变渲染结果。
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

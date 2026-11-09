@@ -8,45 +8,9 @@
 
 聊天记录、任务详情、右侧栏内容……只要是能选中的文本都能用；**没装侧边卡片插件也能跑**（自动回退到内置浮层卡片）。
 
-> **1.8.4 增强一览**（详见 CHANGELOG）：选区旁的动作条不再「六枚等价胶囊排成一排」——改成**一块面板 + 一个主操作**：
-> 品牌实底按钮「追问选中内容」、一条细分隔线、五个无边框文字胶囊（hover 才浮出底色），深色主题把主按钮
-> 的字改成深墨色（白字在深色品牌上只有 2.79:1）；宽度也改成按「视口宽 − 面板左边 − 8」算，
-> 放不下就换行，不再被窗口右边缘切掉。见 §4.3。
-
-> **1.8.0 增强一览**（P2，详见 CHANGELOG）：**回答风格档位**（`answerStyle` 精简/标准/详细）
-> 与 ≤500 字的自定义指令；改写类答案可**写回主对话输入框**（先做了真实页面探针，走官方
-> `inputActions.insertText`，DOM 路径退化为 `beforeinput` 追加）；卡片与历史条目可**查看原文**
-> （码点签名反查 + CSS Custom Highlight 高亮，找不到会明说）；可选的**模型建议追问**芯片
-> （`<followups>` 块，宽容解析，不额外发请求）；**导出 .md**（单卡 / 全部）与**多版本答案**
-> （localStorage 升到 v3，v1/v2 非破坏式迁移）。
-
-> **1.5.0 增强一览**（详见 CHANGELOG）：内置浮层不再压住主对话——宽度改由纯函数 `floatPlacement`
-> 按「对话区右侧可用带宽」计算（旧实现是固定 400px，在用户截图上压入正文约 113px）；浮层默认是**一行高的胶囊**，
-> 可随时「收起为胶囊」，运行时的形态切换不写回配置；卡片标题栏右侧的 `×` 自 2.0.0 起是**删除这条追问对话**
-> （连同追问历史一起删），不再是隐藏浮层；新增 `floatMode`（默认 `capsule`）与
-> `floatMaxWidth`（默认 340）两项设置；卡片阴影减半。
-
-> **1.4.0 增强一览**（详见 CHANGELOG）：卡片**思考过程**（reasoning）可折叠展示并随答案流式渲染；
-> **已完成卡片写入 localStorage，刷新页面不丢**；答案渲染扩展链接/斜体/引用/表格；流式输出自动滚动到底；
-> 设置页补齐 `sideTimeoutMs` / `sideProvider` 控件；原生右侧栏 tab 可关闭（不再残留空壳；该能力在
-> 0.2.1-rc.3 上一度因控制器无 `closeTab` 而失效，2.1.2 改用 `closeIn` 修复）；
-> 界面语言解析支持 `navigator.languages` 优先级回退，英文界面显示英文错误文案；
-> 长答案的流式增量按 50ms 窗口合并提交（避免整卡重渲染的二次方开销）。
-
-> ## 名字改过两次，原因都写在这里（避免再撞名）
->
-> 1. **`dsh-selection-ask` → ✗**：npm 上已被 `chestnut23` 占用（仓库 `lzbaclz/dsh-selection-ask`）。
-> 2. **`dsh-selection-followup` → ✗**（1.0.0 / 1.0.1 用的名字）：npm 上当时是空的，但 **DSH 插件生态里已被 `zzx-dear` 使用**——
->    GitHub 仓库 [`zzx-dear/dsh-selection-followup`](https://github.com/zzx-dear/dsh-selection-followup) 与官方收录索引
->    `data/plugins/zzx-dear__dsh-selection-followup.yml`（category: ui，早于本插件约 20 天）。
->    我最初只查了 npm 名字是否可用，**漏查了 GitHub 仓库名与收录索引**，这是本项目的失误，已在 1.1.0 修正。
-> 3. **`dsh-sidecard-ask` → ✓**（1.1.0 起）：npm 无同名包、GitHub 无同名仓库；
->    同时它与已有的 8 个"选中文字→引用进输入框/翻译/批注"类插件（`dsh-selection-ask`、`dsh-selection-explain`、
->    `dsh-selection-toolbar`、`dsh-quote-selection`、`dsh-ui-quote-selection`、`dsh-quote-annotate`、
->    `dsh-selection-memory`、`dsh-plugin-followup`）在**名字与定位上都区分开**：本插件的答案是**独立子代理在侧边卡片里流式产出**，
->    而不是把选中内容塞进输入框。
->
-> 旧 npm 包名 `dsh-selection-followup` 已 `npm deprecate` 指向新名字；升级只需卸旧装新（见 §三）。
+> **发布要点与命名历史**（1.4.0 → 1.8.4 的四段「增强一览」，以及本插件两次改名的原因）已移到
+> [`docs/release-highlights.md`](docs/release-highlights.md)。当前版本的变更见
+> [`CHANGELOG.md`](CHANGELOG.md)；只想装起来用的话，从下面的 §一 开始。
 
 
 
@@ -84,17 +48,23 @@ dsh-sidecard-ask/
 │                         07-carrier-seg-{light,dark}.png 是 1.8.2 的离屏渲染对比图（无头 Edge + 真实 CSS
 │                         与真实令牌值，仍非运行中窗口截图）
 ├── tools/
-│   └── compat-probe.mjs  DSH 版本能力探测（§7 矩阵的来源）
+│   ├── compat-probe.mjs  DSH 版本能力探测（§7 矩阵的来源）
+│   └── gen-locale.mjs    从 client.js 内嵌 DICT 重生成 locale/*.json（2.1.13：词典是唯一事实源）
+├── docs/
+│   ├── release-highlights.md  1.4.0→1.8.4 的「增强一览」与两次改名的历史（2.1.13 从首屏搬出）
+│   └── archive/README.md      .compat-report/ 与 design-preview/ 为什么冻结、为什么不要"修正"行号
+├── .github/workflows/test.yml CI 门禁：push/PR 在 node 20·22·24 + windows 上跑 npm test（2.1.13 新增）
 └── test/
     ├── harness.mjs       测试替身：假宿主 ctx / 假 req·res / 假子代理 provider / 合成浏览器 + 迷你 React
-    ├── verify.mjs        静态完整性：清单、补丁、两半导出面、i18n 键覆盖、零依赖承诺
+    ├── verify.mjs        静态完整性：清单、补丁、两半导出面、i18n 键覆盖、零依赖承诺、文档行号锚点
     ├── contract-test.mjs 两端契约：常量一致性、响应信封形状、SSE 逐帧往返、纯函数等价、槽位注册与渲染
     ├── float-placement.mjs 浮层几何：宽度预算不越过对话区右边界、胶囊默认形态、源码钩子（1.5.0 新增）
     └── smoke-test.mjs    宿主端到端：流式、截断、取消、持久化与重启、失败分支、并发上限、传输围栏
 ```
 
 **不引入任何外部依赖**：宿主半只 import `node:` 内建模块；客户端半只 `require('react')`（由浏览器模块表提供）。
-`test/` 目录不进 `files`，不会发布。
+`test/`、`tools/`、`docs/`、`design-preview/`、`.github/` 都不进 `files`，不会发布。
+`npm test` 串起四个套件 + `gen-locale --check`，约 19 秒；CI 跑的就是这一条。
 
 ---
 
@@ -1074,7 +1044,7 @@ Host: ctx.subagents.start('spawn')
 
 ```powershell
 npm whoami                     # 先确认登录态；本机用的是 granular Publish token
-node test/verify.mjs; node test/contract-test.mjs; node test/float-placement.mjs; node test/smoke-test.mjs
+npm test                       # 四个套件 + locale 一致性检查（2.1.13 起，CI 跑同一条）
 npm publish --access public    # 1.0.1 那次被 npm 暂存（staged）后才转正；再遇到可用 --otp=<验证码>
 git push origin main           # 仓库：https://github.com/HERO476/dsh-sidecard-ask
 git tag v1.5.0; git push origin v1.5.0   # 版本号与 package.json 一致

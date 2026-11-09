@@ -219,4 +219,20 @@ report.ok(
   `drifted: ${drifted.map(a => `${a.symbol} @ ${a.file}:${a.line}`).join(', ')}`,
 )
 
+// 2.1.13: the two forms above need an adjacent symbol, so a PROSE citation
+// ("`writeJson` sets three headers（`index.js:1526`）" is covered, but a bare
+// "见 `index.js:2928`" is not) had no guard at all. A symbol cannot be extracted
+// from prose, but the one failure mode a big refactor leaves behind is still
+// provable: a citation pointing past the end of the file. That is the check
+// worth having — it catches "the function was deleted" without demanding the
+// prose be rewritten into a machine-parseable shape.
+const proseCitations = [...contractDoc.matchAll(/`(index|client)\.js:(\d+)`/g)]
+  .map(match => ({ file: `${match[1]}.js`, line: Number(match[2]) }))
+const pastEnd = proseCitations.filter(anchor => docSources[anchor.file][anchor.line - 1] === undefined)
+report.ok(
+  pastEnd.length === 0,
+  'no citation (symbol-bearing or prose) points past the end of its file',
+  `past end: ${pastEnd.map(a => `${a.file}:${a.line}`).join(', ')}`,
+)
+
 report.summary()
