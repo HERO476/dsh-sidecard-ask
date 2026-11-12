@@ -1308,7 +1308,12 @@ await withHome(async () => {
   const gated = await boot({ services: { connection: { trustedHosts: [], requestRejection: () => undefined } } })
   gated.harness.ctx.webServer.host = '192.168.1.5'
   gated.harness.ctx.webServer.port = 4321
-  const allowed = await callRoute(gated.harness, '/state', { method: 'GET', headers: { host: '192.168.1.5:4321' } })
+  // The page is served by the same authority it talks to, so the Origin has to
+  // name that authority — the harness default is the loopback one.
+  const allowed = await callRoute(gated.harness, '/state', {
+    method: 'GET',
+    headers: { host: '192.168.1.5:4321', origin: 'http://192.168.1.5:4321' },
+  })
   report.equal(allowed.status, 200, 'with a host gate the bind authority stays trusted (A3 preserved)')
   report.equal(allowed.json().value?.provenance?.authGate, 'host-gate', 'the gate is reported on the wire')
 })

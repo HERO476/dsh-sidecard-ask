@@ -205,7 +205,12 @@ export function makeReq({ method = 'POST', url = '/', headers = {}, body = null,
   const req = {
     method,
     url,
-    headers: { host: '127.0.0.1:8080', ...headers },
+    // A real browser page always names itself on a state-changing request, and
+    // the fence now requires that for unsafe verbs (Origin: absent is a script
+    // or another app on the machine, not a page). Defaulting to a same-origin
+    // page keeps every existing scenario meaning "an ordinary page"; a test
+    // that deliberately omits the header passes `origin: undefined`.
+    headers: { host: '127.0.0.1:8080', origin: 'http://127.0.0.1:8080', ...headers },
     on(event, listener) {
       const list = handlers.get(event) ?? []
       list.push(listener)
@@ -625,6 +630,12 @@ export function loadClientModule(options = {}) {
     },
     innerWidth: 1280,
     innerHeight: 800,
+    // Mobile adaptation. The client reads both through optional
+    // chaining, so a shim without them keeps working; these defaults are the
+    // desktop shape (fine pointer, no visual viewport) so every existing
+    // assertion is unchanged. A test opts into a phone with `pointerCoarse`.
+    matchMedia: query => ({ matches: options.pointerCoarse === true && query === '(pointer: coarse)' }),
+    visualViewport: options.visualViewport ?? null,
     addEventListener() {},
     removeEventListener() {},
     getSelection: () => null,
@@ -639,6 +650,10 @@ export function loadClientModule(options = {}) {
     },
     removeEventListener(event, listener) {
       listeners.get(event)?.delete(listener)
+    },
+    documentElement: {
+      clientWidth: options.frameWidth ?? 1280,
+      clientHeight: options.frameHeight ?? 800,
     },
     head: { appendChild() {} },
     body: { appendChild() {}, removeChild() {} },

@@ -267,8 +267,13 @@ report.ok(/floatMode:\s*'capsule'/.test(source), 'the client mirror advertises t
 // both halves of the fix — a variable vertical anchor that is measured from the
 // composer, and a pill that sizes to its own content.
 report.ok(/--dsa-gap-bottom/.test(source), 'the vertical anchor is a CSS variable, not a hardcoded 16px')
-report.ok(/bottom:var\(--dsa-gap-bottom/.test(source),
+report.ok(/bottom:(?:calc\()?var\(--dsa-gap-bottom/.test(source),
   'the layer anchors above the composer instead of on top of it')
+// Phone adaptation: the anchor is now a calc() so the safe-area inset can be
+// added to the measured gap. Assert BOTH halves so a future edit cannot
+// quietly drop the inset (the layer would then sit under the gesture bar).
+report.ok(/bottom:calc\(var\(--dsa-gap-bottom[^}]*env\(safe-area-inset-bottom/.test(source),
+  'the bottom anchor adds the safe-area inset on top of the measured gap')
 report.ok(/\[data-composer-card\]/.test(source),
   'the composer is located through its published DOM marker')
 report.ok(/floatBottom\(/.test(source), 'the layer calls the pure floatBottom helper')
@@ -336,5 +341,56 @@ report.ok(optionOrder.every(index => index > -1)
   'the settings options are listed in the same preference order')
 report.ok(/surfaceNativeForce/.test(surfaceSelect),
   'the rail option says it is forced and outside `auto`')
+
+// ────────────────────────────────────────────────────────────────────────────
+// Phone geometry
+// ────────────────────────────────────────────────────────────────────────────
+console.log('\nphone geometry')
+const policy = pure.floatSurfacePolicy
+
+// A 360px phone is the exact case the strip model could not serve: the budget
+// goes negative, floatPlacement clamps UP to the 240px floor and the layer
+// then covers two thirds of the text the user just selected. The sheet is the
+// only shape that leaves the selection readable.
+report.equal(policy({ frameWidth: 360, coarse: true }).mode, 'sheet', 'a 360px coarse frame uses the sheet')
+report.equal(policy({ frameWidth: 360, coarse: true }).width, 344, 'the sheet is the frame minus both 8px gaps')
+report.equal(policy({ frameWidth: 360, coarse: true }).gapRight, 8, 'the sheet keeps an 8px right gap')
+report.equal(policy({ frameWidth: 1280, coarse: false }).mode, 'rail', 'a desktop frame keeps the right-anchored strip')
+report.equal(policy({ frameWidth: 1280, coarse: true }).mode, 'rail', 'a wide coarse frame still has room for the strip')
+report.equal(policy({ frameWidth: 360, coarse: false }).mode, 'rail', 'a narrow FINE pointer keeps the strip (a shrunken desktop window)')
+report.equal(policy({ frameWidth: 360, coarse: true, railLeft: 200 }).mode, 'rail', 'a measured rail disqualifies the sheet')
+report.equal(policy({ frameWidth: 0 }).mode, 'rail', 'an unmeasured frame falls back to the strip')
+report.equal(policy({ frameWidth: 479, coarse: true }).mode, 'sheet', 'just under the narrow threshold is still a phone')
+report.equal(policy({ frameWidth: 480, coarse: true }).mode, 'rail', 'the threshold itself is not a phone')
+
+// The keyboard never shrinks the LAYOUT viewport on Android, which is exactly
+// why the layer has to compute the difference instead of trusting `innerHeight`.
+const inset = pure.keyboardInset
+report.equal(inset({ layoutHeight: 800, viewportHeight: 460 }), 340, 'a keyboard shrinks the visual viewport by 340px')
+report.equal(inset({ layoutHeight: 800, viewportHeight: 460, viewportOffsetTop: 20 }), 320, 'the visual offset is not double counted')
+report.equal(inset({ layoutHeight: 800, viewportHeight: null }), 0, 'no visual viewport means no lift (desktop path untouched)')
+report.equal(inset({ layoutHeight: 800, viewportHeight: 900 }), 0, 'a taller visual viewport never produces a negative lift')
+report.equal(inset({}), 0, 'an empty input is the no-op case')
+
+// Pointer detection: matchMedia first, touch points second, false when neither.
+const coarseProbe = pure.pointerIsCoarse
+report.equal(coarseProbe({ matchMedia: q => ({ matches: q === '(pointer: coarse)' }) }), true, 'a coarse media query is a finger')
+report.equal(coarseProbe({ matchMedia: () => ({ matches: false }) }), false, 'a fine media query is not')
+report.equal(coarseProbe({ navigator: { maxTouchPoints: 5 } }), true, 'no matchMedia falls back to touch points')
+report.equal(coarseProbe({}), false, 'a window with neither is not coarse')
+report.equal(coarseProbe(null), false, 'a missing window does not throw')
+
+// The hooks the sheet needs must actually ship, not just be testable.
+report.ok(/data-dsa-surface/.test(source), 'the layer publishes its surface mode for diagnostics')
+report.ok(/\[data-dsa-surface="sheet"\]/.test(source), 'the sheet rule exists in the stylesheet')
+report.ok(/keyboardInset\(\{ layoutHeight/.test(source), 'the layer wires the keyboard inset')
+report.ok(/visualViewport/.test(source), 'the layer reads the visual viewport')
+report.ok(/pointerIsCoarse\(window\)/.test(source), 'the layer asks the shared pointer helper')
+report.ok(/env\(safe-area-inset-bottom/.test(source), 'the sheet clears the gesture bar')
+report.ok(/dsa-mobile-entry/.test(source), 'the phone entry point ships')
+report.ok(/if \(pointerIsCoarse\(window\)\) return/.test(source),
+  'a coarse pointer never hijacks the system text-selection menu')
+report.ok(/bottom:calc\(var\(--dsa-gap-bottom/.test(source),
+  'the bottom anchor adds the keyboard inset')
 
 report.summary()

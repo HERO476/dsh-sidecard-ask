@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.15'
+    const CLIENT_VERSION = '2.2.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -419,6 +419,101 @@ window.__ModuleLoader__.load({
       return { width, avail, capped: width < cap, bleeds: lane - left > 1 }
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // §1c pointer and viewport policy (phone adaptation)
+    // ─────────────────────────────────────────────────────────────────────
+    /**
+     * Frames narrower than this are phones.
+     *
+     * Below it the right-anchored strip model cannot produce a usable width:
+     * `floatPlacement` clamps `avail` UP to FLOAT_MIN_WIDTH, which is exactly
+     * the documented "may overlap the column" case. On a 360px frame with the
+     * conversation column filling it, that means a 240px layer sitting over
+     * two thirds of the text the user just selected. A full-width sheet is the
+     * only shape that leaves the selection readable.
+     */
+    const NARROW_FRAME_WIDTH = 480
+    /** Both side gaps of the sheet; the layer keeps the same 8px the strip uses. */
+    const SHEET_GAP = 8
+    const COARSE_POINTER_QUERY = '(pointer: coarse)'
+
+    /**
+     * Whether the primary pointer is a finger.
+     *
+     * `(pointer: coarse)` describes the PRIMARY pointer, so a touchscreen
+     * laptop driven by a mouse stays `fine` and keeps every desktop
+     * affordance. A WebView too old for `matchMedia` falls back to
+     * `maxTouchPoints`, which is the same test Android browsers use.
+     *
+     * @param {object} win - the window-like object (injected so tests need no DOM).
+     * @returns {boolean}
+     */
+    function pointerIsCoarse(win) {
+      try {
+        if (typeof win?.matchMedia === 'function') {
+          const query = win.matchMedia(COARSE_POINTER_QUERY)
+          if (query !== null && query !== undefined && typeof query.matches === 'boolean') {
+            return query.matches
+          }
+        }
+      } catch { /* fall through to the touch-point test */ }
+      try {
+        const points = win?.navigator?.maxTouchPoints
+        return Number.isFinite(points) && points > 0
+      } catch { return false }
+    }
+
+    /**
+     * How much of the layout viewport the on-screen keyboard covers.
+     *
+     * Fixed-position surfaces are laid out against the LAYOUT viewport, which
+     * Android does not shrink when the keyboard opens (edge-to-edge is the
+     * default from 15). The visual viewport does shrink, so the difference is
+     * exactly the band the keyboard occupies, and the layer has to lift by
+     * that much or the composer it is anchored above ends up underneath.
+     *
+     * Without `visualViewport` this returns 0 and every position stays exactly
+     * as it was — the desktop path is untouched.
+     *
+     * @param {object} input - `layoutHeight`, `viewportHeight`, `viewportOffsetTop`.
+     * @returns {number} px to lift by, never negative.
+     */
+    function keyboardInset({ layoutHeight, viewportHeight, viewportOffsetTop = 0 } = {}) {
+      const layout = Number.isFinite(layoutHeight) ? layoutHeight : 0
+      const visual = Number.isFinite(viewportHeight) ? viewportHeight : 0
+      if (layout <= 0 || visual <= 0) return 0
+      const offset = Number.isFinite(viewportOffsetTop) ? Math.max(0, viewportOffsetTop) : 0
+      const inset = Math.round(layout - visual - offset)
+      return inset > 0 ? inset : 0
+    }
+
+    /**
+     * Which geometry the floating layer uses for one frame.
+     *
+     * `rail`  the documented desktop model: right-anchored strip, width budget
+     *         from `floatPlacement`, never crossing the column boundary.
+     * `sheet` a phone: the strip budget is negative, so a full-width sheet with
+     *         an equal gap on both sides is used instead. `width` is the frame
+     *         minus both gaps — right-anchored at the same `gapRight`, which
+     *         puts its left edge exactly one gap in.
+     *
+     * The rail is never chosen on a narrow coarse frame: there is no rail page
+     * body to dock into on a phone, so `railLeft` is null there and the test
+     * stays honest.
+     *
+     * @param {object} input - `frameWidth`, `railLeft`, `coarse`.
+     * @returns {{mode: 'rail'|'sheet', width: number|null, gapRight: number}}
+     */
+    function floatSurfacePolicy({ frameWidth, railLeft = null, coarse = false } = {}) {
+      const frame = Number.isFinite(frameWidth) ? frameWidth : 0
+      const sheet = coarse === true
+        && !Number.isFinite(railLeft)
+        && frame > 0
+        && frame < NARROW_FRAME_WIDTH
+      if (!sheet) return { mode: 'rail', width: null, gapRight: FLOAT_GAP_RIGHT }
+      return { mode: 'sheet', width: Math.max(1, Math.round(frame - SHEET_GAP * 2)), gapRight: SHEET_GAP }
+    }
+
     /**
      * How far above the frame's bottom edge the floating layer sits (2.1.3).
      *
@@ -637,6 +732,7 @@ window.__ModuleLoader__.load({
     const DICT = {
       zh: {
         triggerLabel: '追问选中内容',
+        mobileLauncherHint: '长按选中要追问的文字，浮出的按钮就能追问',
         triggerHint: '点击用 AI 追问这段文字',
         askTitle: '追问选中内容',
         askPlaceholder: '想就这段内容问什么？（Enter 发送，Shift+Enter 换行）',
@@ -919,6 +1015,7 @@ window.__ModuleLoader__.load({
       },
       en: {
         triggerLabel: 'Ask about selection',
+        mobileLauncherHint: 'Long-press to select text, then use the button that appears',
         triggerHint: 'Ask AI about this text',
         askTitle: 'Ask about the selection',
         askPlaceholder: 'What do you want to ask? (Enter sends, Shift+Enter breaks a line)',
@@ -2903,7 +3000,19 @@ window.__ModuleLoader__.load({
       const autoOrder = [surfaces.better, surfaces.flow]
       const all = [surfaces.native, surfaces.better, surfaces.flow]
       if (wanted === 'auto' || wanted === undefined) {
-        for (const adapter of autoOrder) if (adapter.available()) return { adapter, fellBack: false }
+        // A phone has no rail page body to host a tab: choosing better-sidebar
+        // there means opening a tab, waiting out the ~600ms render proof and
+        // then falling back to `flow` anyway — a visible flash for nothing.
+        // A narrow frame goes straight to the card.
+        const narrow = (() => {
+          try {
+            const width = Number.isFinite(window?.innerWidth) ? window.innerWidth : 0
+            return width > 0 && width < NARROW_FRAME_WIDTH
+          } catch { return false }
+        })()
+        for (const adapter of (narrow ? [surfaces.flow] : autoOrder)) {
+          if (adapter.available()) return { adapter, fellBack: false }
+        }
         return { adapter: surfaces.flow, fellBack: false }
       }
       const match = all.find(adapter => adapter.kind === wanted || adapter === surfaces[wanted])
@@ -3107,7 +3216,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
    \`floatPlacement\` through --dsa-float-w, so it grows left only as far as the
    conversation column allows. pointer-events stays off on the container so the
    empty area around the pill never eats a click meant for the conversation. */
-.dsa-float{pointer-events:none;position:fixed;right:var(--dsa-gap-right, 8px);bottom:var(--dsa-gap-bottom, 16px);
+.dsa-float{pointer-events:none;position:fixed;right:var(--dsa-gap-right, 8px);bottom:calc(var(--dsa-gap-bottom, 16px) + env(safe-area-inset-bottom, 0px));
   display:flex;flex-direction:column;gap:8px;width:var(--dsa-float-w, 340px);max-width:92vw}
 .dsa-float > *{pointer-events:auto}
 /* Capsule mode (2.1.3): the layer is a status pill, not a card. It sizes to its
@@ -3116,6 +3225,42 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
    right edge, so it has nowhere further right to go. */
 .dsa-float[data-dsa-float-mode="capsule"]{width:auto;align-items:flex-end;
   max-width:min(var(--dsa-float-w, 340px), var(--dsa-capsule-max, 240px), 92vw)}
+/* Phone sheet. On a narrow coarse frame the right-anchored strip budget goes
+   negative - floatPlacement clamps it up to the 240px floor and the layer
+   then bleeds over the very text the user selected. The sheet takes the full
+   frame width minus both gaps instead; --dsa-gap-bottom already carries the
+   keyboard inset measured from the visual viewport. */
+.dsa-float[data-dsa-surface="sheet"]{right:var(--dsa-gap-right, 8px);width:var(--dsa-float-w, 340px);
+  max-width:none;align-items:stretch}
+.dsa-float[data-dsa-surface="sheet"] .dsa-stack{max-height:min(52vh, 420px)}
+/* The phone's standing entry point: a finger-sized pill in the bottom-right
+   corner, clear of the safe area. Only mounted on a coarse pointer. */
+.dsa-mobile-entry-wrap{position:fixed;right:calc(12px + env(safe-area-inset-right, 0px));
+  bottom:calc(12px + env(safe-area-inset-bottom, 0px));display:flex;flex-direction:column;
+  align-items:flex-end;gap:8px;z-index:61;pointer-events:none}
+.dsa-mobile-entry{pointer-events:auto;display:inline-flex;align-items:center;gap:8px;min-height:44px;
+  padding:10px 16px;border-radius:999px;font:inherit;font-size:13px;line-height:18px;cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35));
+  background:var(--dsw-alias-bg-overlay, #fff);color:var(--dsw-alias-label-primary, #111);
+  box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.dsa-mobile-entry:active{transform:scale(.97)}
+.dsa-mobile-entry-dot{flex:none;width:8px;height:8px;border-radius:50%;
+  background:var(--dsw-alias-brand-primary, #4c8dff)}
+.dsa-mobile-entry-hint{pointer-events:auto;max-width:min(76vw, 280px);padding:8px 10px;border-radius:10px;
+  font-size:12px;line-height:17px;color:#fff;background:rgba(20,22,28,.92)}
+/* A finger is not a mouse. 44px is the smallest target that can be hit
+   reliably; every control here was sized for a ~26px pointer. */
+@media (pointer:coarse){
+  .dsa-trigger{min-height:44px;padding:8px 12px}
+  .dsa-quickbar .dsa-trigger-embedded{min-height:38px;padding:6px 12px}
+  .dsa-btn{min-height:44px;padding:8px 14px}
+  .dsa-chip{min-height:38px;padding:6px 12px}
+  .dsa-capsule{min-height:44px;padding:8px 12px}
+}
+/* A narrow frame has no room for the popover's 420px design width. */
+@media (max-width:480px){
+  .dsa-pop{width:calc(100vw - 16px);max-width:none}
+}
 /* Docked presentation (1.8.3): the same container, but pinned to the right
    rail's measured rectangle (inline left/top/width/height) instead of the
    frame's bottom-right corner. Right/bottom must be released, otherwise the
@@ -4435,7 +4580,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const chipsWidth = actions.reduce(
         (sum, action) => sum + Math.ceil(estimateLabelWidth(action.label) + 24), 0)
       const rowWidth = Math.min(620, mainWidth + (actions.length > 0 ? 6 + chipsWidth : 0))
-      const box = clampBox(candidate.rect, rowWidth, 34, 'below')
+      // On a phone the bar goes ABOVE the selection: below it is where Android
+      // draws its own text-selection handle and ActionMode toolbar, so the bar
+      // would either sit on the handle or lose the tap to the system menu.
+      const coarsePointer = pointerIsCoarse(window)
+      const box = clampBox(candidate.rect, rowWidth, coarsePointer ? 52 : 34, coarsePointer ? 'above' : 'below')
       // The estimate above is a clamp input, not a promise: if it is wrong the
       // bar must wrap, never spill past the frame edge. Cap its width to the
       // space actually left of it (and still to 620px, which is about as wide
@@ -4558,18 +4707,55 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const [busy, setBusy] = React.useState(false)
       const areaRef = React.useRef(null)
       const boxRef = React.useRef(null)
+      // How far the box has to move up to stay inside the visual viewport.
+      const [lift, setLift] = React.useState(0)
       // Declared BEFORE the auto-focus effect on purpose: both run after mount in
       // declaration order, and the trap has to record what was focused before
       // the textarea steals focus, or "restore" would restore the textarea.
       useDialogFocus(boxRef)
       const cut = truncateSelection(candidate.text, config.maxChars)
-      const box = clampBox(candidate.rect, 420, 300, 'below')
+      // Phone: this component focuses its textarea on mount, which opens the
+      // keyboard immediately — but the box was positioned BEFORE that. So the
+      // geometry is computed conservatively here and `lift` below re-floats it
+      // from the run-time visual viewport once the keyboard is actually up.
+      const coarsePointer = pointerIsCoarse(window)
+      const frameWidth = Number.isFinite(window?.innerWidth) ? window.innerWidth : 1024
+      const frameHeight = Number.isFinite(window?.innerHeight) ? window.innerHeight : 768
+      const boxWidth = coarsePointer ? Math.min(420, Math.max(220, frameWidth - 16)) : 420
+      const boxHeight = coarsePointer ? Math.min(300, Math.max(160, Math.round(frameHeight * 0.5))) : 300
+      const box = clampBox(candidate.rect, boxWidth, boxHeight, coarsePointer ? 'above' : 'below')
       const quickActions = quickActionsOf(config)
 
       React.useEffect(() => {
         const area = areaRef.current
         if (area !== null) area.focus()
       }, [])
+
+      // Fixed-position boxes are laid out against the LAYOUT viewport, so an
+      // on-screen keyboard does not move them — it just covers them. Follow the
+      // visual viewport and lift the box exactly as far as it needs to stay
+      // usable. On desktop (no coarse pointer) this effect never runs.
+      React.useEffect(() => {
+        if (!coarsePointer) return undefined
+        const viewport = typeof window !== 'undefined' ? window.visualViewport : null
+        if (viewport === null || viewport === undefined || typeof viewport.addEventListener !== 'function') {
+          return undefined
+        }
+        const keep = () => {
+          const height = Number.isFinite(viewport.height) ? viewport.height : frameHeight
+          const offset = Number.isFinite(viewport.offsetTop) ? viewport.offsetTop : 0
+          const limit = height + offset - 8
+          const overflow = Math.ceil(box.top + boxHeight - limit)
+          setLift(overflow > 0 ? overflow : 0)
+        }
+        keep()
+        viewport.addEventListener('resize', keep)
+        viewport.addEventListener('scroll', keep)
+        return () => {
+          viewport.removeEventListener('resize', keep)
+          viewport.removeEventListener('scroll', keep)
+        }
+      }, [coarsePointer, box.top, boxHeight, frameHeight])
 
       const submit = async () => {
         const text = question.trim()
@@ -4585,7 +4771,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       return h('div', {
         className: 'dsa-pop',
         ref: boxRef,
-        style: { left: `${box.left}px`, top: `${box.top}px` },
+        style: {
+          left: `${box.left}px`,
+          top: `${Math.max(8, box.top - lift)}px`,
+          ...(coarsePointer ? { maxHeight: `${boxHeight}px`, overflow: 'auto' } : null),
+        },
         role: 'dialog',
         // The popover is modal in behaviour (Escape closes it, outside pointerdown
         // closes it, Alt+1..9 stay inside it); aria-modal had been missing here
@@ -5215,6 +5405,9 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           try { return typeof document.querySelector === 'function' ? document.querySelector(query) : null } catch { return null }
         }
         let frame = 0
+        // Decided once per mount: the primary pointer type does not change with
+        // rotation, and a matchMedia call per animation frame would be waste.
+        const coarsePointer = pointerIsCoarse(window)
         let observer = null
         let mutation = null
         let observedRail = null
@@ -5223,7 +5416,17 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           if (typeof node.style?.setProperty !== 'function') return
           const lane = one('[data-slot^="conversation"]')
           const rootWidth = document.documentElement?.clientWidth ?? window.innerWidth
-          const rootHeight = document.documentElement?.clientHeight ?? window.innerHeight
+          const layoutHeight = document.documentElement?.clientHeight ?? window.innerHeight
+          // The keyboard does not shrink the LAYOUT viewport on Android (edge-
+          // to-edge), so a fixed-position layer stays where it was and ends up
+          // underneath the keyboard. The visual viewport does shrink: measure
+          // both and lift by the difference. With no `visualViewport` this is 0
+          // and every desktop position is byte-identical to before.
+          const viewport = window.visualViewport ?? null
+          const viewportOffsetTop = Number.isFinite(viewport?.offsetTop) ? viewport.offsetTop : 0
+          const visualHeight = Number.isFinite(viewport?.height) ? viewport.height : null
+          const rootHeight = visualHeight === null ? layoutHeight : visualHeight
+          const keyboard = keyboardInset({ layoutHeight, viewportHeight: visualHeight, viewportOffsetTop })
           const measure = target => {
             if (target === null || target === undefined) return null
             try {
@@ -5249,16 +5452,23 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const composerRect = measure(composerEl)
           const gapBottom = floatBottom({
             frameHeight: rootHeight,
-            composerTop: composerRect === null ? null : composerRect.top,
+            composerTop: composerRect === null ? null : composerRect.top - viewportOffsetTop,
           })
-          node.style.setProperty('--dsa-gap-bottom', `${gapBottom}px`)
+          // `keyboard` is added on top of the composer clearance: one is "do not
+          // cover the input box", the other is "do not go under the keyboard".
+          node.style.setProperty('--dsa-gap-bottom', `${gapBottom + keyboard}px`)
+          const surface = floatSurfacePolicy({ frameWidth: rootWidth, railLeft, coarse: coarsePointer })
           const placement = floatPlacement({ frameWidth: rootWidth, laneRight, railLeft, maxWidth })
-          node.style.setProperty('--dsa-float-w', `${placement.width}px`)
-          node.style.setProperty('--dsa-gap-right', `${FLOAT_GAP_RIGHT}px`)
+          // On a phone the strip budget is unusable; the sheet takes the frame.
+          const layerWidth = surface.mode === 'sheet' ? surface.width : placement.width
+          node.style.setProperty('--dsa-float-w', `${layerWidth}px`)
+          node.style.setProperty('--dsa-gap-right', `${surface.gapRight}px`)
           node.style.setProperty('--dsa-capsule-max', `${CAPSULE_MAX_WIDTH}px`)
           // Readable placement, so a user report can say WHERE the layer sat.
-          node.dataset.layerWidth = String(placement.width)
-          node.dataset.layerBottom = String(gapBottom)
+          node.dataset.layerWidth = String(layerWidth)
+          node.dataset.layerBottom = String(gapBottom + keyboard)
+          node.dataset.dsaSurface = surface.mode
+          node.dataset.keyboardInset = String(keyboard)
 
           // Docked presentation: the card fills the rail page's body instead of
           // floating over it. Only measured in `full` mode — a capsule/launcher
@@ -5416,6 +5626,38 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
     }
 
     /** The `shell.overlay` entry: styles + trigger + popover + cards + toast. */
+    /**
+     * The phone's standing entry point.
+     *
+     * On a phone there is no Alt+Q, and the trigger bar only exists while text
+     * is selected — so the plugin had NO discoverable entry point at all: a
+     * user who never guessed the long-press gesture would never find it. This
+     * launcher is mounted for exactly as long as that is true. It opens the
+     * popover when a selection is already held, and otherwise explains the
+     * gesture: a silent no-op teaches nothing.
+     */
+    function PhoneLauncher({ candidate, onOpen }) {
+      const [hint, setHint] = React.useState(false)
+      React.useEffect(() => {
+        if (!hint) return undefined
+        if (typeof window === 'undefined' || typeof window.setTimeout !== 'function') return undefined
+        const timer = window.setTimeout(() => setHint(false), 2600)
+        return () => { if (typeof window.clearTimeout === 'function') window.clearTimeout(timer) }
+      }, [hint])
+      const label = t('triggerLabel')
+      return h('div', { className: 'dsa-mobile-entry-wrap' },
+        hint ? h('div', { className: 'dsa-mobile-entry-hint', role: 'status' }, t('mobileLauncherHint')) : null,
+        h('button', {
+          type: 'button',
+          className: 'dsa-mobile-entry',
+          'aria-label': label,
+          onClick: () => {
+            if (candidate !== null) { onOpen(candidate); return }
+            setHint(true)
+          },
+        }, h('span', { className: 'dsa-mobile-entry-dot', 'aria-hidden': true }), label))
+    }
+
     function OverlayRoot({ actions }) {
       const state = useStoreState()
       // §4.5 a non-leader copy mounts no interaction surface at all (its
@@ -5424,6 +5666,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const config = state.config
       const candidate = state.trigger
       const popover = state.popover
+      // A phone has no keyboard shortcut and no rail; without this the only
+      // entry is a gesture the user has to already know about.
+      const phoneLauncher = pointerIsCoarse(typeof window === 'undefined' ? null : window)
+        && candidate === null
+        && popover === null
+        && (state.cards === undefined || state.cards.length === 0)
       return h('div', {
         className: 'dsa-layer',
         'data-dsa-root': '',
@@ -5432,6 +5680,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         'data-dsa-owner': OWNER_TOKEN,
       },
         h(Styles, null),
+        phoneLauncher
+          ? h(PhoneLauncher, {
+            candidate,
+            onOpen: selected => actions.openPopover(selected),
+          })
+          : null,
         candidate !== null && popover === null && config.trigger !== 'shortcut'
           ? h(TriggerBar, {
             candidate,
@@ -7457,6 +7711,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               flushStreamBuffers()
               patchCard(cardId, { status: 'error', error, elapsedMs: Date.now() - startedAt })
               controllers.delete(cardId)
+              // A terminal error is still a terminal state: whatever the user
+              // was already shown has to survive a reload. Only `onDone` used
+              // to persist, so a dropped connection — routine when Android
+              // backgrounds a WebView — silently threw the partial answer away.
+              syncPersisted()
               revealFinishedCard(cardId)
               const failed = store.state.cards.find(item => item.id === cardId)
               if (failed !== undefined) notifyCardFinish(failed)
@@ -7530,6 +7789,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           if (store.state.familyLeader === false) return
           const config = store.state.config
           if (config.contextMenu !== true) return
+          // Phone: a long press IS Android's text-selection menu. Stealing
+          // `contextmenu` here would take Copy / Translate / Select-all away
+          // from the user, and the two menus fight over the same strip right
+          // under the selection. The phone entry points are the trigger bar
+          // and the launcher, never a hijacked long press.
+          if (pointerIsCoarse(window)) return
           const candidate = readSelection()
           const decision = shouldOffer(candidate, config, { anchors: store.state.zoneAnchors !== false })
           if (!decision.ok) {
@@ -8342,6 +8607,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           pickSurface,
           floatPlacement,
           floatBottom,
+          // Phone geometry: exposed so the tests can pin the policy
+          // instead of asserting on rendered pixels.
+          pointerIsCoarse,
+          keyboardInset,
+          floatSurfacePolicy,
           railDock,
           compareVersions,
           electFamilyLeader,

@@ -1,5 +1,63 @@
 # Changelog
 
+## 2.2.0
+
+**主题：手机适配（dsh-Go 网页版）。起因是一轮技术方案评审 —— 三份独立评审指向同一件事：这个插件从来没为手指设计过。**
+
+评审对象：本插件 2.1.15 × dsh-Go（`ccch1mneyyy/dsh-Go`，Android + Flutter + 内嵌 Linux 运行时，
+2026-11-12 的仓库状态）。路线结论是**只做网页版（WebView）适配**：原生 Flutter 界面不会加载
+`dsh.client.platform = web` 的浏览器产物（`client.js` 靠 `window.__ModuleLoader__` 注册，原生侧没有它，
+且整体缺席不报错），而桥接侧没有"文本选区"原语 —— B 路线（原生插件壳）等于重写客户端。
+
+### 修复
+
+全部有静态证据与回归用例；**真机仍未验证**，逐条在下方标注。
+
+- **F1 长按选字被插件菜单抢走**。手机长按就是 Android 自己的文本选择菜单，而 `contextMenu: true` 会在
+  选区合格时 `preventDefault()`，把「复制 / 翻译 / 全选」换成插件菜单；两个菜单还抢选区正下方同一块地方。
+  现在**粗指针（`pointer: coarse`）下不再接管 `contextmenu`**，入口交给触发条与常驻胶囊。
+- **F2 窄屏几何恒失效**。原模型是右锚定预留带：`avail = frame - 8 - lane`，再 `max(240, avail)`。
+  360px 手机上 `avail` 恒为负 → 夹到 240px 下限 → `bleeds = true`，卡片占 61% 宽压住刚选中的正文。
+  新增 `floatSurfacePolicy`：粗指针 + `frameWidth < 480` + 无右栏 → 满宽 sheet（`frame - 16`，左右各 8px）。
+- **F3 键盘弹出遮住输入框**。全库此前没有 `visualViewport`；`AskPopover` 按固定 420×300 定位后立刻
+  `focus()`，而 Android 的布局视口不随键盘缩小 → 输入框落在键盘下面。新增 `keyboardInset()` 用可视视口
+  之差算抬升量，弹层监听 `visualViewport.resize` 自动上移；手机端弹层满宽并限高。
+- **F4 断连丢答案**。Host 在响应 `close` 时立刻 abort，客户端只有 `onDone` 落盘、`onError` 不落盘。
+  Android 切后台属于常态，等于"答到一半刷新后消失"。现在 `onError` 同样 `syncPersisted()`。
+- **F5 无 Origin 的写请求被放行**。`fenceVerdict` 在缺 `Origin` 时直接放行第一层。Android 上所有 App
+  共享网络命名空间，回环不是应用边界；一旦宿主没挂 `connection`（插件只 warn 并降级为 fence-only），
+  `/ask`（默认 `sideTools: inherit`）、`/config`、`/feedback`、`/reset` 会对同机任意 App 敞开。
+  现在**非 `GET/HEAD/OPTIONS` 必须带 Origin**，否则 403 `no-origin`（新增错误码文案）。
+  浏览器页面永远带 Origin，脚本与原生客户端不再被当作页面。
+
+### 新增
+
+- **手机常驻入口**：粗指针、无卡片、无弹层时，右下角出现「追问选中内容」胶囊（避让安全区）。
+  此前手机上唯一的入口是"长按选字"——没有 `Alt+Q`、也没有任何常驻 UI，不知道手势的用户永远发现不了。
+  有选区时直接开问；无选区时弹一句手势提示，而不是静默无反应。
+- **触摸目标**：`@media (pointer:coarse)` 下按钮 / 胶囊 / 芯片最小 44px（原来约 26px）；
+  `env(safe-area-inset-*)` 接入浮层与入口。
+- **触发条位置**：粗指针下改到选区**上方**，避开 Android 的选择手柄与 ActionMode 工具栏。
+- **承载面选择**：`frameWidth < 480` 时 `auto` 直接落 `flow`，不再先开 better-sidebar tab
+  再等 600ms 回落（省掉一次可见闪烁）。
+
+### 测试
+
+- `test/harness.mjs` 的合成 window 补齐 `visualViewport` / `matchMedia` / `documentElement`，
+  默认仍是桌面形态；请求默认带同源 `Origin`（模拟页面），需要省略的用例显式传 `undefined`。
+- 新增 29 条手机用例：360px 选 sheet、479/480 阈值、有右栏不选 sheet、键盘 inset 四种输入、
+  `pointer:coarse` 三条探测路径，以及九个必须真实存在于源码的钩子。
+- 四套件结果：verify 69 / contract 1512 / float-placement 130 / smoke 345，全绿。
+- `NODE-HOST-CONTRACT.md` 的源码行号锚点随代码位移同步修正（16 处引用，逐条校验唯一性）。
+
+### 仍未验证（如实标注）
+
+- **零真机**：本轮没有 Android 设备、没有 dsh-Go 构建，也没有一张手机截图。"键盘不遮挡""系统菜单不再被抢"
+  是按代码推定的结果，不是实测结论。
+- **未做**：①「无选区直接提问」需要放开 Host 对空 `selection` 的硬拒（契约变更，需单独立项）；
+  ②断连后的终稿重取（需同 sessionId 缓存接口，与"断开即止"语义冲突，需与安全侧联合裁决）。
+- dsh-Go **原生界面**里本插件整体不出现 —— 这是架构边界（`dsh.client.platform = web`），不是缺陷。
+
 ## 2.1.15
 
 **主题：信任围栏说清"为什么拒"。起因是对最新版宿主做的跨端评审 —— 顺手测出一个把人引向错误配置项的 403。**

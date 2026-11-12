@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.15'
+export const PLUGIN_VERSION = '2.2.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -1549,7 +1549,18 @@ export function fenceVerdict(req, trustedHosts = []) {
   if (!isLoopbackHostname(hostUrl.hostname) && !trusted) return { ok: false, reason: 'untrusted-host' }
   if (headers['sec-fetch-site'] === 'cross-site') return { ok: false, reason: 'cross-site' }
   const origin = typeof headers.origin === 'string' ? headers.origin : undefined
-  if (origin === undefined) return { ok: true }
+  if (origin === undefined) {
+    // A page always names itself on a request that can change state. A request
+    // with NO Origin is not a page: it is a script, a native client, or another
+    // app on this machine. On Android every app shares the network namespace,
+    // so loopback is not an app boundary, and "no Origin" must not be read as
+    // "same origin" for anything that writes or spends. Safe verbs stay open
+    // (the host session gate still applies to them); an unsafe verb has to come
+    // from a page we can name — which the phone's WebView always is.
+    const method = typeof req?.method === 'string' && req.method !== '' ? req.method.toUpperCase() : 'GET'
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return { ok: true }
+    return { ok: false, reason: 'no-origin' }
+  }
   if (origin.startsWith('dsh-app:')) return { ok: false, reason: 'desktop-origin' }
   let originUrl
   try {
@@ -1575,6 +1586,7 @@ const FENCE_MESSAGES = {
   'bad-host': 'Host 头无法解析，请求被拒',
   'untrusted-host': 'Host 不在信任范围：请用 http://127.0.0.1:<端口> 访问，或把该地址写进 trustedHosts 配置',
   'cross-site': '跨站点请求被拒（浏览器标记 Sec-Fetch-Site: cross-site）',
+  'no-origin': '改动状态的请求缺少 Origin 头：页面会自动带上，脚本或原生客户端需要显式声明来源，或改走界面操作',
   'desktop-origin': '请求来自桌面外壳页（Origin: dsh-app://app）：该页应经由文档相对路径访问插件接口，而不是直连 http://127.0.0.1:<端口>',
   'foreign-origin': '请求来源页与该接口不同源：Origin 的 host:port 必须与 Host 完全一致',
   'opaque-origin': '请求来源页是不透明源（Origin: null，常见于沙箱 iframe / file:// / data:），按跨站处理并拒绝',
