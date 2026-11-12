@@ -817,8 +817,19 @@ report.equal(blockedAsk.events().at(-1).data.fallback, 'main', 'the blocked step
 
 const emptyQuestion = await callRoute(a.harness, '/ask', { body: { id: 'x', question: '   ', selection: 'text' } })
 report.equal(emptyQuestion.events().at(-1).data.code, 'bad-request', 'an empty question is refused')
+// 2.2.1: an empty selection is a legitimate request now. On a phone there is
+// no Alt+Q, and inside a dsh-Go web island the island DOM holds no conversation
+// text at all — so "ask without quoting anything" is the only entry point some
+// users have. The question is still required; the selection is not.
 const emptySelection = await callRoute(a.harness, '/ask', { body: { id: 'y', question: 'q', selection: '  ' } })
-report.equal(emptySelection.events().at(-1).data.code, 'bad-request', 'an empty selection is refused')
+report.ok(
+  emptySelection.events().at(-1).data.code !== 'bad-request',
+  'an empty selection is accepted, not refused',
+)
+report.ok(
+  emptySelection.events().some(event => event.event === 'start'),
+  'an empty-selection ask still starts a run',
+)
 
 const engineError = await boot({ engineOptions: { startError: Object.assign(new Error('provider offline'), { code: 'subagent/unavailable' }) } })
 const engineErrorAsk = await callRoute(engineError.harness, '/ask', {
@@ -876,6 +887,28 @@ const trusted = await callRoute(a.harness, '/state', {
   headers: { host: 'box.local:8080', origin: 'http://box.local:8080' },
 })
 report.equal(trusted.status, 403, 'an untrusted non-loopback authority is refused')
+
+// 2.2.0 F5: a request with NO Origin is not a page. The phone's WebView always
+// sends one; a script, a native client, or another app on the same machine does
+// not — and on Android every app shares the network namespace, so "loopback" is
+// not an app boundary. Pinned so a future compatibility change cannot quietly
+// loosen this back to "no Origin means same origin".
+const noOriginWrite = await callRoute(a.harness, '/config', {
+  body: { maxChars: 100 },
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.equal(noOriginWrite.status, 403, 'a write with no Origin is refused by the fence')
+report.equal(noOriginWrite.json().error.reason, 'no-origin', 'the refusal names the missing Origin')
+const noOriginAsk = await callRoute(a.harness, '/ask', {
+  body: { id: 'n', question: 'q', selection: 's' },
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.equal(noOriginAsk.status, 403, 'asking (which spends a child agent) is refused too')
+const noOriginRead = await callRoute(a.harness, '/state', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.equal(noOriginRead.status, 200, 'a read with no Origin still answers: safe verbs stay open')
 
 // 2.1.15: the fence names the cause instead of blaming Host every time.
 // Measured against the live desktop host on 2026-11-12: Origin `dsh-app://app`

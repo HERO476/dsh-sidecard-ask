@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.2.0'
+export const PLUGIN_VERSION = '2.2.1'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -702,7 +702,12 @@ function composeSidePrompt(input) {
     // `longestBacktickRun`): a fixed three-backtick fence can be closed from
     // inside the payload.
     const fence = '`'.repeat(Math.max(3, longestBacktickRun(selection) + 1))
-    const parts = [sourceLine, 'Selection:', `${fence}text`, selection, fence]
+    const parts = selection === ''
+      // No quoted text at all is a legitimate request: the phone launcher has
+      // nowhere to read a selection from, and a bare question is still useful.
+      // Say so in words — an empty fenced block reads like a truncated prompt.
+      ? [sourceLine, '(no selection: answer the question on its own)']
+      : [sourceLine, 'Selection:', `${fence}text`, selection, fence]
     if (historyTurns.length > 0) {
       const historyLines = ['Earlier turns on this card:']
       const historyText = []
@@ -2063,10 +2068,11 @@ function createSideEngine(ctx, configOf) {
       sink.send('error', { id, code: 'bad-request', message: '问题为空', retryable: false })
       return
     }
-    if (rawSelection.trim() === '') {
-      sink.send('error', { id, code: 'bad-request', message: '选中文本为空', retryable: false })
-      return
-    }
+    // An empty selection used to be refused outright. It is now allowed on
+    // purpose: on a phone there is no keyboard shortcut and the launcher may
+    // have nothing selected, so "ask without quoting anything" is the only
+    // entry point some users have. The prompt says so in words instead of
+    // leaving an empty fenced block.
     if (disposed) {
       sink.send('error', { id, code: 'unloaded', message: '插件正在卸载', retryable: false })
       return

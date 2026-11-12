@@ -393,4 +393,24 @@ report.ok(/if \(pointerIsCoarse\(window\)\) return/.test(source),
 report.ok(/bottom:calc\(var\(--dsa-gap-bottom/.test(source),
   'the bottom anchor adds the keyboard inset')
 
+// Island insets: a dsh-Go web island publishes its native chrome as CSS
+// custom properties. Outside one both read 0, so every desktop position stays
+// byte-identical; inside one the layer must lift by the bottom inset or it
+// parks under the native composer.
+const island = pure.islandInsets
+report.equal(island(() => 0).bottom, 0, 'no island variables means no inset')
+report.equal(island(n => (n === '--dsh-go-island-bottom' ? '72px' : '')).bottom, 72, 'a px value is parsed')
+report.equal(island(n => (n === '--dsh-go-island-top' ? 48 : '')).top, 48, 'a numeric value is accepted')
+report.equal(island(n => (n === '--dsh-go-island-bottom' ? '-12px' : '')).bottom, 0, 'a negative inset never lifts downward')
+report.equal(island(n => (n === '--dsh-go-island-bottom' ? 'auto' : '')).bottom, 0, 'an unparsable value is ignored')
+report.equal(island(() => { throw new Error('boom') }).bottom, 0, 'a throwing reader does not break layout')
+report.equal(island(undefined).top, 0, 'a missing reader is 0')
+
+// And the wiring the island support needs must actually ship.
+report.ok(/getComputedStyle/.test(source), 'the layer reads computed custom properties for the island')
+report.ok(/--dsh-go-island-bottom/.test(source), 'the island bottom variable is wired')
+report.ok(/islandBottom/.test(source), 'the island inset is published for diagnostics')
+report.ok(/blankCandidate/.test(source), 'the phone entry can ask without a selection')
+report.ok(/noSelectionHint/.test(source), 'the popover names the empty-quote case')
+
 report.summary()

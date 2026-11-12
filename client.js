@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.2.0'
+    const CLIENT_VERSION = '2.2.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -515,6 +515,30 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The insets a host container advertises through CSS variables.
+     *
+     * A dsh-Go **web island** hosts this page inside a native sheet: the island
+     * is clipped between the native top bar and the composer, and it publishes
+     * that clipping as `--dsh-go-island-top` / `--dsh-go-island-bottom`.
+     * Fixed positioning inside the island is relative to the ISLAND viewport,
+     * so a layer pinned to the bottom would sit under the native composer
+     * unless it also lifts by that inset. Outside an island both read 0 and
+     * every position is unchanged.
+     *
+     * @param {(name: string) => (number|string|undefined)} read - custom-property reader.
+     * @returns {{top: number, bottom: number}} px, never negative.
+     */
+    function islandInsets(read) {
+      const value = (name) => {
+        let raw
+        try { raw = typeof read === 'function' ? read(name) : undefined } catch { return 0 }
+        const parsed = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? ''))
+        return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 0
+      }
+      return { top: value('--dsh-go-island-top'), bottom: value('--dsh-go-island-bottom') }
+    }
+
+    /**
      * How far above the frame's bottom edge the floating layer sits (2.1.3).
      *
      * Pure, like {@link floatPlacement}, and mirrored by the tests.
@@ -732,7 +756,7 @@ window.__ModuleLoader__.load({
     const DICT = {
       zh: {
         triggerLabel: '追问选中内容',
-        mobileLauncherHint: '长按选中要追问的文字，浮出的按钮就能追问',
+        noSelectionHint: '没有引用任何文字，可以直接提问',
         triggerHint: '点击用 AI 追问这段文字',
         askTitle: '追问选中内容',
         askPlaceholder: '想就这段内容问什么？（Enter 发送，Shift+Enter 换行）',
@@ -1015,7 +1039,7 @@ window.__ModuleLoader__.load({
       },
       en: {
         triggerLabel: 'Ask about selection',
-        mobileLauncherHint: 'Long-press to select text, then use the button that appears',
+        noSelectionHint: 'No quoted text — ask directly',
         triggerHint: 'Ask AI about this text',
         askTitle: 'Ask about the selection',
         askPlaceholder: 'What do you want to ask? (Enter sends, Shift+Enter breaks a line)',
@@ -4811,14 +4835,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       h('div', { className: 'dsa-row' },
         h('span', { className: 'dsa-title' }, t('askTitle')),
         h('span', { className: 'dsa-badge' }, zoneLabel(candidate)),
-        h('span', { className: 'dsa-badge' }, t('chars', { n: codePointLength(candidate.text) })),
+        codePointLength(candidate.text) > 0
+          ? h('span', { className: 'dsa-badge' }, t('chars', { n: codePointLength(candidate.text) }))
+          : null,
         cut.truncated
           ? h('span', { className: 'dsa-badge dsa-badge-warn' }, t('truncatedBadge', { n: cut.droppedChars }))
           : null),
-      h('pre', { className: 'dsa-quote' },
-        codePointLength(candidate.text) > 400
-          ? `${Array.from(candidate.text).slice(0, 400).join('')}…`
-          : candidate.text),
+      codePointLength(candidate.text) === 0
+        // Nothing quoted: say so instead of painting an empty quote box.
+        ? h('p', { className: 'dsa-quote dsa-quote-empty' }, t('noSelectionHint'))
+        : h('pre', { className: 'dsa-quote' },
+          codePointLength(candidate.text) > 400
+            ? `${Array.from(candidate.text).slice(0, 400).join('')}…`
+            : candidate.text),
       // Same chips as the in-place bar: shortcut-only users reach them via
       // Alt+Q, and a click here submits directly (the popover closes because
       // submit/quickAsk both clear `popover`).
@@ -5427,6 +5456,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const visualHeight = Number.isFinite(viewport?.height) ? viewport.height : null
           const rootHeight = visualHeight === null ? layoutHeight : visualHeight
           const keyboard = keyboardInset({ layoutHeight, viewportHeight: visualHeight, viewportOffsetTop })
+          // A dsh-Go web island advertises its native chrome as CSS variables.
+          // Reading them through getComputedStyle is the only way to see them,
+          // and a host without them (every plain browser) reads 0.
+          const rootStyle = (() => {
+            try { return window.getComputedStyle(document.documentElement) } catch { return null }
+          })()
+          const island = islandInsets(name => (rootStyle === null ? 0 : rootStyle.getPropertyValue(name)))
           const measure = target => {
             if (target === null || target === undefined) return null
             try {
@@ -5456,7 +5492,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           })
           // `keyboard` is added on top of the composer clearance: one is "do not
           // cover the input box", the other is "do not go under the keyboard".
-          node.style.setProperty('--dsa-gap-bottom', `${gapBottom + keyboard}px`)
+          // `island.bottom` is the same idea for a native composer outside the
+          // page.
+          const bottomTotal = gapBottom + keyboard + island.bottom
+          node.style.setProperty('--dsa-gap-bottom', `${bottomTotal}px`)
           const surface = floatSurfacePolicy({ frameWidth: rootWidth, railLeft, coarse: coarsePointer })
           const placement = floatPlacement({ frameWidth: rootWidth, laneRight, railLeft, maxWidth })
           // On a phone the strip budget is unusable; the sheet takes the frame.
@@ -5466,9 +5505,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           node.style.setProperty('--dsa-capsule-max', `${CAPSULE_MAX_WIDTH}px`)
           // Readable placement, so a user report can say WHERE the layer sat.
           node.dataset.layerWidth = String(layerWidth)
-          node.dataset.layerBottom = String(gapBottom + keyboard)
+          node.dataset.layerBottom = String(bottomTotal)
           node.dataset.dsaSurface = surface.mode
           node.dataset.keyboardInset = String(keyboard)
+          node.dataset.islandBottom = String(island.bottom)
 
           // Docked presentation: the card fills the rail page's body instead of
           // floating over it. Only measured in `full` mode — a capsule/launcher
@@ -5627,33 +5667,61 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
 
     /** The `shell.overlay` entry: styles + trigger + popover + cards + toast. */
     /**
+     * A candidate that quotes nothing.
+     *
+     * The phone launcher has to work when there is no selection to carry: on a
+     * phone there is no Alt+Q, and inside a dsh-Go web island the island's DOM
+     * holds no conversation text at all (so `getSelection()` is always empty
+     * there). Asking without quoting anything is therefore the entry point some
+     * users have, not a degenerate case. The Host accepts an empty selection
+     * since 2.2.1 and says so in the prompt.
+     *
+     * The rect is only a placement seed for `clampBox`; it is centred so the
+     * popover lands where the eye already is.
+     *
+     * @returns {object} a `readSelection()`-shaped candidate with empty text.
+     */
+    function blankCandidate() {
+      const width = Number.isFinite(window?.innerWidth) ? window.innerWidth : 1024
+      const height = Number.isFinite(window?.innerHeight) ? window.innerHeight : 768
+      const half = 60
+      const top = Math.round(height / 2)
+      return {
+        text: '',
+        rect: {
+          left: Math.round(width / 2) - half,
+          right: Math.round(width / 2) + half,
+          top,
+          bottom: top + 24,
+          width: half * 2,
+          height: 24,
+        },
+        zone: 'other',
+        cross: false,
+        slotPath: [],
+        kind: 'text',
+      }
+    }
+
+    /**
      * The phone's standing entry point.
      *
      * On a phone there is no Alt+Q, and the trigger bar only exists while text
-     * is selected — so the plugin had NO discoverable entry point at all: a
-     * user who never guessed the long-press gesture would never find it. This
-     * launcher is mounted for exactly as long as that is true. It opens the
-     * popover when a selection is already held, and otherwise explains the
-     * gesture: a silent no-op teaches nothing.
+     * is selected — so the plugin had NO discoverable entry point at all. This
+     * launcher is mounted for exactly as long as that is true. With a live
+     * selection it carries it; without one it still opens the popover, because
+     * a button that only explains itself is not an entry point.
      */
-    function PhoneLauncher({ candidate, onOpen }) {
-      const [hint, setHint] = React.useState(false)
-      React.useEffect(() => {
-        if (!hint) return undefined
-        if (typeof window === 'undefined' || typeof window.setTimeout !== 'function') return undefined
-        const timer = window.setTimeout(() => setHint(false), 2600)
-        return () => { if (typeof window.clearTimeout === 'function') window.clearTimeout(timer) }
-      }, [hint])
+    function PhoneLauncher({ candidate, onOpen, onBlank }) {
       const label = t('triggerLabel')
       return h('div', { className: 'dsa-mobile-entry-wrap' },
-        hint ? h('div', { className: 'dsa-mobile-entry-hint', role: 'status' }, t('mobileLauncherHint')) : null,
         h('button', {
           type: 'button',
           className: 'dsa-mobile-entry',
           'aria-label': label,
           onClick: () => {
             if (candidate !== null) { onOpen(candidate); return }
-            setHint(true)
+            onBlank()
           },
         }, h('span', { className: 'dsa-mobile-entry-dot', 'aria-hidden': true }), label))
     }
@@ -5684,6 +5752,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           ? h(PhoneLauncher, {
             candidate,
             onOpen: selected => actions.openPopover(selected),
+            onBlank: () => actions.openPopover(blankCandidate()),
           })
           : null,
         candidate !== null && popover === null && config.trigger !== 'shortcut'
@@ -8612,6 +8681,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           pointerIsCoarse,
           keyboardInset,
           floatSurfacePolicy,
+          islandInsets,
           railDock,
           compareVersions,
           electFamilyLeader,

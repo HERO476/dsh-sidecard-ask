@@ -1037,6 +1037,11 @@ Host: ctx.subagents.start('spawn')
 - 插件路由带**两层**围栏：回环 / 可信域 + 同源校验（Host 头、`Origin`、`Sec-Fetch-Site`），然后交给宿主的
   `connection.requestRejection()` 校验 **DSH 浏览器会话**（宿主没挂载该服务时才只保留第一层）。
   因此未登录的外部程序拿到 loopback 地址也读不到 `/state`、更发不出 `/ask`。
+- **2.2.0 起，改写状态的请求必须有 `Origin`**：`GET` / `HEAD` / `OPTIONS` 之外，缺 `Origin` 一律 403 `no-origin`。
+  浏览器页面一定会带，脚本、原生客户端、同机其它 App 不会带 —— 而手机上所有 App 共享网络命名空间，
+  "回环"并不等于"应用隔离"，所以"没有 Origin"不能再被当成"同源"。
+  这条是给移动端补的：它同时也让"用脚本直接打 `/ask`"变成显式失败，而不是悄悄花掉一次子代理。
+  脚本/原生客户端若确实需要调用，请显式带上与 `Host` 同源的 `Origin`。
 - 侧边作答者默认**继承父代理的工具**（`sideTools: inherit`）。改成只读（`readonly`）时，插件不会假装只读：
   宿主若不提供只读载体（`agentPreset` 或 `toolFilter`），追问会被**直接拒绝**（`readonly-unavailable`），
   错误文案会告诉你改回「继承父代理工具」。
