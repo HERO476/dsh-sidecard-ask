@@ -41,6 +41,13 @@ const VERSIONS = [
   '0.1.7-alpha.2',
   '0.1.7-rc.1',
   '0.1.7-rc.2',
+  // 2.1.15: the two hosts the plugin actually runs on today (2026-11-12).
+  // `0.2.2-rc.1` is what the desktop shell 0.2.2-rc.1 bundles AND what npm
+  // currently serves as `latest`; `0.2.1-rc.5` is the build the 2.1.12 audit was
+  // written against, so probing both turns "did any API marker move?" into a
+  // diff instead of an opinion.
+  '0.2.1-rc.5',
+  '0.2.2-rc.1',
 ]
 
 /**

@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.14'
+export const PLUGIN_VERSION = '2.1.15'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -1492,14 +1492,48 @@ export function isLoopbackHostname(hostname) {
  * @returns {boolean} true when the request is same-origin.
  */
 export function isTrustedRequest(req, trustedHosts = []) {
+  return fenceVerdict(req, trustedHosts).ok
+}
+
+/**
+ * The fence's verdict, with the cause spelled out (2.1.15).
+ *
+ * `isTrustedRequest` used to answer with a bare boolean, so the route could only
+ * print ONE message for six different rejections: an Origin mismatch was
+ * reported as「Host 不在信任范围 —— 把地址写进 trustedHosts」, which sends the
+ * user to a setting that cannot possibly fix it. Measured against the live host
+ * on 2026-11-12 (`GET /sidecard-ask/api/ping`):
+ *
+ *   no Origin                       → 200
+ *   Origin: http://127.0.0.1:<port> → 200
+ *   Origin: dsh-app://app           → 403 + the trustedHosts text   ← wrong advice
+ *   Origin: null                    → 403 + the trustedHosts text   ← wrong advice
+ *
+ * `dsh-app://app` matters because that IS the desktop window's origin (the
+ * bundle registers the scheme with `corsEnabled: true` and special-cases it in
+ * `fileMediaUrl`). A `trustedHosts` entry is parsed as an authority, so no entry
+ * can ever match a scheme with no host: the advice was unactionable by design.
+ *
+ * The reasons, and who should read them:
+ *   no-host / bad-host       malformed request, nothing to fix on the user side
+ *   untrusted-host           the real "Host 不在信任范围" case (bind/LAN/reverse proxy)
+ *   cross-site               the browser marked it cross-site
+ *   desktop-origin           the request came from the Electron page instead of the HTTP one
+ *   foreign-origin           a page on another host:port talked to us
+ *   opaque-origin            `Origin: null` (sandboxed iframe, file://, data:)
+ * @param {{headers: Record<string, string|string[]|undefined>}} req - node request.
+ * @param {readonly string[]} trustedHosts - non-loopback authorities to accept.
+ * @returns {{ok: boolean, reason?: string}} verdict; `reason` is absent when ok.
+ */
+export function fenceVerdict(req, trustedHosts = []) {
   const headers = req?.headers ?? {}
   const host = typeof headers.host === 'string' ? headers.host : undefined
-  if (host === undefined) return false
+  if (host === undefined) return { ok: false, reason: 'no-host' }
   let hostUrl
   try {
     hostUrl = new URL(`http://${host}`)
   } catch {
-    return false
+    return { ok: false, reason: 'bad-host' }
   }
   const trusted = trustedHosts.some((entry) => {
     try {
@@ -1512,17 +1546,38 @@ export function isTrustedRequest(req, trustedHosts = []) {
       return false
     }
   })
-  if (!isLoopbackHostname(hostUrl.hostname) && !trusted) return false
-  if (headers['sec-fetch-site'] === 'cross-site') return false
+  if (!isLoopbackHostname(hostUrl.hostname) && !trusted) return { ok: false, reason: 'untrusted-host' }
+  if (headers['sec-fetch-site'] === 'cross-site') return { ok: false, reason: 'cross-site' }
   const origin = typeof headers.origin === 'string' ? headers.origin : undefined
-  if (origin === undefined) return true
+  if (origin === undefined) return { ok: true }
+  if (origin.startsWith('dsh-app:')) return { ok: false, reason: 'desktop-origin' }
+  let originUrl
   try {
-    // Compare the full authority (host:port): a same-hostname Origin from a
-    // different port is a different origin and must not clear the fence.
-    return new URL(origin).host === hostUrl.host
+    originUrl = new URL(origin)
   } catch {
-    return false
+    // `Origin: null` is the literal string an opaque origin sends.
+    return { ok: false, reason: 'opaque-origin' }
   }
+  if (originUrl.host === '' || originUrl.host === 'null') return { ok: false, reason: 'opaque-origin' }
+  // Compare the full authority (host:port): a same-hostname Origin from a
+  // different port is a different origin and must not clear the fence.
+  return originUrl.host === hostUrl.host ? { ok: true } : { ok: false, reason: 'foreign-origin' }
+}
+
+/**
+ * What to tell the caller for each fence rejection.
+ *
+ * Only `untrusted-host` mentions `trustedHosts`, because that is the one cause a
+ * config change can fix. Every other line names the actual problem.
+ */
+const FENCE_MESSAGES = {
+  'no-host': '请求缺少 Host 头，无法判定来源',
+  'bad-host': 'Host 头无法解析，请求被拒',
+  'untrusted-host': 'Host 不在信任范围：请用 http://127.0.0.1:<端口> 访问，或把该地址写进 trustedHosts 配置',
+  'cross-site': '跨站点请求被拒（浏览器标记 Sec-Fetch-Site: cross-site）',
+  'desktop-origin': '请求来自桌面外壳页（Origin: dsh-app://app）：该页应经由文档相对路径访问插件接口，而不是直连 http://127.0.0.1:<端口>',
+  'foreign-origin': '请求来源页与该接口不同源：Origin 的 host:port 必须与 Host 完全一致',
+  'opaque-origin': '请求来源页是不透明源（Origin: null，常见于沙箱 iframe / file:// / data:），按跨站处理并拒绝',
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1553,10 +1608,11 @@ function writeOk(res, value) {
  * set with `setHeader` before this call would be dropped (the 429 throttle
  * relies on `retry-after` surviving).
  */
-function writeError(res, status, code, message, extraHeaders = {}) {
+function writeError(res, status, code, message, extraHeaders = {}, details = undefined) {
   if (res === null || res === undefined || res.destroyed === true || res.headersSent === true) return
   try {
-    writeJson(res, status, { ok: false, error: { code, message } }, extraHeaders)
+    const error = details === undefined ? { code, message } : { code, message, ...details }
+    writeJson(res, status, { ok: false, error }, extraHeaders)
   } catch { /* the socket is already gone — nothing to write */ }
 }
 
@@ -3111,16 +3167,21 @@ export function apply(ctx, patchConfig) {
 
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
-    if (!isTrustedRequest(req, trustedHostsOf())) {
-      // 说明"为什么被拒 + 怎么放行"：这条 403 只会出现在 DSH 被绑到非回环
-      // 地址、或经反向代理访问时（Host 既不是 loopback，也不在 trustedHosts
-      // 里）。有意不自动信任绑定地址：插件读不到宿主的 bind 配置，猜一个就等于
-      // 自己把 DNS-rebinding 防线拆掉。
+    const verdict = fenceVerdict(req, trustedHostsOf())
+    if (!verdict.ok) {
+      // 说明"为什么被拒 + 怎么放行"。2.1.15 起按原因分文案：此前所有子条件都吐
+      // 「Host 不在信任范围 …… 写进 trustedHosts」，而 Origin 不匹配（桌面外壳的
+      // dsh-app://app、以及 Origin: null）根本无法用 trustedHosts 修好——那边的
+      // 条目会被解析成 authority，自定义 scheme 没有 host 可匹配。
+      // 有意不自动信任绑定地址：插件读不到宿主的 bind 配置，猜一个就等于自己把
+      // DNS-rebinding 防线拆掉。
       writeError(
         res,
         403,
         'forbidden',
-        'Host 不在信任范围：请用 http://127.0.0.1:<端口> 访问，或把该地址写进 trustedHosts 配置',
+        FENCE_MESSAGES[verdict.reason] ?? FENCE_MESSAGES['untrusted-host'],
+        {},
+        { reason: verdict.reason },
       )
       return
     }

@@ -1,5 +1,66 @@
 # Changelog
 
+## 2.1.15
+
+**主题：信任围栏说清"为什么拒"。起因是对最新版宿主做的跨端评审 —— 顺手测出一个把人引向错误配置项的 403。**
+
+评审环境（实测，非笔记）：桌面壳 `0.2.2-rc.1`（`DeepSeek Harness.exe` 的 FileVersion），
+它同时通过 `http://127.0.0.1:11685` 对外提供网页端 —— 也就是说今天**两端是同一份宿主代码、两个 origin**
+（桌面窗口 `dsh-app://app/`，浏览器 `http://127.0.0.1:<port>`），而不是两个独立运行时。
+`@deepseek-ai/dsh` 的 npm dist-tags 当时是 `latest=0.2.2-rc.1`，落在插件 `engines.dsh` 的
+`>=0.1.2-rc.1 <0.3.0` 窗口内，无需放宽。
+
+### 修复
+
+- **F1 围栏把"Origin 不匹配"错报成"Host 不在信任范围"**。对运行中的 2.1.14 实测
+  （`GET /sidecard-ask/api/ping`，围栏在 ping 之前生效）：
+
+  | 请求头 | 2.1.14 结果 |
+  |---|---|
+  | 无 Origin | 200 |
+  | `Origin: http://127.0.0.1:<port>` | 200 |
+  | `Origin: dsh-app://app` | **403 +「Host 不在信任范围 …… 写进 trustedHosts」** |
+  | `Origin: null` | **403 + 同一句** |
+  | `Origin: http://evil.example` | 403（正确） |
+
+  问题不在拒绝，在**文案**：`trustedHosts` 的条目会被解析成 authority，而自定义 scheme 与不透明源
+  都没有 host 可匹配 —— 这句话指导的操作**永远修不好**这两种情况。现在判定拆到
+  `fenceVerdict(req, trustedHosts)`（`index.js:1528`），返回 `no-host / bad-host / untrusted-host /
+  cross-site / desktop-origin / foreign-origin / opaque-origin` 之一；403 响应体多一个
+  `error.reason` 字段（`code` 仍是 `forbidden`，客户端 i18n 不受影响），每种原因有自己的中文文案。
+  只有 `untrusted-host` 仍然提 `trustedHosts`。`isTrustedRequest` 保留为布尔外壳，调用点不变。
+
+### 新增（测试）
+
+- smoke 新增 13 条围栏断言（332 → **345**）：桌面 origin 与 `Origin: null` 各自给出 `reason`、
+  桌面文案**不含** `trustedHosts` 且**引用** `dsh-app://app`、跨站/异源/端口不同源分别归到
+  `cross-site` / `foreign-origin`、只有 `untrusted-host` 才提 `trustedHosts`、
+  `fenceVerdict` 与 `isTrustedRequest` 两个出口共享同一判定。
+
+### 新增（能力探针）
+
+- `tools/compat-probe.mjs` 的版本表加入 `0.2.1-rc.5`（2.1.12 审计基线）与 `0.2.2-rc.1`（当前桌面壳）。
+  对已发布产物跑完的结果：**17 项派生能力位在两个版本上逐项相同**
+  （`clientBundle / overlaySlot / composerSlot / settingsPage / zoneAnchor / nativeRightbar /
+  submitUsing / submitRetain / archiveGate / streamFrames / sideEngine / providerCaps /
+  toolRegistry / pluginRoutes` 全为 true；`durableChunks` 与 `liveChild` 在两版都为 false ——
+  这两项是长期存在的能力缺口，插件本来就有降级分支，不是本轮引入）。
+  结论：**0.2.1-rc.5 → 0.2.2-rc.1 之间没有影响本插件的 API 漂移**。
+
+### 文档
+
+- `NODE-HOST-CONTRACT.md`：闸门 1 一节改写为 `fenceVerdict` 的七个 reason，并明确
+  「403 响应体现在带 `error.reason`」这条契约补充（2.1.15 起）。
+
+### 未验证（如实标注）
+
+- **桌面窗口实际发出的请求头**没有抓到：从进程外无法看到 Electron 的 `Origin`。若桌面外壳把
+  `Origin: dsh-app://app` 原样转给本地 HTTP 服务，`/ask`、`/state`、`/config` 会被围栏 403。
+  插件目前用 `document.baseURI` 相对路径（走自定义 scheme），所以线上是可用的；改成绝对地址才会踩，
+  而首次出现的场景任何配置都修不好 —— 这也是 F1 的价值所在：至少现在错误会自己说清原因。
+  验证方法：桌面窗口 DevTools → Network → 任一 `sidecard-ask/api/*` 请求 → 看 Request Headers 的 `Origin`。
+- 真实浏览器 / Electron 的点按与流式观感本轮未跑（没有浏览器自动化）。
+
 ## 2.1.14
 
 **主题：选区动作条默认只留主按钮。功能一个没删，改的是默认值。**

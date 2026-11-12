@@ -12,7 +12,7 @@
 
 1. **这个插件不是"可选 Node"**：它 import 了 `node:fs` / `node:os` / `node:path` / `node:net` / `node:tls`，用了全局 `Buffer` 与 `process.env`，并且把 Node 的 `(req, res)` 双流对象**直接当成契约**（`req.on('data'|'end'|'error')`、`res.write` 分块刷出 SSE）。**换宿主 = 换运行时语义，不是换 HTTP 框架。**
 2. **硬依赖只有两条链路**：①`webServer` 注册路由 + 这套 req/res 语义；②前端 `window.__ModuleLoader__` + React + 具名槽位。其余（`subagents` / `tools` / `connection` / `sidebarRightTabs` / `sidebarRight` / `betterSidebar`）**全是软依赖**：拿不到就降级，插件照跑。
-3. **最容易被忽略的一条**：`Buffer` 与 `Buffer.byteLength` 被用于响应体长度与请求体拼接（`index.js:1567`、`index.js:1538`）。任何宿主必须提供 UTF-8 字节语义的等价物，否则 `content-length` 一算错就会挂住连接。
+3. **最容易被忽略的一条**：`Buffer` 与 `Buffer.byteLength` 被用于响应体长度与请求体拼接（`index.js:1623`、`index.js:1593`）。任何宿主必须提供 UTF-8 字节语义的等价物，否则 `content-length` 一算错就会挂住连接。
 
 ---
 
@@ -40,7 +40,7 @@
 
 `[源码]`
 
-- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2543`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
+- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2599`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
 - 硬依赖声明：**只有** `webServer`
 
   ```js
@@ -86,7 +86,7 @@
 
 ### 4.1 注册形状
 
-`[源码]` `index.js:3200` 起（prefix 分支在 `index.js:3203`）：
+`[源码]` `index.js:3261` 起（prefix 分支在 `index.js:3264`）：
 
 ```js
 ctx.webServer.register({ kind: 'prefix', path: '/sidecard-ask/api', handler })
@@ -116,13 +116,13 @@ ctx.webServer.register({ kind: 'exact', path: '/sidecard-ask/api/ping', handler 
 | `res` | `.headersSent` | 布尔 |
 | `res` | `.writableEnded` | 布尔 |
 | `res` | `.destroyed` | 布尔 |
-| `res` | `.on('close', cb)` | 只需 `'close``（`index.js:2935` 用它判断浏览器是否离开） |
+| `res` | `.on('close', cb)` | 只需 `'close``（`index.js:2991` 用它判断浏览器是否离开） |
 
 **关键点**：`res.write` 的**即时刷出**是 SSE 的全部基础。任何把响应体缓存在内存里最后一次性写出的宿主，会让流式卡片"整段答案在结束时一次性出现"，还可能导致心跳失效、被中间层判死。
 
 ### 4.3 请求体读取
 
-`[源码]` `index.js:1567` `readJsonBody`：
+`[源码]` `index.js:1623` `readJsonBody`：
 
 - 流式累积 chunk，累计超过 **`1 << 20` 字节（1 MiB）** 立即 `req.destroy()` 并抛 `{code:'too-large'}` → 客户端收 400。
 - **空体返回 `null`**（不是 `{}`，也不是错误）。
@@ -131,7 +131,7 @@ ctx.webServer.register({ kind: 'exact', path: '/sidecard-ask/api/ping', handler 
 
 ### 4.4 响应与错误形状
 
-`[源码]` `writeJson`（`index.js:1533`）设置的三个头是硬要求：
+`[源码]` `writeJson`（`index.js:1588`）设置的三个头是硬要求：
 
 ```
 content-type: application/json; charset=utf-8
@@ -139,7 +139,7 @@ cache-control: no-store
 content-length: Buffer.byteLength(body)     // UTF-8 字节数，不是字符串长度
 ```
 
-成功：`{"ok":true,"value":<任意>}`；失败：`{"ok":false,"error":{"code":"<token>","message":"<中文可读>"}}`（`writeError`，`index.js:1556`）。
+成功：`{"ok":true,"value":<任意>}`；失败：`{"ok":false,"error":{"code":"<token>","message":"<中文可读>"}}`（`writeError`，`index.js:1611`）。
 
 `[实测]` 线上真实响应（未登录访问）：
 
@@ -153,7 +153,7 @@ content-length: Buffer.byteLength(body)     // UTF-8 字节数，不是字符串
 
 ### 5.1 方法表
 
-`[源码]` `index.js:3055`：
+`[源码]` `index.js:3111`：
 
 ```js
 const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
@@ -174,18 +174,28 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 
 ### 5.2 两道闸门，顺序不可换
 
-`[源码]` `routeHandler`（`index.js:3113`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 业务**。
+`[源码]` `routeHandler`（`index.js:3169`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 业务**。
 
-**闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1494`）：
+**闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1494`）—— 2.1.15 起真正的判定在
+`fenceVerdict(req, trustedHosts)`（`index.js:1528`），前者只是它的布尔外壳：
 
-1. 必须有 `host` 头，且能构成合法 authority，否则拒。
+1. 必须有 `host` 头，且能构成合法 authority，否则拒（`reason: no-host` / `bad-host`）。
 2. `trustedHosts` 里带端口 → 比 `host:port` 全等；不带端口 → 只比 hostname。
-3. hostname 既非 loopback 又不在 `trustedHosts` → 拒。
+3. hostname 既非 loopback 又不在 `trustedHosts` → 拒（`untrusted-host`）。
    - loopback 判定（`isLoopbackHostname`，`index.js:1480`）：`localhost`、`[::1]`、`127.x.y.z`（四段、每段 1–3 位数字且 ≤255）。**不含 `::ffff:127.0.0.1`、不含 `0.0.0.0`**。
-4. `sec-fetch-site: cross-site` → 拒。
+4. `sec-fetch-site: cross-site` → 拒（`cross-site`）。
 5. 有 `origin` → 必须与 `host` 的**完整 authority** 相同（端口不同即不同源）；无 `origin` → 放行。
+   - `dsh-app://` 开头的 Origin（桌面外壳页自己的 origin）→ `desktop-origin`。
+   - `Origin: null`（沙箱 iframe / `file://` / `data:`）→ `opaque-origin`。
+   - 其它不同源 → `foreign-origin`。
 
-**闸门 2 · 会话认证** `authRejection(req)`（`index.js:3081`）—— 返回值语义是这份契约里最需要精确复制的一段：
+**2.1.15 的契约补充：403 响应体多一个 `error.reason` 字段**，取值就是上面括号里那几个 token。
+`code` 仍然是 `forbidden`（保持不变，客户端 i18n 依赖它），`reason` 只用于排障。这条是本轮实测后补的：
+在 2.1.14 及之前，六种拒绝原因共用同一句「Host 不在信任范围 …… 写进 trustedHosts」，
+而 `dsh-app://app` 与 `Origin: null` **无法**用 `trustedHosts` 修好（条目会被解析成 authority，
+自定义 scheme 与不透明源都没有 host 可匹配），文案把人引向了错误的配置项。
+
+**闸门 2 · 会话认证** `authRejection(req)`（`index.js:3137`）—— 返回值语义是这份契约里最需要精确复制的一段：
 
 | `connection.requestRejection(req)` 返回 | 插件行为 |
 |---|---|
@@ -202,7 +212,7 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 
 ## §6 R5 · SSE 契约
 
-`[源码]` `openSse`（`index.js:1623`）：
+`[源码]` `openSse`（`index.js:1679`）：
 
 响应头：
 
@@ -230,7 +240,7 @@ data: <JSON>\n
 
 ## §7 R6 · 子代理（两代 API 并存）
 
-`[源码]` `index.js:1736` `subagentsService()` / `usesActivationApi()` / `startSubagent()`：
+`[源码]` `index.js:1792` `subagentsService()` / `usesActivationApi()` / `startSubagent()`：
 
 - 服务被认为"可启动"的条件：`typeof service.start === 'function' || typeof service.startActivation === 'function'`。
 - **旧面（≤0.2.1-alpha.1）**：`service.start(provider, request)` → 返回 `{ id, localAgent?, result: Promise, dispose }`。
@@ -238,7 +248,7 @@ data: <JSON>\n
   - `request` 是同一个 `SubagentStartRequest` 形状，插件会带 `prompt`、`parent`，并按能力追加 `persona` / `toolFilter` / **`agentPreset`**。
   - `delivery: 'caller'` 的语义是"子代理不进父会话的可见对话"——**这是产品语义，不是优化项**；宿主把它实现成默认归档进父会话，卡片就会污染主对话。
 - 还需要 `service.list()` 返回 provider 名数组（拿不到就视为空）。
-- 能力探测：`service.capabilities?.(provider)` 用于判断 `persona` / `toolFilter` 是否被支持；不支持时插件**如实上报** `toolFilter:'unsupported'` 而不是谎报 `'preset'`（`index.js:2199`）。
+- 能力探测：`service.capabilities?.(provider)` 用于判断 `persona` / `toolFilter` 是否被支持；不支持时插件**如实上报** `toolFilter:'unsupported'` 而不是谎报 `'preset'`（`index.js:2255`）。
 
 **事件契约**：
 

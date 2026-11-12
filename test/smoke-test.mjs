@@ -877,6 +877,45 @@ const trusted = await callRoute(a.harness, '/state', {
 })
 report.equal(trusted.status, 403, 'an untrusted non-loopback authority is refused')
 
+// 2.1.15: the fence names the cause instead of blaming Host every time.
+// Measured against the live desktop host on 2026-11-12: Origin `dsh-app://app`
+// (the Electron window's own origin) and `Origin: null` both answered with the
+// "写进 trustedHosts" advice, which cannot fix either of them — a trustedHosts
+// entry is parsed as an authority, and neither a custom scheme nor an opaque
+// origin has one to match.
+const desktopOrigin = await callRoute(a.harness, '/state', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', origin: 'dsh-app://app' },
+})
+report.equal(desktopOrigin.status, 403, 'the desktop shell origin is refused by the fence')
+report.equal(desktopOrigin.json().error.reason, 'desktop-origin', 'the desktop-origin refusal names its cause')
+report.ok(
+  !String(desktopOrigin.json().error.message).includes('trustedHosts'),
+  'the desktop-origin refusal does not point at trustedHosts (that setting cannot fix it)',
+)
+report.ok(
+  String(desktopOrigin.json().error.message).includes('dsh-app://app'),
+  'the desktop-origin refusal quotes the offending origin',
+)
+const opaqueOrigin = await callRoute(a.harness, '/state', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', origin: 'null' },
+})
+report.equal(opaqueOrigin.json().error.reason, 'opaque-origin', 'an opaque Origin is reported as such')
+report.equal(crossSite.json().error.reason, 'cross-site', 'a cross-site marker is reported as cross-site')
+report.equal(crossOrigin.json().error.reason, 'foreign-origin', 'a foreign Origin is reported as foreign')
+report.equal(portMismatch.json().error.reason, 'foreign-origin', 'a port mismatch is also a foreign origin')
+report.equal(fenced.json().error.reason, 'untrusted-host', 'a foreign Host keeps the trustedHosts advice')
+report.ok(
+  String(fenced.json().error.message).includes('trustedHosts'),
+  'only the untrusted-host cause still advertises trustedHosts',
+)
+report.equal(trusted.json().error.reason, 'untrusted-host', 'an unconfigured non-loopback authority is untrusted-host')
+// The exported verdict stays the single source both callers share.
+const fenceHost = await import(hostModuleUrl('fence'))
+report.equal(fenceHost.fenceVerdict({ headers: { host: '127.0.0.1:1', origin: 'http://127.0.0.1:1' } }).ok, true, 'fenceVerdict passes a same-authority origin')
+report.equal(fenceHost.isTrustedRequest({ headers: { host: '127.0.0.1:1', origin: 'http://127.0.0.1:2' } }), false, 'isTrustedRequest keeps answering with a boolean')
+
 const unknown = await callRoute(a.harness, '/nope', { body: {} })
 report.equal(unknown.status, 404, 'an unknown method is a 404')
 report.equal(unknown.json().error.code, 'not-found', 'the 404 carries the not-found code')
