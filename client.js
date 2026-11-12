@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.1.13'
+    const CLIENT_VERSION = '2.1.14'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -218,12 +218,22 @@ window.__ModuleLoader__.load({
       // Mirrors the Host's DEFAULT_CONFIG.quickActions (contract-asserted):
       // `builtin:*` entries are resolved through QUICK_ACTION_BUILTINS, while
       // custom entries (no builtin prefix) carry their own label/question.
+      //
+      // 2.1.14: the built-ins ship DISABLED. The selection bar is now the main
+      // button alone; the five canned questions moved behind the settings page
+      // toggle. Why: the bar shares its anchor with other selection toolbars
+      // (DSH's own and other plugins'), and a row of chips drawn on that same
+      // point reads as overlapping text — a first-run user cannot tell which
+      // word belongs to which plugin. The capabilities are untouched: flip any
+      // entry back to `enabled: true` (settings page, or the persisted config)
+      // and the chip returns. The list itself stays here so ids/labels/limits
+      // remain a single contract with the Host.
       quickActions: [
-        { id: 'builtin:explain', enabled: true, shortcut: '' },
-        { id: 'builtin:translate', enabled: true, shortcut: '' },
-        { id: 'builtin:summarize', enabled: true, shortcut: '' },
-        { id: 'builtin:polish', enabled: true, shortcut: '' },
-        { id: 'builtin:fix', enabled: true, shortcut: '' },
+        { id: 'builtin:explain', enabled: false, shortcut: '' },
+        { id: 'builtin:translate', enabled: false, shortcut: '' },
+        { id: 'builtin:summarize', enabled: false, shortcut: '' },
+        { id: 'builtin:polish', enabled: false, shortcut: '' },
+        { id: 'builtin:fix', enabled: false, shortcut: '' },
       ],
       notifyOnDone: false,
       contextMenu: true,

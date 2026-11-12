@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.1.13'
+export const PLUGIN_VERSION = '2.1.14'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -148,13 +148,20 @@ export const DEFAULT_CONFIG = {
    * the question may embed a `{selection}` placeholder. The user layer
    * REPLACES this list wholesale (the settings page edits the full list),
    * which is why it can stay a plain JSON array with no merge semantics.
+   *
+   * 2.1.14: the five built-ins ship with `enabled: false` — the selection bar
+   * defaults to the main ask button alone. The chips share their anchor with
+   * other selection toolbars in the same page, and a row of labels drawn on
+   * that point reads as overlapping text. Nothing is removed: the settings
+   * page can switch any entry back on, and a persisted list overrides this
+   * default wholesale (so an existing user who already had chips keeps them).
    */
   quickActions: [
-    { id: 'builtin:explain', enabled: true, shortcut: '' },
-    { id: 'builtin:translate', enabled: true, shortcut: '' },
-    { id: 'builtin:summarize', enabled: true, shortcut: '' },
-    { id: 'builtin:polish', enabled: true, shortcut: '' },
-    { id: 'builtin:fix', enabled: true, shortcut: '' },
+    { id: 'builtin:explain', enabled: false, shortcut: '' },
+    { id: 'builtin:translate', enabled: false, shortcut: '' },
+    { id: 'builtin:summarize', enabled: false, shortcut: '' },
+    { id: 'builtin:polish', enabled: false, shortcut: '' },
+    { id: 'builtin:fix', enabled: false, shortcut: '' },
   ],
   /**
    * Fire a desktop Notification when a side answer finishes while the page

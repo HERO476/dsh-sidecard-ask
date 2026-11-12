@@ -570,10 +570,16 @@ report.equal(
   'a refused quickActions save leaves the previous list intact',
 )
 const qaReset = await callRoute(restarted.harness, '/reset', { body: {} })
+// 2.1.14: /reset restores the shipped defaults, which now ship the five
+// built-in actions DISABLED (the selection bar is the main button alone). The
+// entries must still be there — only their default `enabled` flipped — or the
+// settings page would have nothing to switch back on.
+const resetActions = qaReset.json().value.config.quickActions
+report.equal(resetActions.length, 5, '/reset restores the five built-in quick actions')
 report.equal(
-  qaReset.json().value.config.quickActions.filter(entry => entry.enabled !== false).length,
-  5,
-  '/reset restores the five enabled built-in quick actions',
+  resetActions.filter(entry => entry.enabled !== false).length,
+  0,
+  '/reset restores them disabled by default (2.1.14: bar = main button only)',
 )
 
 // ────────────────────────────────────────────────────────────────────────────

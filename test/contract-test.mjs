@@ -58,7 +58,24 @@ harness.services.tools = {
 // capsule (1.5.0, user requirement), which renders one line and no card body.
 // These cases assert card *content*, so they ask for the expanded shape — the
 // capsule default itself is asserted in test/float-placement.mjs.
-host.apply(harness.ctx, { trigger: 'both', maxChars: 1200, floatMode: 'full', sideTools: 'readonly' })
+host.apply(harness.ctx, {
+  trigger: 'both',
+  maxChars: 1200,
+  floatMode: 'full',
+  sideTools: 'readonly',
+  // 2.1.14: the SHIPPED default disables the five built-in chips, so the bar is
+  // the main button alone. The chip/popover assertions further down are about
+  // the capability, not about the shipped default, so this fixture host models
+  // a user who switched all five back on. The default itself is pinned in the
+  // 'quick actions' block against CLIENT_DEFAULTS.
+  quickActions: [
+    { id: 'builtin:explain', enabled: true, shortcut: '' },
+    { id: 'builtin:translate', enabled: true, shortcut: '' },
+    { id: 'builtin:summarize', enabled: true, shortcut: '' },
+    { id: 'builtin:polish', enabled: true, shortcut: '' },
+    { id: 'builtin:fix', enabled: true, shortcut: '' },
+  ],
+})
 
 /** Serve the host's own responses to the client half as a fetch. */
 function hostFetch(url, init = {}) {
@@ -555,8 +572,15 @@ console.log('\nquick actions')
 // (builtin ids only); the client resolves labels/questions in the active
 // language. Disabled/unknown/malformed entries never reach a chip.
 {
-  const resolved = pure.quickActionsOf(pure.CLIENT_DEFAULTS)
-  report.equal(resolved.length, 5, 'the five built-in quick actions resolve enabled')
+  // 2.1.14: the five built-ins ship DISABLED, so the default selection bar is
+  // the main ask button alone. Nothing was removed — flipping an entry back to
+  // `enabled: true` (settings page / persisted config) still yields its chip,
+  // which is what the second half of this block pins down.
+  const shipped = pure.quickActionsOf(pure.CLIENT_DEFAULTS)
+  report.equal(shipped.length, 0, 'the shipped default list renders no quick chips (bar = main button only)')
+  const enabledAll = pure.CLIENT_DEFAULTS.quickActions.map(action => ({ ...action, enabled: true }))
+  const resolved = pure.quickActionsOf(enabledAll)
+  report.equal(resolved.length, 5, 'enabling the shipped entries resolves all five chips')
   report.equal(resolved.map(action => action.label).join('/'), '解释/翻译/总结/润色/纠错', 'built-in labels resolve in zh')
   report.ok(resolved.every(action => action.question.length > 0 && typeof action.shortcut === 'string'), 'every built-in carries a question and a shortcut slot')
   report.ok(resolved.every(action => action.builtin === true), 'default entries are marked built-in')
@@ -690,7 +714,11 @@ console.log('\nquick actions')
     language: 'en',
   })
   const enQuickPure = enQuickClient.module.api.pure
-  const enResolved = enQuickPure.quickActionsOf(enQuickPure.CLIENT_DEFAULTS.quickActions)
+  // Same 2.1.14 default as zh: shipped entries are disabled, so enable them
+  // explicitly to assert the English labels still resolve.
+  const enResolved = enQuickPure.quickActionsOf(
+    enQuickPure.CLIENT_DEFAULTS.quickActions.map(action => ({ ...action, enabled: true })),
+  )
   report.equal(enResolved.map(action => action.label).join('/'), 'Explain/Translate/Summarize/Polish/Proofread', 'built-in labels resolve in en')
   report.ok(enResolved[0].question.includes('passage'), 'built-in questions resolve in en')
   // Some qa* keys are read through a dynamic t(result.key), invisible to
