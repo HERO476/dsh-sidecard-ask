@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.2.1'
+export const PLUGIN_VERSION = '2.2.2'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -738,12 +738,18 @@ function composeSidePrompt(input) {
   // selection below its floor, the OLDEST turns go first (the newest context is
   // the most relevant), and if even a bare skeleton cannot hold the floor the
   // question cap above is what keeps the budget finite.
+  // Measure the skeleton with a one-character SENTINEL rather than with ''.
+  // `assemble('')` now takes the "(no selection: …)" branch, which is ~23 chars
+  // longer than the fenced shape a real selection uses — measuring that would
+  // silently shrink every long selection's budget, and a future edit to that
+  // sentence would move the truncation point of every long selection.
+  const MEASURE_SENTINEL = '\u0000'
   const floor = Math.min(SELECTION_FLOOR_CHARS, selectionLength)
   let kept = turns
-  let skeleton = assemble('', kept).length
+  let skeleton = assemble(MEASURE_SENTINEL, kept).length
   while (kept.length > 0 && MAX_PROMPT_CHARS - skeleton < floor) {
     kept = kept.slice(1)
-    skeleton = assemble('', kept).length
+    skeleton = assemble(MEASURE_SENTINEL, kept).length
   }
   const cut = truncateSelection(rawSelection, Math.max(0, MAX_PROMPT_CHARS - skeleton))
   return {

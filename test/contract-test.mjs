@@ -2314,6 +2314,57 @@ persistActions.close(persistClient.module.api.snapshot().cards[0])
 stored = JSON.parse(sharedStorage.getItem(PERSIST_KEY))
 report.equal(stored.cards.length, 1, '#6: closing a card keeps its durable history (deletion is explicit in the manager)')
 
+// 2.2.2: an error is a terminal state too. 2.2.0 claimed `onError` persists, but
+// the durable filter only accepted done/stopped — so the call was a no-op and a
+// dropped connection still threw away the text the user had already seen. Drive
+// a stream that emits a delta and THEN fails.
+console.log('\npartial answer survives a dropped stream')
+const DROP_STORAGE = createLocalStorageStub()
+const dropFrames = [
+  'event: start', 'data: {"id":"drop-1"}', '',
+  'event: delta', 'data: {"text":"已经收到的半句"}', '',
+  'event: error', 'data: {"code":"unreachable","message":"连接断了"}', '',
+].join('\n') + '\n'
+const dropFetch = (url) => Promise.resolve(
+  String(url).includes('/ask')
+    ? {
+      ok: true,
+      status: 200,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(dropFrames))
+          controller.close()
+        },
+      }),
+      json: async () => ({}),
+    }
+    : { ok: true, status: 200, json: async () => ({ ok: true, value: {} }) },
+)
+const dropClient = loadClientModule({ fetchImpl: dropFetch, storage: DROP_STORAGE, language: 'zh-CN' })
+const dropCtx = makeClientCtx({})
+dropClient.module.apply(dropCtx.ctx)
+await new Promise(resolve => setTimeout(resolve, 20))
+const dropActions = dropCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
+dropActions.submit(
+  {
+    text: '被选中的那半句',
+    rect: { left: 8, top: 8, right: 260, bottom: 28, width: 252, height: 20 },
+    zone: 'chat',
+    cross: false,
+    slotPath: ['conversation.chat.node'],
+    kind: 'text',
+  },
+  { question: '断线会怎样？', carrier: 'side' },
+)
+await new Promise(resolve => setTimeout(resolve, 200))
+const dropped = JSON.parse(DROP_STORAGE.getItem(PERSIST_KEY) ?? '{"cards":[]}')
+report.equal(dropped.cards.length, 1, 'a failed card is persisted, not silently dropped')
+report.equal(dropped.cards[0]?.status, 'error', 'the durable entry keeps the error verdict')
+report.ok(
+  String(dropped.cards[0]?.text ?? '').includes('已经收到的半句'),
+  'the text the user already saw survives the drop',
+)
+
 // Simulate a reload: a fresh client module over the SAME storage replays the
 // history into the floating layer (a right-rail tab cannot survive a reload).
 persistActions.submit(

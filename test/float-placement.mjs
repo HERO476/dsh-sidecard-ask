@@ -413,4 +413,47 @@ report.ok(/islandBottom/.test(source), 'the island inset is published for diagno
 report.ok(/blankCandidate/.test(source), 'the phone entry can ask without a selection')
 report.ok(/noSelectionHint/.test(source), 'the popover names the empty-quote case')
 
+// The keyboard must be lifted exactly ONCE. `position: fixed` is laid out
+// against the LAYOUT viewport, so the geometry uses the layout height and then
+// adds the inset. Using the visual height AND adding the inset double-counted
+// it: measured on a 390x844 frame with a 340px keyboard, that put the layer's
+// bottom at 552px inside a 504px viewport — off-screen.
+report.ok(/const rootHeight = layoutHeight/.test(source),
+  'the fixed-position basis is the layout viewport, not the visual one')
+report.ok(!/rootHeight = visualHeight === null/.test(source),
+  'the visual height is never substituted as the positioning basis')
+report.ok(/composerTop: composerRect === null \? null : composerRect\.top,/.test(source),
+  'the composer is measured in layout coordinates (no visual offset mixed in)')
+
+// The bottom offset is an ANCHOR choice, not a sum: the composer clearance and
+// the keyboard band measure the same stretch of screen. Adding them put a
+// 844px frame's card at y=304 while the keyboard's top edge was at y=544.
+const layerBottom = pure.layerBottomOffset
+// Desktop: no keyboard, composer at y=600 of 800 → clear it by 8 (unchanged).
+report.equal(layerBottom({ layoutHeight: 800, composerTop: 600 }), 208, 'desktop clears the composer by the gap')
+// adjustResize (composer moved up WITH the keyboard): the composer wins.
+report.equal(layerBottom({ layoutHeight: 844, keyboard: 300, composerTop: 484 }), 368, 'the composer edge is the anchor when both are present')
+// edge-to-edge (composer does not move): the keyboard wins.
+report.equal(layerBottom({ layoutHeight: 844, keyboard: 300, composerTop: 544 }), 308, 'the visible bottom is the anchor when the composer is behind the keyboard')
+// Small frame, tall keyboard: must stay on screen.
+report.equal(layerBottom({ layoutHeight: 640, keyboard: 340, composerTop: 600 }), 348, 'a small frame still keeps the layer visible')
+// No composer at all (the web island has none).
+report.equal(layerBottom({ layoutHeight: 844, keyboard: 300 }), 308, 'with no composer the keyboard alone sets the offset')
+// Island chrome adds on top, and is clamped like everything else.
+report.equal(layerBottom({ layoutHeight: 844, keyboard: 300, islandBottom: 72 }), 380, 'the island inset adds to the visible-bottom anchor')
+report.equal(layerBottom({}), 16, 'an unmeasured frame falls back to the floor')
+// Invariant: whatever the combination, the layer stays inside the frame.
+for (const [layoutHeight, keyboard, composerTop] of [
+  [844, 300, 484], [844, 300, 544], [640, 340, 600], [430, 300, 380],
+  [800, 0, 600], [360, 340, 320], [844, 0, null],
+]) {
+  const value = layerBottom({ layoutHeight, keyboard, composerTop })
+  report.ok(
+    value >= 16 && value <= layoutHeight - 80,
+    `the offset stays inside the frame (L=${layoutHeight} K=${keyboard} C=${composerTop} -> ${value})`,
+  )
+}
+// Regression guard: the sum shape must not come back.
+report.ok(!/bottomTotal\s*=\s*gapBottom \+ keyboard/.test(source), 'the keyboard is not added on top of the composer clearance')
+
 report.summary()

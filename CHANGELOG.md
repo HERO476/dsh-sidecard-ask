@@ -1,5 +1,65 @@
 # Changelog
 
+## 2.2.2
+
+**主题：评审发现的一处 P0 几何缺陷 + 一处「声明做到了、代码没做到」。**
+
+三位评审（架构 / 安全 / 验收）对 2.2.1 做了实现级全量复检。结论是能修的都在这里；
+唯一没修的是**测试基础设施本身**（见文末）。
+
+### 修复
+
+- **P0 · 底距把键盘算了两遍**（`client.js` §apply）。三个量被相加：
+  `gapBottom`（避让输入框）+ `keyboard`（键盘高度）+ `island.bottom`。但
+  `gapBottom` 量的是「布局底边 → composer 顶」，而 IME 打开时 composer 自己也会上移
+  （`adjustResize`，WebView 最常见行为）——两个量衡量的是**同一段屏幕**。
+  实测：844px 帧、300px 键盘、composer 在 y=484 时，`240 + 300 = 540`，卡片底边落到
+  y=304，而键盘上沿在 y=544 —— 卡片浮在会话中间。小屏（640 高 + 340 键盘）直接越出可见区。
+  现在改为**取锚点较小者**（可见底 或 composer 顶）+ 硬夹，抽成纯函数 `layerBottomOffset`，
+  八种组合 + 七组"必须留在帧内"的不变式都有用例。
+- **P1 · 发布声明与代码不符：error 从未落盘**。2.2.0 写着"`onError` 同样 `syncPersisted()`"，
+  但 durable 过滤只收 `done` / `stopped` —— 那张卡被筛掉，调用是**空转**，断线后已显示的答案
+  照样丢。现在 `error` 纳入过滤，写入与两处回放归一化都保留 `error` 这个终态。
+  新增一条用例：驱动「先 delta 再 error」的流，断言部分文本真的进了 localStorage。
+- **P1 · 手机常驻入口有死区**。判据是 `cards.length === 0`，但 `capLiveCards` 把溢出卡设
+  `open: false` 后**仍留在数组里** → 攒够 20 张、关掉最新一张，手机上既没有卡也没有入口。
+  改为「没有**可见**卡」（`open !== false`）。
+- **P2 · 空选区在主对话承载上仍产出空引用块**。侧边承载加了
+  `(no selection: answer the question on its own)`，主对话那条没跟上：`''.split('\n')` 是 `['']`
+  → 往用户的对话里粘一行 `> `。现在没有引用就不产出引用行。
+- **P2 · sheet 被 capsule 规则拉回原形**。手机默认 `floatMode: 'capsule'`，而 capsule 规则在
+  sheet 规则之后且同特异性 → 满宽 sheet 被缩成右对齐药丸，`--dsa-capsule-max` 在 sheet 下无人读。
+  补一条 `[data-dsa-surface="sheet"][data-dsa-float-mode="capsule"]` 覆盖规则。
+- **P2 · 骨架测量与实际形状脱钩**。空选区分支让 `assemble('')` 变成
+  `(no selection: …)` 这一行（比围栏形状长 23 字），而骨架长度正是长选区的预算基准 ——
+  量错了形状，将来改一句文案就会**静默移动所有长选区的截断点**。改用 1 字符哨兵走真实分支。
+- **P3 · 岛 inset 缺上界**。`--dsh-go-island-*` 任何同源样式表都能改写，`islandInsets`
+  只夹了下界；补 4096px 上限（配合硬夹，任何组合都推不出帧外）。
+- **文档**：README §十二 补清「`Origin` 挡的是**不设头**的调用」——它是 Fetch 的 forbidden
+  header，页面脚本设不了（对浏览器是真控制），但 curl / 原生客户端**可以自由写**（对它们只是摩擦）。
+  宿主没挂 `connection` 服务时，愿意写一个头的本机进程仍能过第一层，真正的门始终是宿主会话认证。
+  不要因为这条加固就降低对宿主门门的依赖。
+
+### 测试
+
+- 四套件：verify 69 / contract **1515** / float-placement **160** / smoke 350，全绿。
+- float-placement 从 142 增至 160：`layerBottomOffset` 的 8 条算术用例 + 7 组"留在帧内"不变式
+  + 一条"相加形状不得复活"的守卫。
+- contract 从 1512 增至 1515：断线保答案的三条（见上）。
+- `NODE-HOST-CONTRACT.md` 锚点自动跟随（13 处，两阶段占位符替换，逐条校验）。
+
+### 仍未解决（明确记录）
+
+- **测试基础设施的"假绿"**（验收角色本轮最硬的发现，给了变异实验）：`test/harness.mjs`
+  的 `createElement` 没有 `style.setProperty`，`apply()` 第一行就返回，迷你 React 也不给
+  `ref.current` 赋值 —— **几何接线在测试里一次都没执行过**。实证：把 sheet 策略改成恒 false，
+  10 条策略断言只死 3 条；HEAD 源码配 HEAD 测试 142 全绿。本轮的修法是"把算式抽成纯函数再测"
+  （能抓住算术错误，抓不住接线错误）。真正修好需要给 harness 补 `setProperty`/`dataset`/`ref`，
+  而它会改变 1515 条现有用例的执行路径，**必须单独一轮做，不能混在热修里**。
+- 仍然**零真机**。几何修复的依据是纯函数算例与宿主行为的推断（`adjustResize` 是 WebView 最常见的
+  行为，但 dsh-Go 的 `app/` Dart 源码本轮仍未能检出，无法确认）。
+- 未做 `message` 级原生贡献（B-lite）。
+
 ## 2.2.1
 
 **主题：按 B 路线复裁结论收尾 —— 两处为「网页岛」铺路，一处把安全加固钉死。**

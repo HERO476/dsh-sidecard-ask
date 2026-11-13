@@ -1041,7 +1041,12 @@ Host: ctx.subagents.start('spawn')
   浏览器页面一定会带，脚本、原生客户端、同机其它 App 不会带 —— 而手机上所有 App 共享网络命名空间，
   "回环"并不等于"应用隔离"，所以"没有 Origin"不能再被当成"同源"。
   这条是给移动端补的：它同时也让"用脚本直接打 `/ask`"变成显式失败，而不是悄悄花掉一次子代理。
-  脚本/原生客户端若确实需要调用，请显式带上与 `Host` 同源的 `Origin`。
+  **必须说清它挡的是什么**：`Origin` 是 Fetch 规范里的 forbidden header name，**页面脚本无法设置**，
+  所以对浏览器（含手机 WebView）这是一条真控制；而 `curl`、原生客户端、同机其它 App **可以自由写这个头**，
+  对它们只是**摩擦**，不是边界。
+  ⇒ 在宿主没挂 `connection` 服务（围栏降级为 fence-only）的部署里，一个愿意写 `Origin` 的本机进程仍能通过第一层，
+  之后**没有任何控制**。真正的门始终是宿主的 `connection.requestRejection()`（DSH 登录会话）。
+  不要因为这条加固就降低对宿主门的依赖。
 - 侧边作答者默认**继承父代理的工具**（`sideTools: inherit`）。改成只读（`readonly`）时，插件不会假装只读：
   宿主若不提供只读载体（`agentPreset` 或 `toolFilter`），追问会被**直接拒绝**（`readonly-unavailable`），
   错误文案会告诉你改回「继承父代理工具」。

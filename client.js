@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.2.1'
+    const CLIENT_VERSION = '2.2.2'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -533,9 +533,59 @@ window.__ModuleLoader__.load({
         let raw
         try { raw = typeof read === 'function' ? read(name) : undefined } catch { return 0 }
         const parsed = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? ''))
-        return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 0
+        // Any same-origin stylesheet can set these variables, so the value is
+        // untrusted input: keep it non-negative and refuse an absurd magnitude
+        // instead of letting it push the layer anywhere.
+        return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.round(parsed), 4096) : 0
       }
       return { top: value('--dsh-go-island-top'), bottom: value('--dsh-go-island-bottom') }
+    }
+
+    /**
+     * The floating layer's bottom offset, in LAYOUT-viewport coordinates.
+     *
+     * Three inputs pull on the same edge and they are NOT additive:
+     *  - `composerTop` is where the input box starts, measured from the layout top;
+     *  - `keyboard` is how much of the layout bottom the IME covers;
+     *  - `islandBottom` is native chrome outside the page (a dsh-Go web island).
+     *
+     * Adding the composer clearance to the keyboard counts the keyboard twice
+     * whenever the composer also moves up with it (`adjustResize`, the common
+     * WebView behaviour). Measured: an 844px frame with a 300px keyboard and the
+     * composer at y=484 gave 240 + 300 = 540, putting the layer's bottom edge at
+     * y=304 while the keyboard's top edge was at y=544 — it floated in the
+     * middle of the conversation.
+     *
+     * So the anchor is the HIGHER of the two (visible bottom, or composer top),
+     * never their sum, and the result is hard-clamped so no combination of
+     * keyboard, tall composer and island inset can push the layer off the frame.
+     *
+     * @param {object} input - layoutHeight, keyboard, composerTop, islandBottom, gap, floor, limit, keepVisible.
+     * @returns {number} px from the layout bottom, never below `floor`.
+     */
+    function layerBottomOffset({
+      layoutHeight,
+      keyboard = 0,
+      composerTop = null,
+      islandBottom = 0,
+      gap = FLOAT_GAP_COMPOSER,
+      floor = FLOAT_GAP_BOTTOM,
+      limit = FLOAT_BOTTOM_LIMIT,
+      keepVisible = 80,
+    } = {}) {
+      const frame = Number.isFinite(layoutHeight) ? layoutHeight : 0
+      const base = Number.isFinite(floor) ? Math.max(0, Math.round(floor)) : FLOAT_GAP_BOTTOM
+      if (frame <= 0) return base
+      const kb = Number.isFinite(keyboard) && keyboard > 0 ? keyboard : 0
+      const island = Number.isFinite(islandBottom) && islandBottom > 0 ? islandBottom : 0
+      const visibleBottom = frame - kb
+      // The anchor is whichever edge comes first on screen.
+      const anchor = Number.isFinite(composerTop) ? Math.min(composerTop, visibleBottom) : visibleBottom
+      const wanted = frame - anchor + gap + island
+      const cap = Number.isFinite(limit) ? Math.max(base, limit) : FLOAT_BOTTOM_LIMIT
+      const keep = Number.isFinite(keepVisible) ? Math.max(base, keepVisible) : 80
+      const ceiling = Math.max(base, frame - keep)
+      return Math.max(base, Math.min(wanted, cap + kb, ceiling))
     }
 
     /**
@@ -2464,11 +2514,16 @@ window.__ModuleLoader__.load({
     /** Compose the prompt sent to the main conversation. */
     function composeMainPrompt(selection, question, zone, maxChars) {
       const cut = truncateSelection(selection, maxChars)
-      const quoted = cut.text.split('\n').map(line => `> ${line}`).join('\n')
+      // No quoted text is legitimate now (the phone launcher and the dsh-Go web
+      // island can both ask without a selection). `''.split('\n')` is `['']`,
+      // which used to emit a bare `> ` line — an empty quote block pasted into
+      // the user's own conversation.
+      const quoted = cut.text === ''
+        ? ''
+        : `${cut.text.split('\n').map(line => `> ${line}`).join('\n')}\n`
       const zoneLabel = t(zone === 'chat' ? 'zoneChat' : zone === 'task' ? 'zoneTask' : 'zoneOther')
-      const head = `${quoted}\n`
       const mark = cut.truncated ? `\n（选中文本已截断，省略约 ${cut.droppedChars} 字）` : ''
-      return `${head}${mark}\n【来源：${zoneLabel}】\n${question}`
+      return `${quoted}${mark}\n【来源：${zoneLabel}】\n${question}`
     }
 
     /**
@@ -3272,6 +3327,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
   background:var(--dsw-alias-brand-primary, #4c8dff)}
 .dsa-mobile-entry-hint{pointer-events:auto;max-width:min(76vw, 280px);padding:8px 10px;border-radius:10px;
   font-size:12px;line-height:17px;color:#fff;background:rgba(20,22,28,.92)}
+/* On a phone the default mode is still capsule, but a full-width sheet that is
+   ALSO a right-aligned pill is neither: the capsule rule would pull the sheet
+   back to its own content width and undo the full-width decision. Make the sheet
+   keep the sheet geometry in capsule mode too. */
+.dsa-float[data-dsa-surface="sheet"][data-dsa-float-mode="capsule"]{width:var(--dsa-float-w, 340px);
+  max-width:none;align-items:stretch}
 /* A finger is not a mouse. 44px is the smallest target that can be hit
    reliably; every control here was sized for a ~26px pointer. */
 @media (pointer:coarse){
@@ -5454,7 +5515,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const viewport = window.visualViewport ?? null
           const viewportOffsetTop = Number.isFinite(viewport?.offsetTop) ? viewport.offsetTop : 0
           const visualHeight = Number.isFinite(viewport?.height) ? viewport.height : null
-          const rootHeight = visualHeight === null ? layoutHeight : visualHeight
+          // The positioning basis for `position: fixed` is the LAYOUT viewport,
+          // so the geometry below must use the layout height and then lift by
+          // the keyboard inset. Using the visual height here AND adding the
+          // inset double-counts the keyboard: measured on a 390x844 frame with
+          // a 300px composer and a 340px keyboard, that produced bottom = 552
+          // in a 504px viewport — the layer is pushed off-screen.
+          const rootHeight = layoutHeight
           const keyboard = keyboardInset({ layoutHeight, viewportHeight: visualHeight, viewportOffsetTop })
           // A dsh-Go web island advertises its native chrome as CSS variables.
           // Reading them through getComputedStyle is the only way to see them,
@@ -5486,16 +5553,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const composerEl = one('[data-slot^="conversation"] [data-composer-card]')
             ?? one('[data-composer-card]')
           const composerRect = measure(composerEl)
-          const gapBottom = floatBottom({
-            frameHeight: rootHeight,
-            composerTop: composerRect === null ? null : composerRect.top - viewportOffsetTop,
+          // The composer clearance, the IME band and the island inset all pull
+          // on the same edge, and they are NOT additive — `layerBottomOffset`
+          // owns the anchor choice and the clamp. (Adding them counted the
+          // keyboard twice whenever the composer moved up with it.)
+          const gapBottom = layerBottomOffset({
+            layoutHeight: rootHeight,
+            keyboard,
+            // `composerRect` is in layout coordinates, the same basis `rootHeight`
+            // uses — subtracting the visual offset would mix two systems.
+            composerTop: composerRect === null ? null : composerRect.top,
+            islandBottom: island.bottom,
           })
-          // `keyboard` is added on top of the composer clearance: one is "do not
-          // cover the input box", the other is "do not go under the keyboard".
-          // `island.bottom` is the same idea for a native composer outside the
-          // page.
-          const bottomTotal = gapBottom + keyboard + island.bottom
-          node.style.setProperty('--dsa-gap-bottom', `${bottomTotal}px`)
+          node.style.setProperty('--dsa-gap-bottom', `${gapBottom}px`)
           const surface = floatSurfacePolicy({ frameWidth: rootWidth, railLeft, coarse: coarsePointer })
           const placement = floatPlacement({ frameWidth: rootWidth, laneRight, railLeft, maxWidth })
           // On a phone the strip budget is unusable; the sheet takes the frame.
@@ -5505,7 +5575,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           node.style.setProperty('--dsa-capsule-max', `${CAPSULE_MAX_WIDTH}px`)
           // Readable placement, so a user report can say WHERE the layer sat.
           node.dataset.layerWidth = String(layerWidth)
-          node.dataset.layerBottom = String(bottomTotal)
+          node.dataset.layerBottom = String(gapBottom)
           node.dataset.dsaSurface = surface.mode
           node.dataset.keyboardInset = String(keyboard)
           node.dataset.islandBottom = String(island.bottom)
@@ -5736,10 +5806,18 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const popover = state.popover
       // A phone has no keyboard shortcut and no rail; without this the only
       // entry is a gesture the user has to already know about.
+      //
+      // The condition is "no VISIBLE card", not "no cards": `capLiveCards` hides
+      // overflow by setting `open: false` while LEAVING the card in the array,
+      // so `cards.length === 0` left a reachable dead state — 20+ cards, close
+      // the newest one, and the phone had neither a card nor an entry point.
+      const openCards = state.cards === undefined
+        ? 0
+        : state.cards.filter(card => card.open !== false).length
       const phoneLauncher = pointerIsCoarse(typeof window === 'undefined' ? null : window)
         && candidate === null
         && popover === null
-        && (state.cards === undefined || state.cards.length === 0)
+        && openCards === 0
       return h('div', {
         className: 'dsa-layer',
         'data-dsa-root': '',
@@ -6711,7 +6789,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           // 这条边界的唯一入口，下游 writePersisted 不要再放宽。
           const finished = store.state.cards
             .filter(card => card.carrier === 'side'
-              && (card.status === 'done' || card.status === 'stopped')
+              && (card.status === 'done' || card.status === 'stopped' || card.status === 'error')
               && card.text !== '')
             .map(card => ({
               id: card.id,
@@ -6720,7 +6798,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               selection: String(card.selection ?? '').slice(0, PERSIST_TEXT_LIMIT),
               text: String(card.text ?? '').slice(0, PERSIST_TEXT_LIMIT),
               reasoning: String(card.reasoning ?? '').slice(0, PERSIST_TEXT_LIMIT),
-              status: card.status === 'stopped' ? 'stopped' : 'done',
+              // `error` is a terminal state too — that is the whole point of the
+              // onError persist below: a dropped connection must not throw away
+              // the text the user already saw. Collapsing it to 'done' would
+              // claim a failure succeeded.
+              status: card.status === 'stopped' ? 'stopped' : (card.status === 'error' ? 'error' : 'done'),
               carrier: 'side',
               zone: card.zone,
               truncated: card.truncated === true,
@@ -6811,7 +6893,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               selection: String(entry.selection ?? ''),
               text: String(entry.text ?? ''),
               reasoning: String(entry.reasoning ?? ''),
-              status: entry.status === 'stopped' ? 'stopped' : 'done',
+              status: entry.status === 'stopped' ? 'stopped' : (entry.status === 'error' ? 'error' : 'done'),
               carrier: 'side',
               zone: entry.zone,
               truncated: entry.truncated === true,
@@ -6863,7 +6945,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           selection: String(entry.selection ?? ''),
           text: String(entry.text ?? ''),
           reasoning: String(entry.reasoning ?? ''),
-          status: entry.status === 'stopped' ? 'stopped' : 'done',
+          status: entry.status === 'stopped' ? 'stopped' : (entry.status === 'error' ? 'error' : 'done'),
           carrier: 'side',
           zone: entry.zone,
           truncated: entry.truncated === true,
@@ -8682,6 +8764,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           keyboardInset,
           floatSurfacePolicy,
           islandInsets,
+          layerBottomOffset,
           railDock,
           compareVersions,
           electFamilyLeader,
