@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.3.1
+
+**主题：历史管理器的单条删除补上确认层——此前单击即永久删除。**
+
+### 修复
+
+- **P1 · 历史管理器行的「删除」没有二次确认**（`client.js` · `SettingsSection`）。
+  设置页里每一行历史记录的「删除」直接调 `deleteHistoryCard(id)`：按同一 id 从 `cards` 与
+  `history` 双删、立即写盘、释放右侧栏 tab，**不可撤销**（PRD §3.7 的 undo / 回收站至今未交付）。
+  一次误点就永久丢掉一条记录，而这是浮层之外唯一的删除路径，入口还在设置页深处。
+  现在点击只 `setPendingHistoryDelete(entry.id)`，是否执行交给卡片 × 用的同一个
+  `DeleteConfirmDialog`（标题 / 正文 / 轮次数 / 取消 + 删除、默认焦点在取消、Esc 与点遮罩关闭）。
+  待删 id **每次渲染重新解析**：记录若已被「清空全部」、恢复或别处删除移走，确认层不会出现，
+  也不会拿旧 id 再删一次。
+- **文档**：PRD 的 `E3` 与 §0.4 第 18 条从「补二次确认未交付」改为已交付，并带上当前代码位置。
+
+### 测试
+
+- `npm test` 全绿：verify 74 / contract 1521 / float-placement 160 / wire-geometry 15 / smoke 350。
+- `locale/zh.json` 与 `locale/en.json` 仍是各 47 键——确认层复用已有文案（`cardDeleteTitle` /
+  `cardDeleteBody` / `cardDeleteRounds` / `askCancel` / `historyDelete`），未新增 i18n 键。
+
 ## 2.3.0
 
 **主题：宿主契约断裂的两处 P0，以及「2094 条全绿但几何一行没跑」。**

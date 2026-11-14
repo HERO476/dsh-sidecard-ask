@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.3.0'
+    const CLIENT_VERSION = '2.3.1'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -6017,6 +6017,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       const [status, setStatus] = React.useState('idle')
       const [diag, setDiag] = React.useState(null)
       const [historyQuery, setHistoryQuery] = React.useState('')
+      // Deleting one history row is irreversible (no undo, no recycle bin, see
+      // PRD §3.7), so a single click must never destroy a record. The row's
+      // Delete only parks the id here; the shared confirmation layer decides.
+      const [pendingHistoryDelete, setPendingHistoryDelete] = React.useState(null)
       // ── feedback form ──────────────────────────────────────────────────
       // `idle` → typing; `sending` → one POST in flight (button locked);
       // `sent` → the draft was cleared; `error` → the draft is KEPT, so a
@@ -6240,6 +6244,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         : state.history.filter(entry =>
           String(entry.question ?? '').toLowerCase().includes(query)
           || String(entry.text ?? '').toLowerCase().includes(query))
+      // Resolved on every render: another panel, a "clear all", or a restore
+      // can remove the parked id between the click and the confirmation, and a
+      // dialog for a row that no longer exists would still delete by id.
+      const pendingHistoryEntry = pendingHistoryDelete === null
+        ? undefined
+        : state.history.find(entry => entry.id === pendingHistoryDelete)
       const historySection = h('div', { className: 'dsa-field' },
         h('label', null, `${t('historyTitle')}（${t('historyCount', { n: state.history.length })}）`),
         h('span', { className: 'dsa-muted' }, t('historyDesc')),
@@ -6297,7 +6307,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               h('button', {
                 type: 'button',
                 className: 'dsa-btn',
-                onClick: () => actions.deleteHistoryCard(entry.id),
+                onClick: () => setPendingHistoryDelete(entry.id),
               }, t('historyDelete')))),
             state.history.length > 0
               ? h('div', { className: 'dsa-row' },
@@ -6316,7 +6326,26 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                     actions.clearHistory()
                   },
                 }, t('historyClear')))
-              : null))
+              : null,
+          pendingHistoryDelete !== null && pendingHistoryEntry !== undefined
+            ? h(DeleteConfirmDialog, {
+              // Same layer as the card's ×: names the object, states that it is
+              // irreversible, counts the turns only when there are any.
+              title: t('cardDeleteTitle'),
+              body: t('cardDeleteBody'),
+              detail: Array.isArray(pendingHistoryEntry.history) && pendingHistoryEntry.history.length > 0
+                ? t('cardDeleteRounds', { n: pendingHistoryEntry.history.length })
+                : null,
+              cancelLabel: t('askCancel'),
+              confirmLabel: t('historyDelete'),
+              onCancel: () => setPendingHistoryDelete(null),
+              onConfirm: () => {
+                const id = pendingHistoryDelete
+                setPendingHistoryDelete(null)
+                actions.deleteHistoryCard(id)
+              },
+            })
+            : null))
 
       // §4.5 a non-leader copy explains why its interaction surface is gone.
       const familyBanner = state.familyLeader === false
