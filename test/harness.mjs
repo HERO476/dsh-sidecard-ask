@@ -210,7 +210,14 @@ export function makeReq({ method = 'POST', url = '/', headers = {}, body = null,
     // or another app on the machine, not a page). Defaulting to a same-origin
     // page keeps every existing scenario meaning "an ordinary page"; a test
     // that deliberately omits the header passes `origin: undefined`.
-    headers: { host: '127.0.0.1:8080', origin: 'http://127.0.0.1:8080', ...headers },
+    // `x-sidecard-ask` is the second marker: the plugin's own client sends it on
+    // every write, so a scenario that means "the page called us" carries it too.
+    headers: {
+      host: '127.0.0.1:8080',
+      origin: 'http://127.0.0.1:8080',
+      'x-sidecard-ask': '1',
+      ...headers,
+    },
     on(event, listener) {
       const list = handlers.get(event) ?? []
       list.push(listener)
@@ -316,7 +323,10 @@ export async function callRoute(harness, path, options = {}) {
   const req = makeReq({
     method: options.method ?? 'POST',
     url: `${route.path}${path}`,
-    headers: options.headers ?? {},
+    // Every state-changing call must carry the plugin's CSRF marker; the real
+    // client sends it, so the harness does too. A test that wants the missing
+    // marker passes an explicit `headers` entry that overrides this one.
+    headers: { 'x-sidecard-ask': '1', ...(options.headers ?? {}) },
     body: options.body ?? null,
     closeAfterBody: options.closeAfterBody ?? false,
   })
@@ -356,6 +366,13 @@ export function makeSubagentEngine(options) {
     : options.capabilities
   const withLocalAgent = options.localAgent !== false
   const activationApi = options.activationApi === true
+  // Which `startActivation` contract this double speaks. `rc3` is the build
+  // this plugin ships against: `list()` is gone and `SubagentActivationSpec`
+  // is flat (`Omit<SubagentStartRequest, 'label' | 'signal'>`). `alpha2` keeps
+  // the older registry: `list()` exists and the start request nests under
+  // `request`. Defaulting to the real build is the point — a double that keeps
+  // the retired shape makes green mean nothing.
+  const activationGeneration = options.activationGeneration ?? 'rc3'
   const starts = []
   const disposed = []
   const live = new Set()
@@ -442,7 +459,9 @@ export function makeSubagentEngine(options) {
   }
 
   const service = {
-    list: () => [...providerNames],
+    // Only the retired generation can enumerate; 0.2.2-rc.3 dropped `list()`,
+    // so a plugin that still requires it must go red here.
+    ...(activationGeneration === 'alpha2' ? { list: () => [...providerNames] } : {}),
     getProvider: name => (providerNames.includes(name)
       ? {
         name,
@@ -468,7 +487,17 @@ export function makeSubagentEngine(options) {
     ...(activationApi ? {
       // 0.2.1-alpha.2+ generation: managed activations, caller delivery
       async startActivation(spec) {
-        const r = runChild(spec.provider, spec.request)
+        // Normalize both spec shapes so `starts[].request` always answers the
+        // same questions, whichever generation the plugin actually sent.
+        const request = activationGeneration === 'alpha2'
+          ? spec.request
+          : {
+              prompt: spec.prompt,
+              parent: spec.parent,
+              signal: spec.signal,
+              ...(spec.agentPreset === undefined ? {} : { agentPreset: spec.agentPreset }),
+            }
+        const r = runChild(spec.provider, request)
         // Record the spec-level fields the harness test asserts on.
         Object.assign(starts[starts.length - 1], {
           signal: spec.signal,
@@ -512,12 +541,21 @@ export function createReactShim() {
   const pending = []
   const React = {
     createElement(type, props, ...children) {
-      return {
+      const element = {
         __element: true,
         type,
         props: props ?? {},
         children: children.flat(Infinity).filter(child => child !== null && child !== undefined && child !== false && child !== true),
       }
+      // A `ref` is the ONLY way the layer reaches its own container. Leaving
+      // `current` null made `apply()` return on its first line, which is why the
+      // 2.2.0/2.2.2 geometry fixes had no executable coverage: the mutation
+      // "make the whole effect unreachable" kept every suite green.
+      const ref = element.props.ref
+      if (ref !== null && typeof ref === 'object' && 'current' in ref) {
+        ref.current = createFakeNode(type, ref.__box ?? {})
+      }
+      return element
     },
     useState(initial) {
       const slot = pending.length
@@ -599,6 +637,79 @@ export function byTag(tree, tag) {
 }
 
 /**
+ * A `style` object that records what the geometry code writes.
+ *
+ * `setProperty` is the ONLY way the client publishes `--dsa-*` values, so a
+ * bare `{}` made every geometry assertion vacuous: `apply()` threw on its first
+ * write and the rest of the effect body silently never ran.
+ */
+export function createFakeStyle() {
+  const properties = new Map()
+  return {
+    properties,
+    setProperty(name, value) { properties.set(String(name), String(value)) },
+    removeProperty(name) { properties.delete(String(name)) },
+    getPropertyValue(name) { return properties.get(String(name)) ?? '' },
+  }
+}
+
+/**
+ * A DOM node stand-in for one rendered host element.
+ *
+ * Every member the layer touches is present so a geometry effect runs to
+ * completion instead of throwing midway — a throw there is invisible, because
+ * effects are fire-and-forget.
+ * @param {string} tagName - the element type.
+ * @param {{top?: number, left?: number, right?: number, bottom?: number,
+ *   width?: number, height?: number}} [box] - the rect this node reports.
+ */
+export function createFakeNode(tagName, box = {}) {
+  const style = createFakeStyle()
+  const attributes = new Map()
+  const rect = {
+    top: box.top ?? 0,
+    left: box.left ?? 0,
+    right: box.right ?? 0,
+    bottom: box.bottom ?? 0,
+    width: box.width ?? 0,
+    height: box.height ?? 0,
+    x: box.left ?? 0,
+    y: box.top ?? 0,
+  }
+  return {
+    tagName: String(tagName ?? 'div').toUpperCase(),
+    style,
+    dataset: {},
+    attributes,
+    offsetWidth: rect.width,
+    offsetHeight: rect.height,
+    clientWidth: rect.width,
+    clientHeight: rect.height,
+    parentElement: null,
+    firstChild: null,
+    setAttribute(name, value) { attributes.set(String(name), String(value)) },
+    getAttribute(name) { return attributes.has(String(name)) ? attributes.get(String(name)) : null },
+    removeAttribute(name) { attributes.delete(String(name)) },
+    getBoundingClientRect: () => ({ ...rect }),
+    getClientRects: () => [],
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    closest: () => null,
+    matches: () => false,
+    contains: () => false,
+    appendChild(child) { return child },
+    removeChild(child) { return child },
+    addEventListener() {},
+    removeEventListener() {},
+    focus() {},
+    blur() {},
+    scrollIntoView() {},
+    select() {},
+    remove() {},
+  }
+}
+
+/**
  * A functional `localStorage` stand-in (Map-backed) so client persistence can
  * be exercised without a real browser. Quota-failure tests replace setItem.
  */
@@ -622,6 +733,12 @@ export function createLocalStorageStub() {
 export function loadClientModule(options = {}) {
   const source = readFileSync(CLIENT_ENTRY, 'utf8')
   const registrations = []
+  // Recorded so a test can dispatch a real scroll/resize/storage event. A shim
+  // whose addEventListener is a no-op made three production listeners
+  // (scroll收起触发条、resize 重排、跨标签 storage) untestable — and silently
+  // untested, since nothing failed.
+  const windowListeners = new Map()
+  const rafQueue = []
   const window = {
     __ModuleLoader__: {
       load(registration) {
@@ -636,8 +753,32 @@ export function loadClientModule(options = {}) {
     // assertion is unchanged. A test opts into a phone with `pointerCoarse`.
     matchMedia: query => ({ matches: options.pointerCoarse === true && query === '(pointer: coarse)' }),
     visualViewport: options.visualViewport ?? null,
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(event, listener) {
+      const set = windowListeners.get(event) ?? new Set()
+      set.add(listener)
+      windowListeners.set(event, set)
+    },
+    removeEventListener(event, listener) {
+      windowListeners.get(event)?.delete(listener)
+    },
+    // Geometry reads these through `typeof` guards; leaving them absent meant
+    // the whole apply() body short-circuited in tests.
+    getComputedStyle: () => ({ getPropertyValue: () => '', length: 0 }),
+    requestAnimationFrame: callback => {
+      rafQueue.push(callback)
+      return rafQueue.length
+    },
+    cancelAnimationFrame: () => {},
+    ResizeObserver: class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+      takeRecords() { return [] }
+    },
     getSelection: () => null,
     localStorage: options.storage ?? createLocalStorageStub(),
   }
@@ -657,9 +798,12 @@ export function loadClientModule(options = {}) {
     },
     head: { appendChild() {} },
     body: { appendChild() {}, removeChild() {} },
-    createElement: () => ({ style: {}, setAttribute() {}, select() {}, remove() {} }),
+    createElement: () => ({ style: createFakeStyle(), setAttribute() {}, select() {}, remove() {} }),
     execCommand: () => true,
+    // The layer measures hosts and prose nodes this way. Returning nothing made
+    // the composer-clearance branch unreachable, not just untested.
     querySelector: () => null,
+    querySelectorAll: () => [],
   }
   const navigatorShim = {
     language: options.language ?? 'zh-CN',
@@ -688,7 +832,29 @@ export function loadClientModule(options = {}) {
     if (specifier === 'react') return shim.React
     throw new Error(`client.js required an unexpected module: ${specifier}`)
   })
-  return { registration: registrations[0], module, shim, document, window, listeners }
+  return {
+    registration: registrations[0],
+    module,
+    shim,
+    document,
+    window,
+    listeners,
+    /** window-level listeners, by event name. */
+    windowListeners,
+    /** Dispatch one `window` event the client subscribed to. */
+    dispatchWindow(event, payload) {
+      const set = windowListeners.get(event)
+      if (set === undefined) return 0
+      for (const listener of [...set]) listener(payload ?? { type: event })
+      return set.size
+    },
+    /** Run every queued frame callback (the client batches geometry here). */
+    flushRaf() {
+      const pending = rafQueue.splice(0)
+      for (const callback of pending) callback(0)
+      return pending.length
+    },
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

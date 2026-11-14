@@ -117,7 +117,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.2.2'
+    const CLIENT_VERSION = '2.3.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -869,6 +869,7 @@ window.__ModuleLoader__.load({
         errorNoReadonlyGuardBody: '这台宿主的工具注册表里认不出只读工具，为保证侧边作答不写工作区，本次已拒绝',
         errorReadonlyUnavailableBody: '当前设为只读作答（sideTools: readonly），但这台宿主没有只读载体（预设或工具过滤），为保证不写工作区，本次已拒绝。可在设置页把侧边工具改为「继承父代理」',
         errorAborted: '作答被取消或超时',
+        errorRateLimitedBody: '追问发起得太快，请稍等几秒再试（每个会话每分钟有固定次数上限）',
         errorUnreachableBody: '宿主接口不可达',
         errorUnauthorizedBody: '需要先通过 DSH 登录（宿主会话未认证）',
         errorForbiddenBody: '请求来源不受信任（Host / Origin 不匹配）',
@@ -1152,6 +1153,7 @@ window.__ModuleLoader__.load({
         errorNoReadonlyGuardBody: 'This host\'s tool registry has no recognisable read-only tools, so the side answer was refused to keep the workspace untouched',
         errorReadonlyUnavailableBody: 'The side answer is set to read-only (sideTools: readonly), but this host exposes no read-only carrier (preset or tool filter), so the answer was refused to keep the workspace untouched. Switch the side tool policy to "inherit" in settings.',
         errorAborted: 'The answer was cancelled or timed out',
+        errorRateLimitedBody: 'Asks are going out too fast — wait a few seconds (each session has a per-minute cap)',
         errorUnreachableBody: 'The host API is unreachable',
         errorUnauthorizedBody: 'Sign in to DSH first (the host session is not authenticated)',
         errorForbiddenBody: 'Untrusted request origin (Host / Origin mismatch)',
@@ -1446,6 +1448,9 @@ window.__ModuleLoader__.load({
       // ever sees, so it must not fall back to the Host's Chinese line.
       'readonly-unavailable': { key: 'errorReadonlyUnavailableBody' },
       aborted: { key: 'errorAborted' },
+      // 2.3.0: `/ask` gained a per-session rate limit; naming it Client-side
+      // keeps an English UI from showing the Host's Chinese line.
+      'rate-limited': { key: 'errorRateLimitedBody' },
       unreachable: { key: 'errorUnreachableBody' },
       // The Host now gates these routes on the DSH browser session, so both are
       // fully known Client-side: "log in" and "untrusted origin" are actionable
@@ -1485,7 +1490,11 @@ window.__ModuleLoader__.load({
       try {
         response = await fetchApi(`/${method}`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          // The Host route requires this marker on every state-changing call:
+          // a cross-site page cannot set it without a CORS preflight the API
+          // never answers. Keep the two POST sites in sync with `CSRF_HEADER`
+          // in index.js.
+          headers: { 'content-type': 'application/json', 'x-sidecard-ask': '1' },
           body: JSON.stringify(payload ?? {}),
         })
       } catch (error) {
@@ -1537,7 +1546,11 @@ window.__ModuleLoader__.load({
       try {
         response = await fetchApi('/ask', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+          headers: {
+            'content-type': 'application/json',
+            accept: 'text/event-stream',
+            'x-sidecard-ask': '1',
+          },
           body: JSON.stringify(payload),
           signal: handlers.signal,
         })
@@ -6920,7 +6933,21 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 : [],
             }
           })
-          store.set({ cards: [...replayed, ...store.state.cards] })
+          // A card that names a DIFFERENT session must not surface here. The
+          // store is per-origin, so every conversation in the same browser
+          // shares one payload; before this filter, reloading in conversation
+          // B floated conversation A's selected text and answer on B's rail,
+          // and following up on such a card published A's question into B.
+          // Legacy entries with no session id still surface (they predate the
+          // field), and so does everything while the current session is still
+          // unknown — the filter only removes what it can prove is foreign.
+          const currentSessionId = typeof store.state.sessionId === 'string' && store.state.sessionId !== ''
+            ? store.state.sessionId
+            : null
+          const surfaced = currentSessionId === null
+            ? replayed
+            : replayed.filter(card => card.sessionId === null || card.sessionId === currentSessionId)
+          store.set({ cards: [...surfaced, ...store.state.cards] })
         }
 
         /** Sanitize a persisted `versions` array into the live shape. */

@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.2.2'
+export const PLUGIN_VERSION = '2.3.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -1768,6 +1768,34 @@ function openSse(res) {
 function createSideEngine(ctx, configOf) {
   /** id → run record. */
   const runs = new Map()
+  /**
+   * session key → recent `/ask` timestamps.
+   *
+   * `maxConcurrentAsks` bounds how many runs exist at once, not how many are
+   * STARTED: a page could keep starting runs forever, each up to
+   * `sideTimeoutMs` long, and spend the user's model quota. `/feedback` has
+   * had a gate for this since 2.1.9; `/ask` had none.
+   */
+  const askRecent = new Map()
+  /** Window and ceiling for `askRecent` (per session, per minute). */
+  const ASK_RATE_WINDOW_MS = 60_000
+  const ASK_RATE_MAX = 12
+  /**
+   * Count one `/ask` against its session's window.
+   * @param {string} key - the requesting session id, or a shared fallback.
+   * @returns {number|undefined} milliseconds to wait when over the limit.
+   */
+  function askRateDelay(key) {
+    const now = Date.now()
+    const recent = (askRecent.get(key) ?? []).filter(at => now - at < ASK_RATE_WINDOW_MS)
+    if (recent.length >= ASK_RATE_MAX) {
+      askRecent.set(key, recent)
+      return Math.max(1000, ASK_RATE_WINDOW_MS - (now - recent[0]))
+    }
+    recent.push(now)
+    askRecent.set(key, recent)
+    return undefined
+  }
   /** Subscribers fed by the single global `agent/assistant-stream` bridge. */
   const streamListeners = new Set()
   /**
@@ -1824,6 +1852,34 @@ function createSideEngine(ctx, configOf) {
     return typeof service?.startActivation === 'function' && typeof service?.start !== 'function'
   }
 
+  /** Provider names the shipped in-process providers register under. */
+  const ACTIVATION_PROVIDER_NAMES = Object.freeze([
+    'spawn',
+    'fork',
+    'subagent-spawn-in-process',
+    'subagent-fork-in-process',
+  ])
+
+  /**
+   * Which shape this runtime's `startActivation` expects.
+   *
+   * 0.2.2-rc.2 and earlier: `list()` exists on the registry and
+   * `SubagentActivationSpec` nests the start request under `request`.
+   * 0.2.2-rc.3: `list()` was removed and the spec flattened to
+   * `Omit<SubagentStartRequest, 'label' | 'signal'>`, so `prompt` and `parent`
+   * sit on the spec itself. Sending the nested shape there leaves
+   * `spec.parent` undefined and the host throws inside `startActivation`
+   * before any child exists.
+   *
+   * `list()` is the generation marker because the two changes shipped
+   * together and it is observable without version string matching.
+   * @param {object} [service] - the subagents service.
+   * @returns {'nested'|'flat'} the activation spec shape.
+   */
+  function activationSpecShape(service) {
+    return typeof service?.list === 'function' ? 'nested' : 'flat'
+  }
+
   /**
    * Start one child answer, normalizing both subagents API generations to the
    * shape the stream bridge consumes (`{id, localAgent?, result, dispose}`).
@@ -1842,23 +1898,19 @@ function createSideEngine(ctx, configOf) {
       const run = await service.start(provider, fields)
       return { id: run.id, localAgent: run.localAgent, result: run.result, dispose: run.dispose, api: 'start' }
     }
-    const activation = await service.startActivation({
-      provider,
-      label: fields.label,
-      delivery: 'caller',
-      signal: fields.signal,
-      request: {
-        prompt: fields.prompt,
-        parent: fields.parent,
-        ...(fields.persona === undefined ? {} : { persona: fields.persona }),
-        ...(fields.toolFilter === undefined ? {} : { toolFilter: fields.toolFilter }),
-        // 0.2.1-alpha.2+ 的 `request` 与旧 `start(provider, request)` 是同一个
-        // SubagentStartRequest 形状，`agentPreset` 必须一起转发。漏掉这一项
-        // 会让子代理拿到默认全套工具，而 start 帧仍按配置上报
-        // `toolFilter: 'preset'`，卡片于是对用户谎报"工具集由 preset 决定"。
-        ...(fields.agentPreset === undefined ? {} : { agentPreset: fields.agentPreset }),
-      },
-    })
+    // `agentPreset` must travel: it is the only narrowing channel the published
+    // capability objects actually honour. `persona` and `toolFilter` are NOT
+    // sent at all — no published `SubagentCapabilities` advertises them and
+    // `SubagentStartRequest` has no such members, so they were dead weight
+    // that made the start frame claim a guard the host never applied.
+    const startRequest = {
+      prompt: fields.prompt,
+      parent: fields.parent,
+      ...(fields.agentPreset === undefined ? {} : { agentPreset: fields.agentPreset }),
+    }
+    const activation = await service.startActivation(activationSpecShape(service) === 'nested'
+      ? { provider, label: fields.label, delivery: 'caller', signal: fields.signal, request: startRequest }
+      : { provider, label: fields.label, delivery: 'caller', signal: fields.signal, ...startRequest })
     return {
       id: activation.childId,
       // No live Agent handle on the activation face; frame attribution falls
@@ -1869,15 +1921,33 @@ function createSideEngine(ctx, configOf) {
     }
   }
 
-  /** Registered subagent provider names (empty when the service is absent). */
+  /** Registered subagent provider names (empty when nothing can be enumerated). */
   function providerNames() {
     const service = subagentsService()
-    if (service === undefined || typeof service.list !== 'function') return []
-    try {
-      return service.list()
-    } catch {
-      return []
+    if (service === undefined) return []
+    if (typeof service.list === 'function') {
+      try {
+        const listed = service.list()
+        if (Array.isArray(listed) && listed.length > 0) return listed
+      } catch {
+        /* fall through to the registry probe */
+      }
     }
+    // 0.2.2-rc.3 removed `list()`: the registry answers by name only. Probe the
+    // names the shipped in-process providers register under, so `auto` still
+    // resolves instead of reporting a composition that has no providers.
+    if (typeof service.getProvider === 'function') {
+      const probed = []
+      for (const name of ACTIVATION_PROVIDER_NAMES) {
+        try {
+          if (service.getProvider(name) !== undefined) probed.push(name)
+        } catch {
+          /* an unusable registry entry is simply not offered */
+        }
+      }
+      if (probed.length > 0) return probed
+    }
+    return []
   }
 
   /**
@@ -1886,11 +1956,24 @@ function createSideEngine(ctx, configOf) {
    * no parent context; anything else registered is still accepted.
    */
   function resolveProvider(wanted) {
+    const service = subagentsService()
     const names = providerNames()
+    if (wanted !== 'auto') {
+      if (names.includes(wanted)) return wanted
+      // A configured name the enumeration cannot see may still be registered:
+      // on 0.2.2-rc.3 there is no way to enumerate, so `getProvider` IS the
+      // existence check.
+      if (service !== undefined && typeof service.getProvider === 'function') {
+        try {
+          if (service.getProvider(wanted) !== undefined) return wanted
+        } catch {
+          /* treat as absent */
+        }
+      }
+    }
     if (names.length === 0) return undefined
-    if (wanted !== 'auto' && names.includes(wanted)) return wanted
     if (names.includes('spawn')) return 'spawn'
-    if (wanted === 'auto' && names.includes('subagent-spawn-in-process')) return 'subagent-spawn-in-process'
+    if (names.includes('subagent-spawn-in-process')) return 'subagent-spawn-in-process'
     return names[0]
   }
 
@@ -2092,6 +2175,21 @@ function createSideEngine(ctx, configOf) {
         id,
         code: 'busy',
         message: `并发追问已达上限（${config.maxConcurrentAsks}），请稍后再试`,
+        retryable: true,
+      })
+      return
+    }
+
+    const rateWait = askRateDelay(
+      typeof request.sessionId === 'string' && request.sessionId !== ''
+        ? request.sessionId
+        : 'sessionless',
+    )
+    if (rateWait !== undefined) {
+      sink.send('error', {
+        id,
+        code: 'rate-limited',
+        message: `追问过于频繁（每会话每分钟最多 ${ASK_RATE_MAX} 次），请约 ${Math.ceil(rateWait / 1000)} 秒后再试`,
         retryable: true,
       })
       return
@@ -2362,7 +2460,16 @@ function createSideEngine(ctx, configOf) {
         chunkListeners.delete(onChunk)
       }
 
-      const result = await run.result
+      // A provider that ignores its abort signal would otherwise hold this
+      // await forever: the run record never leaves `runs`, the SSE heartbeat
+      // keeps the card "streaming", and once `maxConcurrentAsks` such runs pile
+      // up every later ask answers `busy` until the host restarts. Racing the
+      // signal turns a stuck provider into an ordinary `aborted` terminal.
+      const abortedSignal = new Promise(resolve => {
+        if (controller.signal.aborted) resolve(null)
+        else controller.signal.addEventListener('abort', () => resolve(null), { once: true })
+      })
+      const result = await Promise.race([run.result, abortedSignal])
       if (text.trim() === '') {
         const joined = (Array.isArray(result?.output) ? result.output : [])
           .filter(block => block?.type === 'text' && typeof block.text === 'string')
@@ -2380,7 +2487,12 @@ function createSideEngine(ctx, configOf) {
           .join('\n')
           .trim()
       }
-      const stopReason = typeof result?.stopReason === 'string' ? result.stopReason : 'completed'
+      // `null` means the race was won by the abort signal, not by the provider:
+      // the run was cancelled or timed out, so the terminal is `aborted` even
+      // though no result object ever arrived.
+      const stopReason = result === null
+        ? 'aborted'
+        : (typeof result?.stopReason === 'string' ? result.stopReason : 'completed')
       if (text.trim() === '' && stopReason !== 'completed') {
         // `refusal` is the subagent seam's name for a turn the loop ended as
         // "blocked": a `agent/pre-step` listener rejected the step, so no
@@ -3073,10 +3185,16 @@ export function apply(ctx, patchConfig) {
     // drops the stored password (typically to fall back to the environment) and
     // is never persisted as a config key itself.
     const patch = { ...body }
+    // Stage the erase on a copy. `userLayer` is committed in exactly one place
+    // below; touching it here meant a request that later failed validation
+    // (400 invalid-config) still erased the stored password from the running
+    // process while the disk kept it — "I was told it failed, so why is it
+    // gone?" in reverse.
+    let stageClearedPassword = false
     if (patch.feedbackSmtpPassClear === true) {
       delete patch.feedbackSmtpPassClear
       delete patch.feedbackSmtpPass
-      delete userLayer.feedbackSmtpPass
+      stageClearedPassword = true
     } else {
       delete patch.feedbackSmtpPassClear
       if (patch.feedbackSmtpPass === '') delete patch.feedbackSmtpPass
@@ -3094,7 +3212,7 @@ export function apply(ctx, patchConfig) {
     const endpointChanged = ['feedbackSmtpHost', 'feedbackSmtpPort', 'feedbackSmtpSecure', 'feedbackSmtpUser']
       .some(key => accepted[key] !== undefined && String(accepted[key]) !== String(state.config[key] ?? ''))
     if (endpointChanged && accepted.feedbackSmtpPass === undefined) {
-      delete userLayer.feedbackSmtpPass
+      stageClearedPassword = true
       problems.push('SMTP 目标已变更，已保存的授权码随之作废，请重新填写')
     }
     // The side answerer inheriting the whole tool set is the one irreversible
@@ -3105,12 +3223,17 @@ export function apply(ctx, patchConfig) {
       writeError(res, 400, 'privileged-key', 'sideTools=inherit 需要显式确认（confirmInheritTools: true）')
       return
     }
-    userLayer = { ...userLayer, ...accepted }
-    const saved = writePersistedConfig(userLayer, ctx.logger)
+    // One commit point: persist first, adopt only after the disk accepted it.
+    // The old order adopted the merged layer and then wrote, so a failed write
+    // left this run on a configuration the next start would not reproduce.
+    const nextLayer = { ...userLayer, ...accepted }
+    if (stageClearedPassword) delete nextLayer.feedbackSmtpPass
+    const saved = writePersistedConfig(nextLayer, ctx.logger)
     if (!saved.ok) {
       writeError(res, 500, 'persist-failed', saved.error ?? '配置写入失败')
       return
     }
+    userLayer = nextLayer
     recompute()
     handleState(res)
   }
@@ -3189,6 +3312,17 @@ export function apply(ctx, patchConfig) {
     }
   }
 
+  /**
+   * The custom request header every state-changing call must carry.
+   *
+   * A cross-site page cannot set it without a CORS preflight, and this API
+   * answers no `access-control-allow-*` header, so the preflight fails and the
+   * request never happens. A same-origin script CAN set it — this is an
+   * accident brake, not an authorization boundary. The browser-session gate in
+   * `authRejection` remains the real door.
+   */
+  const CSRF_HEADER = 'x-sidecard-ask'
+
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
     const verdict = fenceVerdict(req, trustedHostsOf())
@@ -3239,6 +3373,18 @@ export function apply(ctx, patchConfig) {
         unauthorized,
         unauthorized === 401 ? 'unauthorized' : 'forbidden',
         unauthorized === 401 ? '需要先通过 DSH 登录（宿主会话未认证）' : '请求来源不受信任',
+      )
+      return
+    }
+    // Cross-site pages cannot set a custom header without a CORS preflight this
+    // API never answers, so this stops a form/img-style request and any local
+    // page that merely guesses the route. `/state` is exempt: it is a read.
+    if (req.method === 'POST' && method !== 'state' && req.headers[CSRF_HEADER] !== '1') {
+      writeError(
+        res,
+        403,
+        'missing-request-marker',
+        `写操作必须带 ${CSRF_HEADER}: 1 请求头（插件的页面客户端会自动添加；脚本调用请显式声明）`,
       )
       return
     }

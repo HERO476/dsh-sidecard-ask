@@ -1152,8 +1152,18 @@ npm deprecate "<旧包名>@*" "Renamed to <新包名> - <原因>"       # 旧名
     `sessionId`；不带或带错一律按"没找到"返回 `cancelled: false`（不回 403，避免把别的会话的 run id
     是否存在当成探测面）。只有 run 本身不知道归属（老引擎、无会话）时才放行——所以"老客户端不带
     `sessionId` 也能取消"只在那种情况下成立，2.1.6 之前那句"向后兼容优先于收紧"已不再准确。
-18. **只支持主文档选区（2.1.12 明确）**：`readSelection()` 只读 `window.getSelection()`，iframe 内的
-    选区不触发浮按钮。PDF/HTML 预览面板里选中文字就是这种情况——不是坏了，是边界。跨源 iframe
+19. **选中原文与答案明文落在 `localStorage`（2.3.0 明确写清）**：默认保留最近 `historyMaxCards`
+    （10）张卡的**原文片段与完整答案**（单字段上限 64 K 字符），键是
+    `dsh-sidecard-ask:cards:v3`。它只在本机、只在同一个 origin 内，但**同源的任何脚本
+    （包括同页其它插件）都能 `localStorage.getItem` 读走**。想不留正文：把 `historyMaxCards`
+    设为 `0`（不再写盘，已有历史保留到显式清空）。桌面端与网页端是两个 origin，各自一套存储。
+20. **写操作要带 `x-sidecard-ask: 1`（2.3.0 起）**：`/ask` `/cancel` `/config` `/reset`
+    `/diagnose` `/feedback` 都要求这个请求头，缺了回 `403 missing-request-marker`。插件的页面
+    客户端自动添加；用 curl / 脚本调接口时请显式带上。`/state` 是读，不需要。它的作用是挡
+    「跨站表单/图片式请求」和「随手猜路径的本机页面」——同源脚本仍能设这个头，所以它不是授权
+    边界，真正的门依旧是宿主会话认证。
+
+18. **只支持主文档选区（2.1.12 明确）**：`readSelection()` 只读 `window.getSelection()`，iframe 内的    选区不触发浮按钮。PDF/HTML 预览面板里选中文字就是这种情况——不是坏了，是边界。跨源 iframe
     在浏览器里本来就不可能拿到选区，同源 iframe 也需要宿主提供 API。
 19. **profile 隔离只在提供 `profileContext` 的宿主上生效（2.1.12 明确）**：桌面端 runtime 有该服务，
     写 `config.<profile>.json`；网页端（0.2.2-alpha.2 依赖树）既没有该服务、也不设 `DSH_PROFILE`，

@@ -200,9 +200,14 @@ console.log('\nhost error localization')
 // (the reason only exists inside the Host string) keep that string verbatim.
 {
   const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'parent-session-unknown', 'no-readonly-guard', 'aborted',
+    // 2.3.0: the per-session `/ask` rate limit.
+    'rate-limited',
     // /feedback: the four codes the Client can phrase itself.
     'feedback-invalid', 'feedback-unconfigured', 'feedback-too-fast', 'feedback-too-many']
   const HOST_DYNAMIC_CODES = ['blocked-step', 'engine-error', 'internal',
+    // 2.3.0: the CSRF marker refusal only ever reaches a script, never the
+    // plugin's own page client, so it keeps the Host's explanatory line.
+    'missing-request-marker',
     // The relay's own reason only exists inside the Host message (and stays
     // there); the low-level smtp-* codes back that same message.
     'feedback-send-failed', 'smtp-rejected', 'smtp-timeout', 'smtp-closed']

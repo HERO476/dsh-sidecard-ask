@@ -40,7 +40,7 @@
 
 `[源码]`
 
-- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2623`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
+- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2735`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
 - 硬依赖声明：**只有** `webServer`
 
   ```js
@@ -174,7 +174,7 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 
 ### 5.2 两道闸门，顺序不可换
 
-`[源码]` `routeHandler`（`index.js:3193`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 业务**。
+`[源码]` `routeHandler`（`index.js:3327`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 写操作标记 → 业务**。
 
 **闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1505`）—— 2.1.15 起真正的判定在
 `fenceVerdict(req, trustedHosts)`（`index.js:1539`），前者只是它的布尔外壳：
@@ -195,7 +195,7 @@ const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagn
 而 `dsh-app://app` 与 `Origin: null` **无法**用 `trustedHosts` 修好（条目会被解析成 authority，
 自定义 scheme 与不透明源都没有 host 可匹配），文案把人引向了错误的配置项。
 
-**闸门 2 · 会话认证** `authRejection(req)`（`index.js:3161`）—— 返回值语义是这份契约里最需要精确复制的一段：
+**闸门 2 · 会话认证** `authRejection(req)`（`index.js:3284`）—— 返回值语义是这份契约里最需要精确复制的一段：
 
 | `connection.requestRejection(req)` 返回 | 插件行为 |
 |---|---|
@@ -240,15 +240,17 @@ data: <JSON>\n
 
 ## §7 R6 · 子代理（两代 API 并存）
 
-`[源码]` `index.js:1815` `subagentsService()` / `usesActivationApi()` / `startSubagent()`：
+`[源码]` `index.js:1843` `subagentsService()` / `usesActivationApi()` / `activationSpecShape()` / `startSubagent()`：
 
 - 服务被认为"可启动"的条件：`typeof service.start === 'function' || typeof service.startActivation === 'function'`。
 - **旧面（≤0.2.1-alpha.1）**：`service.start(provider, request)` → 返回 `{ id, localAgent?, result: Promise, dispose }`。
-- **新面（0.2.1-alpha.2+）**：`service.startActivation(spec)`，`spec = { provider, label, delivery: 'caller', signal, request }`，返回 `{ childId, result, dispose }`。
-  - `request` 是同一个 `SubagentStartRequest` 形状，插件会带 `prompt`、`parent`，并按能力追加 `persona` / `toolFilter` / **`agentPreset`**。
+- **新面（0.2.1-alpha.2+）**：`service.startActivation(spec)`，返回 `{ childId, result, dispose }`。**spec 的形状分两代，必须按代发送**：
+  - `nested`（≤0.2.2-rc.2）：`spec = { provider, label, delivery: 'caller', signal, request }`，`request` 内放 `prompt` / `parent` / `agentPreset`。
+  - `flat`（**0.2.2-rc.3 起**）：`SubagentActivationSpec extends Omit<SubagentStartRequest, 'label' | 'signal'>`，即 `prompt` / `parent` / `agentPreset` **直接挂在 spec 上**，没有 `request` 字段。往这一代发 `nested` 会让宿主读到 `spec.parent === undefined`，并在创建子代理之前抛 `TypeError`。
+  - 判代标记用 `typeof service.list === 'function'`：这两处改动是同一版一起下的，`list` 的有无可以无版本号字符串匹配地判别。**0.2.2-rc.3 已删除 `list()`**。
   - `delivery: 'caller'` 的语义是"子代理不进父会话的可见对话"——**这是产品语义，不是优化项**；宿主把它实现成默认归档进父会话，卡片就会污染主对话。
-- 还需要 `service.list()` 返回 provider 名数组（拿不到就视为空）。
-- 能力探测：`service.capabilities?.(provider)` 用于判断 `persona` / `toolFilter` 是否被支持；不支持时插件**如实上报** `toolFilter:'unsupported'` 而不是谎报 `'preset'`（`index.js:2255`）。
+- provider 枚举：`service.list()` 存在时用它；**不存在时（0.2.2-rc.3）用 `service.getProvider(name)` 探测**已知注册名（`spawn` / `fork` / `subagent-spawn-in-process` / `subagent-fork-in-process`）。把"没有 `list`"当成"没有 provider"是本插件 2.2.2 在 rc.3 上完全不可用的原因。
+- 能力探测：`service.getProvider(provider)?.capabilities` 在**已发布的所有代际**里只有四个键 `agentOptions | agentPreset | outputSchema | depthLimit`——**没有 `persona`，也没有 `toolFilter`**，`SubagentStartRequest` 同样没有这两个成员。因此 `agentPreset` 是唯一真正生效的工具收窄通道，插件也不再发送另两个字段。
 
 **事件契约**：
 

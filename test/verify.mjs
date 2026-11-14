@@ -59,6 +59,35 @@ report.equal(host.name, manifest.name, 'host name matches the package name')
 report.equal(host.PLUGIN_VERSION, manifest.version, 'host PLUGIN_VERSION matches package.json')
 report.equal(host.ROUTE_PREFIX, '/sidecard-ask/api', 'host route prefix is stable')
 report.ok(host.Config === undefined, 'host deliberately exports no Config schema (no schema dependency)')
+
+// `engines.dsh` must not advertise a generation whose subagent API this code
+// cannot speak. 2.2.2 declared `>=0.1.2-rc.1 <0.3.0`, which covered BOTH the
+// registry that still had `list()` and 0.2.2-rc.3 that removed it and flattened
+// `SubagentActivationSpec` — so the install gate blessed a plugin that answered
+// `no-side-engine` on its own target host. The range is now the generations the
+// code actually handles.
+report.equal(
+  manifest.engines?.dsh,
+  '>=0.2.1-rc.5 <0.3.0',
+  'engines.dsh starts at the oldest generation this code speaks',
+)
+
+// Structural guards for the two contract breaks that caused it. These read the
+// shipped source, so a future refactor that reinstates the retired shape fails
+// here rather than in the field.
+report.ok(hostSource.includes('function activationSpecShape(service)'), 'the activation spec shape is chosen at runtime')
+report.ok(
+  hostSource.includes("typeof service?.list === 'function' ? 'nested' : 'flat'"),
+  '`list()` presence is the generation marker for the spec shape',
+)
+report.ok(
+  hostSource.includes('service.getProvider(name)'),
+  'provider enumeration falls back to getProvider when list() is gone',
+)
+report.ok(
+  !hostSource.includes('persona: fields.persona') && !hostSource.includes('toolFilter: fields.toolFilter'),
+  'no persona/toolFilter start field is sent (no published capability advertises them)',
+)
 const hostImports = [...hostSource.matchAll(/from\s+'([^']+)'/g)].map(match => match[1])
 report.ok(
   hostImports.every(specifier => specifier.startsWith('node:')),

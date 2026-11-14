@@ -1,5 +1,50 @@
 # Changelog
 
+## 2.3.0
+
+**主题：宿主契约断裂的两处 P0，以及「2094 条全绿但几何一行没跑」。**
+
+评审基线：2.2.2 跑在 **DSH 0.2.2-rc.3**（`app.asar` 内 `@deepseek-ai/dsh-desktop-runtime 0.2.2-rc.3`）上。
+桌面端与网页端是**同一个宿主进程的两个 origin**，所以下面两条 P0 在两端同时命中。
+
+### 修复（P0 · 侧边作答在最新宿主上整体不可用）
+
+- **P0-1 · `subagents.list()` 已被宿主删除**。`providerNames()` 只会在 `typeof service.list === 'function'` 时工作，而 0.2.2-rc.3 的 `subagents` 成员表里已经没有 `list`（`resolveMaxDepth / startActivation / rootOf / namesOf / resolveName / waitForTreeWork / sendMessage / interrupt / registerProvider / getProvider …`）。
+  结果：`names = []` → `resolveProvider` 返回 `undefined` → 每次追问立刻 `no-side-engine`，文案还是「这台 DSH 组合没有可用的子代理 provider」——把插件的错误假设说成宿主的裁剪。
+  现在：`list` 存在就照旧用它；不存在时用 `service.getProvider(name)` 探测已发布的注册名（`spawn` / `fork` / `subagent-spawn-in-process` / `subagent-fork-in-process`），并在 `resolveProvider` 里对**用户显式配置的名字**额外做一次 `getProvider` 存在性检查。
+- **P0-2 · `SubagentActivationSpec` 已扁平化**。rc.3 的声明是 `SubagentActivationSpec extends Omit<SubagentStartRequest, 'label' | 'signal'>`，`prompt` / `parent` / `agentPreset` **直接挂在 spec 上**；旧实现把它们塞进 `request: {…}`，宿主读到 `spec.parent === undefined` 并在创建子代理之前抛 `TypeError`。
+  现在：`activationSpecShape(service)` 用 `typeof service.list === 'function'` 判代（这两处改动同版发布，`list` 的有无可无版本号字符串匹配地判别），`nested` 代发 `request`，`flat` 代平铺。修好 P0-1 不修 P0-2 只会换一个错误，两条必须同轮。
+
+### 修复（P1）
+
+- **`persona` / `toolFilter` 从来没有宿主接收方**。已发布的所有代际里 `SubagentCapabilities` 只有四个键 `agentOptions | agentPreset | outputSchema | depthLimit`，`SubagentStartRequest` 也没有这两个成员。现在不再发送；`agentPreset` 是唯一被真正 honor 的收窄通道，因此在 `sideTools: 'readonly'` 下没有 preset 就是 fail-closed 拒绝。
+- **`engines.dsh` 从 `>=0.1.2-rc.1 <0.3.0` 收紧为 `>=0.2.1-rc.5 <0.3.0`**。旧区间把「有 `list()` 的嵌套代」和「没有 `list()` 的扁平代」算成同一个兼容带，于是安装门禁亲手放行了上面两个 P0。`test/verify.mjs` 新增四条结构性守卫（判代函数存在、`list` 是判代标记、`getProvider` 回退、不再发送 persona/toolFilter），下一次这类漂移会在 CI 里红，而不是在用户机器上。
+- **写操作要求 `x-sidecard-ask: 1`**（`/ask` `/cancel` `/config` `/reset` `/diagnose` `/feedback`；`/state` 是读，豁免）。跨站页面无法在不触发 preflight 的情况下设自定义头，而本 API 不返回任何 `access-control-*`，所以 preflight 必败。**这是事故刹车，不是授权边界**——同源脚本仍能设这个头；真正的门依旧是宿主会话认证。
+
+### 修复（P2）
+
+- **断线回放串台**：`restorePersisted()` 原来全量回放，同一浏览器里 A 会话的选中原文与答案在 B 会话刷新后照样浮出，追问还会把 A 的问题发进 B。现在只浮出 `sessionId` 与当前会话一致、或没有会话信息的旧条目；证明属于别的会话的卡只留在历史里。
+- **`/ask` 没有限流，且超时只 abort 不设上界**：`maxConcurrentAsks` 限的是「同时存在几次」，不是「启动了多少次」；一个页面可以无限次启动、每次最长 180s。现在按会话 60s 窗口限 12 次（`rate-limited`，客户端有中英文案），并把 `await run.result` 改成与 abort signal 竞速——provider 不配合 abort 时，`runs` 记录会在超时点释放，不会再累积到全部追问都 `busy`。
+- **`/config` 事务化**：原来先合并进 `userLayer` 再写盘，写失败（磁盘满/权限）后内存已按新配置跑，与磁盘、与下次启动都不一致；`feedbackSmtpPassClear` 也在参数校验**之前**就删了内存里的授权码，于是「400 invalid-config」的请求照样清掉了密码。现在所有改动算在副本上，`writePersistedConfig` 成功后才提交。
+
+### 测试
+
+- **补上了让几何接线可执行的 harness**：`createElement` 给 `ref` 赋值假节点（含 `style.setProperty` 收集器、`dataset`、`getBoundingClientRect`），`window` 补 `getComputedStyle` / `requestAnimationFrame` / `ResizeObserver` / `MutationObserver` 并改为**记录式** `addEventListener`（新增 `dispatchWindow`），`document` 补 `querySelectorAll`。此前 `apply()` 第一行就 `return`，2.2.0 与 2.2.2 两个版本的旗舰几何修复**在自动化里一次都没执行过**。
+- **新增 `test/wire-geometry.mjs`（15 条）**：直接读层真正写出的 `--dsa-gap-bottom` / `--dsa-float-w` / `--dsa-gap-right` / `--dsa-capsule-max` 与 `data-layer-bottom` / `data-keyboard-inset` / `data-dsa-surface`，覆盖桌面地板值（16px）、手机 412×844 + 504 可视高（键盘 340、层底 ≥ 键盘、不出帧、sheet 宽 396px）、以及高层不变式。
+- **变异实验（本次修复的验收依据）**：三条变异跑在副本上，仓库零改动——
+  `const node = containerRef.current` → `null`（几何整段不可达）→ `wire-geometry` **15/15 失败**；
+  `keyboard,` → `keyboard: 0,`（键传参清零）→ **1 条失败**（`data-keyboard-inset` 与实测不一致）；
+  `--dsa-gap-bottom` 写入 `+500px`（样式与 dataset 脱钩）→ **3 条失败**。
+  补齐 harness 但**没有** wire 断言时，前两条都让 2094 条全绿——所以"补 harness"是必要条件，不是充分条件。
+- 子代理替身改为**按代**：`activationGeneration` 默认 `'rc3'`（无 `list`、扁平 spec），`'alpha2'` 保留旧契约。默认值选真实宿主那一代——替身停在退役形状上，绿灯就没有意义。
+- 四套件 + 新增：verify 74 / contract 1521 / float-placement 160 / **wire-geometry 15** / smoke 350，全绿。
+
+### 仍未解决（明确记录）
+
+- **零真机**：本轮几何结论来自合成 DOM 与纯函数算例。桌面窗口的实际 `Origin`（宿主用 `connection.authenticatedUrl(http://127.0.0.1:<port>)` 加载页面，故与网页端同源）与 Android `adjustResize` 的真实行为仍未在设备上确认。
+- **`dsh-app://app` 分支仍在**：桌面壳 `lib/main.js` 的 `forwardWebRequest` 会删除 `origin/host/cookie/sec-fetch-site`，若某个窗口形态真走这条路径，插件的 `no-origin` 围栏会 403 全部写操作。主窗口当前不走它，但这条假设没有端到端实测。
+- 未在真实会话里跑过一次 `/ask`（需要浏览器会话 cookie，且会 spawn 子代理）。
+
 ## 2.2.2
 
 **主题：评审发现的一处 P0 几何缺陷 + 一处「声明做到了、代码没做到」。**
