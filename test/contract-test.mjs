@@ -202,12 +202,18 @@ console.log('\nhost error localization')
   const HOST_STATIC_CODES = ['too-large', 'bad-request', 'unloaded', 'duplicate', 'busy', 'no-side-engine', 'no-parent', 'parent-session-unknown', 'no-readonly-guard', 'aborted',
     // 2.3.0: the per-session `/ask` rate limit.
     'rate-limited',
+    // 2.3.2: the CSRF marker refusal is now phrased client-side too. It only
+    // ever reaches a script (the plugin's own page client always sends the
+    // header), but a script written by a person still deserves a message that
+    // names the header instead of the Host's Chinese line.
+    'missing-request-marker',
+    // 2.3.2: the mailer's STARTTLS refusal carries an action (turn the switch
+    // off for a local relay), so the Client phrases it rather than showing the
+    // Host's Chinese line in an English UI.
+    'smtp-starttls-missing',
     // /feedback: the four codes the Client can phrase itself.
     'feedback-invalid', 'feedback-unconfigured', 'feedback-too-fast', 'feedback-too-many']
   const HOST_DYNAMIC_CODES = ['blocked-step', 'engine-error', 'internal',
-    // 2.3.0: the CSRF marker refusal only ever reaches a script, never the
-    // plugin's own page client, so it keeps the Host's explanatory line.
-    'missing-request-marker',
     // The relay's own reason only exists inside the Host message (and stays
     // there); the low-level smtp-* codes back that same message.
     'feedback-send-failed', 'smtp-rejected', 'smtp-timeout', 'smtp-closed']
@@ -826,6 +832,28 @@ console.log('\nP2 pure helpers (1.8.0)')
   const badStyle = host.sanitizeLayer({ answerStyle: 'shouty' }, badStyleProblems)
   report.equal(badStyle.answerStyle, undefined, 'sanitizeLayer drops an illegal style')
   report.ok(badStyleProblems.some(line => line.includes('answerStyle')), 'the dropped style is reported in problems')
+
+  // 2.3.2: the feedback relay host used to accept ANY authority, and /feedback
+  // then dialled it — a bounded port prober and protocol probe aimed at the
+  // local network, five messages per rate window. The sanitiser now refuses
+  // private and reserved targets while keeping a local relay usable (that
+  // machine is the one the user is already on).
+  const relayAllowed = ['', 'smtp.example.com', '127.0.0.1', '127.9.9.9', 'localhost', 'mail.localhost', '[::1]', '::1', '8.8.8.8']
+  const relayRefused = ['10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.10', '169.254.1.1', '100.64.0.1', '0.0.0.0', '224.0.0.1', '198.18.0.1', 'fc00::1', 'fd12:3456::1', 'fe80::1', '::ffff:192.168.1.5']
+  for (const value of relayAllowed) {
+    report.equal(host.isReservedRelayHost(value), false, `relay host "${value === '' ? '(empty)' : value}" stays usable`)
+  }
+  for (const value of relayRefused) {
+    report.equal(host.isReservedRelayHost(value), true, `relay host "${value}" is a private/reserved target`)
+  }
+  const relayProblems = []
+  const relayLayer = host.sanitizeLayer({ feedbackSmtpHost: '192.168.1.10' }, relayProblems)
+  report.equal(relayLayer.feedbackSmtpHost, undefined, 'sanitizeLayer drops a private relay host')
+  report.ok(relayProblems.some(line => line.includes('feedbackSmtpHost')), 'the dropped relay host is reported, not swallowed')
+  const loopbackProblems = []
+  const loopbackLayer = host.sanitizeLayer({ feedbackSmtpHost: '127.0.0.1' }, loopbackProblems)
+  report.equal(loopbackLayer.feedbackSmtpHost, '127.0.0.1', 'a loopback relay is still configurable')
+  report.equal(loopbackProblems.length, 0, 'a loopback relay records no problem')
 
   // 2.0.0: the "hide the whole layer" mode is GONE. A stored `floatMode: 'off'`
   // from an older profile must not resurrect a launcher this client no longer
@@ -4596,6 +4624,10 @@ console.log('\nfeedback: SMTP typed into the settings page')
         feedbackSmtpHost: '127.0.0.1',
         feedbackSmtpPort: typedRelay.port,
         feedbackSmtpSecure: false,
+        // 2.3.2: a cleartext relay now REQUIRES STARTTLS by default, and the
+        // fixture does not advertise it. A local plaintext relay says so
+        // explicitly — that is the switch the settings page offers too.
+        feedbackSmtpStarttls: false,
         feedbackSmtpUser: 'relay@example.test',
         feedbackSmtpPass: 'auth-code',
         feedbackSmtpFrom: '',
@@ -4633,6 +4665,41 @@ console.log('\nfeedback: SMTP typed into the settings page')
     report.equal(typedRelay.state.mails.length, 1, 'the relay accepted exactly one message')
     report.ok(typedRelay.state.commands.some(line => line.startsWith('AUTH PLAIN')), 'the client authenticated with AUTH PLAIN')
     report.ok(String(typedRelay.state.mails[0] ?? '').includes('From: relay@example.test'), 'From: is the authenticated account')
+
+    // 2.3.2 — the downgrade this closed.
+    //
+    // The relay above never advertises STARTTLS. With STARTTLS REQUIRED (the
+    // default, and what a cleartext connection now demands) the send must stop
+    // BEFORE the credential is written: the old code only upgraded when the
+    // server volunteered the capability, so an EHLO reply stripped in transit
+    // left the next command writing the password into `AUTH PLAIN` in the clear.
+    const strictHost = makeHostCtx({})
+    host.apply(strictHost.ctx, { sideTools: 'inherit' })
+    const strictSaved = await callRoute(strictHost, '/config', {
+      body: {
+        feedbackAddress: 'ops@example.test',
+        feedbackSmtpHost: '127.0.0.1',
+        feedbackSmtpPort: typedRelay.port,
+        feedbackSmtpSecure: false,
+        feedbackSmtpStarttls: true,
+        feedbackSmtpUser: 'relay@example.test',
+        feedbackSmtpPass: 'auth-code',
+        feedbackSmtpFrom: '',
+      },
+    })
+    report.equal(strictSaved.status, 200, 'the page can require STARTTLS explicitly')
+    const beforeStrict = typedRelay.state.commands.length
+    const strictSend = await callRoute(strictHost, '/feedback', {
+      body: { kind: 'bug', title: '中继不宣称 STARTTLS', body: '这种情况下不应把凭证明文发出去。' },
+    })
+    const strictCommands = typedRelay.state.commands.slice(beforeStrict)
+    report.equal(strictSend.status, 502, 'a cleartext relay without STARTTLS is refused')
+    report.equal(strictSend.json().error?.code, 'smtp-starttls-missing', 'the refusal names the missing STARTTLS')
+    report.equal(
+      strictCommands.some(line => /^AUTH /i.test(String(line))),
+      false,
+      'no credential is written to a cleartext relay that never offered STARTTLS',
+    )
   } finally {
     process.env.DSH_HOME = previousHome
     for (const [key, value] of savedEnv) {

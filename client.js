@@ -30,6 +30,51 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
 
+    /**
+     * `createPortal` when this host exposes it (2.3.2).
+     *
+     * The overlay layer is a set of `position: fixed` boxes, and it used to rely
+     * on being mounted in `shell.overlay` — the one slot whose container is a
+     * full-viewport layer. The fallback chain then mounts the SAME layer inside
+     * `conversation.input.dock` / `conversation.composer.dock`, whose containers
+     * are `position: absolute` boxes around the composer (the host's own docs say
+     * fixed overlays must portal to the document body). Inside them a fixed box is
+     * clipped or positioned against the wrong containing block.
+     *
+     * Optional on purpose: a host without `react-dom` (or the test shim) simply
+     * keeps the in-slot behaviour, which is what every build did before.
+     */
+    const createPortal = (() => {
+      try {
+        const ReactDOM = require('react-dom')
+        return typeof ReactDOM?.createPortal === 'function' ? ReactDOM.createPortal : null
+      } catch {
+        return null
+      }
+    })()
+
+    /**
+     * Unwind one `ctx.inject` (2.3.2).
+     *
+     * Cordis returns a `Fiber & PromiseLike<Fiber>`, whose disposal lives on
+     * `.dispose()`; the test harness — and any host that mirrors the older
+     * shape — returns the disposer function itself. The 2.2.x code tested
+     * `typeof injection === 'function'`, so on a real host that branch was
+     * always false and the promise in its own comment ("ctx.inject's own
+     * reverse-registration must unwind too") was never kept: the host kept
+     * routing injections into a disposed plugin fiber until the parent fiber
+     * was reclaimed.
+     * @param {unknown} injection - whatever `ctx.inject` returned.
+     * @returns {(() => void)|null} a disposer, or null when neither shape fits.
+     */
+    function disposerOf(injection) {
+      if (typeof injection === 'function') return injection
+      if (injection !== null && typeof injection === 'object' && typeof injection.dispose === 'function') {
+        return () => { injection.dispose() }
+      }
+      return null
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // §1 constants and defaults
     // ─────────────────────────────────────────────────────────────────────
@@ -117,7 +162,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.3.1'
+    const CLIENT_VERSION = '2.3.2'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -251,6 +296,10 @@ window.__ModuleLoader__.load({
       feedbackSmtpHost: '',
       feedbackSmtpPort: 465,
       feedbackSmtpSecure: true,
+      // 2.3.2: mirrors the Host's new default. A cleartext relay must upgrade
+      // before the credential is written; a local plaintext relay turns it off
+      // in this same settings form.
+      feedbackSmtpStarttls: true,
       feedbackSmtpUser: '',
       feedbackSmtpPass: '',
       feedbackSmtpFrom: '',
@@ -843,6 +892,7 @@ window.__ModuleLoader__.load({
         copy: '复制',
         copied: '已复制',
         copySelectedHint: '已选中答案文本，请按 Ctrl+C 复制',
+        copyInsecureHint: '当前地址不是安全域（http），浏览器不提供剪贴板接口：已选中文本，请按 Ctrl+C 复制',
         copyFailed: '复制失败，请手动选择',
         close: '关闭',
         followUp: '继续追问',
@@ -873,6 +923,19 @@ window.__ModuleLoader__.load({
         errorUnreachableBody: '宿主接口不可达',
         errorUnauthorizedBody: '需要先通过 DSH 登录（宿主会话未认证）',
         errorForbiddenBody: '请求来源不受信任（Host / Origin 不匹配）',
+        // 2.3.2: the Host's fence spells out WHY it refused (`error.reason`), and
+        // the six causes need six different sentences — telling a desktop user
+        // to "fix Host / Origin" sends them to a setting that cannot help.
+        errorNoOriginBody: '写操作缺少 Origin 头：页面会自动带上，脚本调用请显式声明来源；若在桌面端出现，请重新登录 DSH 后再试',
+        errorDesktopOriginBody: '请求来自桌面外壳页（dsh-app://app），但宿主会话未通过校验：请重新登录 DSH 后再试',
+        errorUntrustedHostBody: 'Host 不在信任范围：请用 http://127.0.0.1:<端口> 访问，或把该地址写进 trustedHosts 配置',
+        errorForeignOriginBody: '请求来源页与该接口不同源（Origin 的 host:port 必须与 Host 完全一致）',
+        errorOpaqueOriginBody: '请求来源页是不透明源（Origin: null，常见于沙箱 iframe / file:// / data:），已按跨站拒绝',
+        errorCrossSiteBody: '跨站点请求被拒（浏览器标记 Sec-Fetch-Site: cross-site）',
+        errorMissingMarkerBody: '写操作缺少 x-sidecard-ask: 1 请求头（页面会自动添加；脚本调用请显式声明）',
+        // 2.3.2: closing the STARTTLS downgrade gave the mailer a new terminal
+        // code. It carries an action the user can take, so it is phraseable here.
+        errorStarttlsMissingBody: 'SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次未发送；若这是本地明文中继，请在设置页显式关闭 STARTTLS',
         errorBadResponseBody: '宿主返回了无法解析的响应',
         errorStreamBrokenBody: '流式连接中断',
         errorStreamEndedBody: '流式连接意外结束',
@@ -949,8 +1012,8 @@ window.__ModuleLoader__.load({
         diagFeatures: '项能力',
         diagNoTabMeta: '版本过旧：没有 tabMeta 能力，已跳过它改用其它承载面',
         diagNativeKind: 'kind',
-        toolGuardUnavailable: '该 provider 不支持工具白名单，本次作答继承了当前会话的工具',
-        toolGuardInherited: '按配置继承当前会话的工具',
+        toolGuardUnavailable: '该 provider 不支持工具白名单，本次作答继承了当前会话的全部工具（含写文件、执行命令）',
+        toolGuardInherited: '侧边作答继承当前会话的全部工具（含写文件、执行命令）；选区内容不可信时请改设为只读',
         toolGuardPreset: '工具集由 preset「{name}」决定',
         diagUnreachable: '宿主接口不可达：{msg}',
         yes: '可用',
@@ -1013,7 +1076,7 @@ window.__ModuleLoader__.load({
         setFollowUps: '答案末尾给出建议追问',
         setFollowUpsHint: '开启后模型会用 <followups> 块在答案末尾给出 2–3 个可点的下一步问题，点一下即追问（不额外发请求）',
         setHistoryMax: '历史卡片保存数量',
-        setHistoryMaxHint: '0 = 不保存；上限 50 张，单卡文本最多 64K',
+        setHistoryMaxHint: '0 = 不保存；上限 50 张，单卡文本最多 64K。历史按页面地址（origin）存储：桌面外壳 dsh-app:// 与浏览器 http://127.0.0.1:<端口> 是两份独立的存储，互不共享',
         historyTitle: '历史追问卡片',
         historyDesc: '已完成的侧边卡片保存在本浏览器中，可搜索、恢复到浮层或删除；清空浏览器数据会一并删除。',
         historySearch: '搜索问题或答案…',
@@ -1087,6 +1150,7 @@ window.__ModuleLoader__.load({
         feedbackEnvNote: '自动附带：插件版本、Node/平台、发送时间',
         feedbackTooFast: '刚发过一封，请稍等半分钟',
         feedbackTooMany: '发送过于频繁，请稍后再试',
+        feedbackRecipientLine: '将发送到 {to}（掩码显示；完整地址见设置页或环境变量）',
       },
       en: {
         triggerLabel: 'Ask about selection',
@@ -1127,6 +1191,7 @@ window.__ModuleLoader__.load({
         copy: 'Copy',
         copied: 'Copied',
         copySelectedHint: 'Answer selected — press Ctrl+C to copy',
+        copyInsecureHint: 'This address is not a secure context (plain http), so the browser hides the clipboard API: the text is selected — press Ctrl+C',
         copyFailed: 'Copy failed — select the text manually',
         close: 'Close',
         followUp: 'Follow up',
@@ -1157,6 +1222,14 @@ window.__ModuleLoader__.load({
         errorUnreachableBody: 'The host API is unreachable',
         errorUnauthorizedBody: 'Sign in to DSH first (the host session is not authenticated)',
         errorForbiddenBody: 'Untrusted request origin (Host / Origin mismatch)',
+        errorNoOriginBody: 'The write is missing its Origin header: pages send one automatically, scripts must declare it; on the desktop, sign in to DSH again and retry',
+        errorDesktopOriginBody: 'The request came from the desktop shell page (dsh-app://app) but the host session did not validate: sign in to DSH again and retry',
+        errorUntrustedHostBody: 'The Host is outside the trusted range: use http://127.0.0.1:<port> or add the address to trustedHosts',
+        errorForeignOriginBody: 'The referring page is a different origin: the Origin host:port must match Host exactly',
+        errorOpaqueOriginBody: 'The referring page has an opaque origin (Origin: null — sandboxed iframe / file:// / data:), refused as cross-site',
+        errorCrossSiteBody: 'Cross-site request refused (the browser marked Sec-Fetch-Site: cross-site)',
+        errorMissingMarkerBody: 'The write is missing the x-sidecard-ask: 1 header (the page adds it automatically; scripts must declare it)',
+        errorStarttlsMissingBody: 'The SMTP server never advertised STARTTLS, so nothing was sent — that keeps the credential off a cleartext socket. For a local plaintext relay, turn STARTTLS off in settings.',
         errorBadResponseBody: 'The host returned an unreadable response',
         errorStreamBrokenBody: 'The stream connection broke',
         errorStreamEndedBody: 'The stream ended without a terminal event',
@@ -1233,8 +1306,8 @@ window.__ModuleLoader__.load({
         diagFeatures: 'capabilities',
         diagNoTabMeta: 'too old: no tabMeta capability, skipped in favour of another surface',
         diagNativeKind: 'kind',
-        toolGuardUnavailable: 'This provider supports no tool allow-list, so the answer inherited the session tools',
-        toolGuardInherited: 'Inherits the session tools, as configured',
+        toolGuardUnavailable: 'This provider supports no tool allow-list, so the answer inherited the session tools (including file writes and command execution)',
+        toolGuardInherited: 'The side answer inherits the session tools (including file writes and command execution); choose read-only when the selection is not trusted',
         toolGuardPreset: 'Tool set fixed by the preset "{name}"',
         diagUnreachable: 'Host API unreachable: {msg}',
         yes: 'yes',
@@ -1297,7 +1370,7 @@ window.__ModuleLoader__.load({
         setFollowUps: 'Suggest follow-ups at the end',
         setFollowUpsHint: 'The model ends each answer with a <followups> block of 2–3 next questions, rendered as clickable chips (no extra request)',
         setHistoryMax: 'Saved history cards',
-        setHistoryMaxHint: '0 = do not save; up to 50 cards, at most 64K text each',
+        setHistoryMaxHint: '0 = do not save; up to 50 cards, at most 64K text each. History is stored per page origin: the desktop shell (dsh-app://) and a browser (http://127.0.0.1:<port>) keep two independent stores',
         historyTitle: 'History cards',
         historyDesc: 'Finished side cards are kept in this browser; search, restore to the floating layer, or delete them. Clearing browser data removes them too.',
         historySearch: 'Search questions or answers…',
@@ -1371,6 +1444,7 @@ window.__ModuleLoader__.load({
         feedbackEnvNote: 'Attached automatically: plugin version, Node/platform, send time',
         feedbackTooFast: 'One mail just went out — wait half a minute',
         feedbackTooMany: 'Too many reports for now — try again later',
+        feedbackRecipientLine: 'Sends to {to} (masked; the full address is in settings or the environment)',
       },
     }
 
@@ -1466,11 +1540,38 @@ window.__ModuleLoader__.load({
       'feedback-unconfigured': { key: 'feedbackUnconfigured' },
       'feedback-too-fast': { key: 'feedbackTooFast' },
       'feedback-too-many': { key: 'feedbackTooMany' },
+      // 2.3.2: named separately from `forbidden` — the Host answers 403 with this
+      // code when the marker header is absent, which is a different mistake.
+      'missing-request-marker': { key: 'errorMissingMarkerBody' },
+      // 2.3.2: the mailer refuses a cleartext relay that never offered STARTTLS.
+      'smtp-starttls-missing': { key: 'errorStarttlsMissingBody' },
+    }
+
+    /**
+     * 2.3.2: the same refusal, said six ways.
+     *
+     * The Host's fence answers 403 with `{code:'forbidden', reason:'<cause>'}`,
+     * and this function used to key off `code` alone — so all six causes
+     * rendered as「请求来源不受信任（Host / Origin 不匹配）」. A desktop user hitting
+     * `no-origin` was told to check Origin/Host, the one setting that cannot fix
+     * it (the Electron main process strips the header before forwarding). The
+     * reason wins over the code whenever both are present.
+     */
+    const FENCE_REASONS = {
+      'no-origin': { key: 'errorNoOriginBody' },
+      'desktop-origin': { key: 'errorDesktopOriginBody' },
+      'untrusted-host': { key: 'errorUntrustedHostBody' },
+      'foreign-origin': { key: 'errorForeignOriginBody' },
+      'opaque-origin': { key: 'errorOpaqueOriginBody' },
+      'cross-site': { key: 'errorCrossSiteBody' },
     }
 
     /** One localized line for a wire error; unknown codes keep the Host text. */
     function localizeError(error) {
       if (error === null || error === undefined) return ''
+      const reason = typeof error?.reason === 'string' ? error.reason : undefined
+      const byReason = reason === undefined ? undefined : FENCE_REASONS[reason]
+      if (byReason !== undefined) return t(byReason.key, byReason.vars?.(error))
       const entry = ERROR_CODES[error?.code]
       if (entry === undefined) return error.message ?? String(error?.code ?? error)
       return t(entry.key, entry.vars?.(error))
@@ -3629,7 +3730,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                   void copyText(code, codeNode).then((result) => {
                     toast(result === 'copied'
                       ? t('copied')
-                      : result === 'selected' ? t('copySelectedHint') : t('copyFailed'))
+                      : result === 'selected' ? t('copySelectedHint') : result === 'selected-insecure' ? t('copyInsecureHint') : t('copyFailed'))
                   })
                 } catch { /* a clipboard failure must not break the card */ }
               },
@@ -3761,7 +3862,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           const selection = window.getSelection()
           selection.removeAllRanges()
           selection.addRange(range)
-          return 'selected'
+          // 2.3.2: over plain `http://` on a LAN or tunnel address the page is
+          // NOT a secure context, so `navigator.clipboard` is absent and the
+          // copy silently degraded to "select it yourself". Naming the reason
+          // turns an invisible failure into an explanation.
+          const insecure = typeof window.isSecureContext === 'boolean' && window.isSecureContext === false
+          return insecure ? 'selected-insecure' : 'selected'
         }
       } catch { /* report the failure below */ }
       return 'failed'
@@ -5809,7 +5915,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         }, h('span', { className: 'dsa-mobile-entry-dot', 'aria-hidden': true }), label))
     }
 
-    function OverlayRoot({ actions }) {
+    function OverlayRoot({ actions, portalToBody }) {
       const state = useStoreState()
       // §4.5 a non-leader copy mounts no interaction surface at all (its
       // settings page stays available to explain the situation).
@@ -5831,14 +5937,13 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         && candidate === null
         && popover === null
         && openCards === 0
-      return h('div', {
+      const layer = h('div', {
         className: 'dsa-layer',
         'data-dsa-root': '',
         // §4.5 stamps ownership so the legacy-suppression stylesheet can
         // distinguish this build's layer from an unmarked ≤1.0.x layer.
         'data-dsa-owner': OWNER_TOKEN,
-      },
-        h(Styles, null),
+      },        h(Styles, null),
         phoneLauncher
           ? h(PhoneLauncher, {
             candidate,
@@ -5875,6 +5980,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           : null,
         h(FloatingLayer, { cards: state.cards, actions }),
         state.toast !== null ? h('div', { className: 'dsa-toast' }, state.toast) : null)
+      // 2.3.2: when this layer was mounted in a composer slot rather than the
+      // full-viewport `shell.overlay`, move it to the document body — a fixed box
+      // inside the composer's `position: absolute` container is clipped or laid
+      // out against the wrong containing block.
+      if (portalToBody === true && createPortal !== null
+        && typeof document !== 'undefined' && document.body !== null && document.body !== undefined) {
+        return createPortal(layer, document.body)
+      }
+      return layer
     }
 
     /**
@@ -5889,7 +6003,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
     function FeedbackDialog(props) {
       const {
         t, limits, draft, onChange, status, error, ready, reason, hasRecipient,
-        onClose, onSubmit, onCopy,
+        onClose, onSubmit, onCopy, recipientMasked,
       } = props
       const sending = status === 'sending'
       const boxRef = React.useRef(null)
@@ -5934,6 +6048,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           'aria-label': t('feedbackClose'),
           onClick: onClose,
         }, '×')),
+      // 2.3.2: the recipient line. `recipientMasked` is masked on the Host (never
+      // the full address), and it only appears when there IS one.
+      recipientMasked !== undefined && String(recipientMasked) !== ''
+        ? h('div', { className: 'dsa-muted', 'data-feedback-recipient': '' },
+          t('feedbackRecipientLine', { to: String(recipientMasked) }))
+        : null,
       h('div', { className: 'dsa-feedback-dialog-field' },
         h('label', null, t('feedbackKind')),
         h('select', {
@@ -6300,7 +6420,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 className: 'dsa-btn',
                 onClick: () => {
                   void copyText(String(entry.text ?? '')).then((result) => {
-                    toast(result === 'copied' ? t('copied') : result === 'selected' ? t('copySelectedHint') : t('copyFailed'))
+                    toast(result === 'copied' ? t('copied') : result === 'selected' ? t('copySelectedHint') : result === 'selected-insecure' ? t('copyInsecureHint') : t('copyFailed'))
                   })
                 },
               }, t('copy')),
@@ -6388,6 +6508,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           ready: feedbackConfigured,
           reason: String(feedbackInfo?.reason ?? ''),
           hasRecipient: feedbackInfo?.hasRecipient === true,
+          // 2.3.2: say WHO receives the report. The default recipient is the
+          // maintainer's own mailbox, and until now the page only rendered a
+          // boolean (`hasRecipient`), so a user pressed "send" without ever
+          // learning where the text went. The Host already masks it for logs.
+          recipientMasked: String(feedbackInfo?.toMasked ?? ''),
           onClose: () => setFeedbackOpen(false),
           onSubmit: () => { void submitFeedback() },
           onCopy: () => { void copyFeedbackDraft() },
@@ -7500,7 +7625,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           },
           copy(card, element) {
             void copyText(card.text, element).then((result) => {
-              toast(result === 'copied' ? t('copied') : result === 'selected' ? t('copySelectedHint') : t('copyFailed'))
+              toast(result === 'copied' ? t('copied') : result === 'selected' ? t('copySelectedHint') : result === 'selected-insecure' ? t('copyInsecureHint') : t('copyFailed'))
             })
           },
           /**
@@ -8245,7 +8370,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           ['shell.overlay', 'conversation.input.dock', 'conversation.composer.dock'],
           slotKey => ({
             options: { name: slotKey, id: IDS.overlay, order: 45, label: () => t('triggerLabel') },
-            component: () => h(OverlayRoot, { actions }),
+            // 2.3.2: `shell.overlay` is the only slot whose container is the
+            // full viewport. Every fallback sits inside the composer, so the
+            // layer portals to the body there instead of being clipped.
+            component: () => h(OverlayRoot, { actions, portalToBody: slotKey !== 'shell.overlay' }),
           }),
           (from, to) => {
             console.info(`[${PLUGIN_ID}] ${from} 不可用，浮层改挂 ${to}`)
@@ -8374,7 +8502,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           })
           // ctx.inject's own reverse-registration must unwind with the plugin
           // too, or the host keeps routing injections into a disposed fiber.
-          if (typeof uninject === 'function') disposers.push(uninject)
+          //
+          // 2.3.2: `ctx.inject` returns a `Fiber & PromiseLike<Fiber>` on a real
+          // host, not a disposer function — `typeof uninject === 'function'` was
+          // always false there, so the promise in this comment was never kept.
+          // `disposerOf` handles both shapes.
+          {
+            const release = disposerOf(uninject)
+            if (release !== null) disposers.push(release)
+          }
         } catch (error) {
           surfaces.native.error = String(error?.message ?? error)
         }
@@ -8436,7 +8572,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               console.error(`[${PLUGIN_ID}] better-sidebar adapter unavailable:`, error)
             }
           })
-          if (typeof uninject === 'function') disposers.push(uninject)
+          // 2.3.2: same fix as the native adapter above — `disposerOf` accepts
+          // both the fiber form and the disposer-function form.
+          {
+            const release = disposerOf(uninject)
+            if (release !== null) disposers.push(release)
+          }
         } catch (error) {
           surfaces.better.error = String(error?.message ?? error)
         }

@@ -33,6 +33,11 @@
         # inherit = 继承父代理的工具（2.1.11 起默认，与 index.js 的 DEFAULT_CONFIG
         # 一致）；readonly = 只带只读工具，宿主没有只读载体
         # （agentPreset 或 toolFilter）时直接拒绝作答，不会假装只读
+        #
+        # 2.3.2：inherit 意味着子代理带着当前会话的全部工具（含写文件、执行命令），
+        # 而它的任务描述来自你选中的那段文本。卡片上会明确写出这一点；选区内容
+        # 不可信时改用 readonly。默认值保持不变是有意的：很多宿主没有只读载体，
+        # 把默认改成 readonly 会让每一次追问都被拒绝。
         sideTools: inherit
         # 侧边作答的超时（毫秒）
         sideTimeoutMs: 180000

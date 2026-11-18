@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.3.2
+
+**主题：跨端审计后的整轮修复——桌面端恢复可写、SMTP 不再可降级、配置带版本。**
+
+### 修复
+
+- **P0 · 桌面端所有写操作 403（已复现）**：Electron 主进程的 `forwardWebRequest` 在转发前删掉 `origin` / `sec-fetch-site`（`resources/app/lib/main.js:15356-15362`），而插件围栏自 2.2.0 起把「无 Origin 的写请求」一律判 `no-origin`。桌面端 `/state` 能读，而 `/ask` `/config` `/reset` `/cancel` `/diagnose` `/feedback` 全 403——划词追问实际不可用，设置页却显示「已连接」。
+  现在：`fenceVerdict(req, trustedHosts, { delegated })` 在**宿主会话闸门存在且接受该请求凭证**时，把 `no-origin` / `desktop-origin` 两种形态交给闸门裁决（与宿主自己的 `isTrustedApiRequest` 一致）；`fence-only` 组合维持原严格规则。鉴权结果每请求只算一次，围栏与分发共用。
+- **S7 · 围栏拒绝按原因给文案**：客户端 `localizeError` 改为优先读 `error.reason`（六种原因六条文案），桌面用户不再被指去改一个改不了的 Origin/Host；`missing-request-marker` 也本地化。
+- **A2 · `engines.dsh` 上界收紧**：宿主用 `semver.satisfies(..., { includePrerelease: true })` 判定，`<0.3.0` 会放行 `0.3.0-rc.1`。改为 `<0.3.0-0`：整个 0.2.x 通过，0.3.0 及其预发布全部挡住。
+- **S3 · STARTTLS 不再可被剥离**：旧逻辑只在服务器主动宣称 STARTTLS 时升级，抹掉那一行即继续明文并发出 `AUTH PLAIN`。现在明文连接**默认要求** STARTTLS，未宣称即失败且不写凭证；本地明文中继用新配置项 `feedbackSmtpStarttls: false`（或 URL 的 `?starttls=0`）显式声明。改动该开关会作废已存授权码。
+- **S4 · 反馈中继拒绝内网目标**：`/config` + `/feedback` 曾是面向内网的出站连接原语。`feedbackSmtpHost` 现在拒绝 RFC1918 / 169.254 / 100.64 / fc00:: / fe80:: / 组播保留段；回环与公网主机（含域名）仍可用。
+- **S2 · 继承工具的后果显性化**：`sideTools: inherit` 仍是默认（改 readonly 会让没有只读载体的宿主每次追问都被拒），但 `/state.capabilities.readonly` 新增 `effective` 字段，卡片文案明确写出「含写文件、执行命令」。
+- **B1 · 浮层在 composer 槽位 portal 到 body**：`shell.overlay` 之外的承载槽都在 composer 的 `position: absolute` 容器里，fixed 子元素会被裁切。现在非 `shell.overlay` 时用 `createPortal` 挂到 `document.body`（宿主没有 `react-dom` 时自动退回原行为）。
+- **B2 · `ctx.inject` 的注销真的生效**：旧代码判 `typeof uninject === 'function'`，而 Cordis 返回的是 fiber（`dispose()`），该分支永远 false。新增 `disposerOf()` 同时接受函数与 fiber。
+- **B3 · 复制失败说清原因**：LAN/远程 `http://` 不是安全上下文，`navigator.clipboard` 不存在，复制会静默降级为「已选中」。现在提示写明这一点；设置页的历史说明也写明桌面外壳与浏览器是两份独立存储。
+- **R5 · 新增 `/diag`**：`/state` 在宿主会话门后面（应当如此），无头验收取不到诊断面。`/diag` 免会话返回非敏感事实：围栏形态、委派是否生效、只读是否可兑现、配置 schema 版本。无路径、无配置值、无客户端上报。
+- **R6 · 配置带 schemaVersion**：写入时加 `schemaVersion: 2`，读取时剥离并过 `migrateConfigLayer`；来自更新版本的配置不再被静默重新解释。
+- **S6 · 反馈收件人可见**：对话框显示掩码后的收件人（`toMasked`），用户知道内容寄给谁。
+
+### 测试
+
+- 新增用例：桌面转发形态（无 Origin + 有效凭证）放行；同形态无凭证仍 403；`fence-only` 不放宽；桌面端读仍 200。STARTTLS 缺失时拒发且不写 `AUTH`（带对照组）。私有中继地址被拒、回环可用。`engines` 上下界语义。
+- `npm test` 全绿：verify 75 / contract 1566 / float-placement 160 / wire-geometry 15 / smoke 361；`locale/{zh,en}.json` 各 56 键同步。
+- **未验证**：Electron 真机端到端（无签名 cookie）、原生右栏活体组合、macOS/Linux。
+
 ## 2.3.1
 
 **主题：历史管理器的单条删除补上确认层——此前单击即永久删除。**
@@ -65,6 +91,7 @@
 
 - **零真机**：本轮几何结论来自合成 DOM 与纯函数算例。桌面窗口的实际 `Origin`（宿主用 `connection.authenticatedUrl(http://127.0.0.1:<port>)` 加载页面，故与网页端同源）与 Android `adjustResize` 的真实行为仍未在设备上确认。
 - **`dsh-app://app` 分支仍在**：桌面壳 `lib/main.js` 的 `forwardWebRequest` 会删除 `origin/host/cookie/sec-fetch-site`，若某个窗口形态真走这条路径，插件的 `no-origin` 围栏会 403 全部写操作。主窗口当前不走它，但这条假设没有端到端实测。
+  > **2.3.2 更正**：这条假设是错的。桌面主窗口的 URL 就是 `dsh-app://app/`（`resources/app/lib/main.js:20483`），除静态资源外所有路径都走 `forwardWebRequest`（`:20804-20811`），所以桌面端当时确实「能读不能写」。已在本版修复，见 2.3.2 的 P0 条目。
 - 未在真实会话里跑过一次 `/ask`（需要浏览器会话 cookie，且会 spawn 子代理）。
 
 ## 2.2.2

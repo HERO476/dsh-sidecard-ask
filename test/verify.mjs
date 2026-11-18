@@ -66,10 +66,22 @@ report.ok(host.Config === undefined, 'host deliberately exports no Config schema
 // `SubagentActivationSpec` — so the install gate blessed a plugin that answered
 // `no-side-engine` on its own target host. The range is now the generations the
 // code actually handles.
+//
+// 2.3.2: the upper bound gained `-0`. The host evaluates `engines.dsh` with
+// `semver.satisfies(version, range, { includePrerelease: true })`, and under
+// that flag a plain `<0.3.0` ALSO admits `0.3.0-beta.1` / `0.3.0-rc.1` — which
+// are exactly the untested generation the bound exists to exclude. `<0.3.0-0`
+// is the semver spelling of "no 0.3.0 prerelease either", while still admitting
+// every 0.2.x.
 report.equal(
   manifest.engines?.dsh,
-  '>=0.2.1-rc.5 <0.3.0',
+  '>=0.2.1-rc.5 <0.3.0-0',
   'engines.dsh starts at the oldest generation this code speaks',
+)
+report.equal(
+  manifest.engines?.dsh?.endsWith('-0'),
+  true,
+  'engines.dsh excludes 0.3.0 prereleases, which includePrerelease would otherwise admit',
 )
 
 // Structural guards for the two contract breaks that caused it. These read the
@@ -164,7 +176,14 @@ report.ok(Array.isArray(loaded.module.inject) && loaded.module.inject.includes('
 report.equal(typeof loaded.module.apply, 'function', 'client exports apply(ctx)')
 report.equal(loaded.module.api.version, manifest.version, 'client api.version matches package.json')
 const clientRequires = [...new Set([...clientSource.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map(match => match[1]))]
-report.equal(clientRequires, ['react'], 'client requires react and nothing else')
+// 2.3.2: `react-dom` joins the list — optionally, and only for `createPortal`.
+// The overlay layer is a set of `position: fixed` boxes; in `shell.overlay` its
+// container is the full viewport, but every fallback slot sits inside the
+// composer's `position: absolute` box, where a fixed child is clipped or laid
+// out against the wrong containing block. The require is wrapped in try/catch,
+// so a host that seeds only `react` keeps the pre-2.3.2 in-slot behaviour
+// instead of failing to load.
+report.equal(clientRequires, ['react', 'react-dom'], 'client requires react, plus react-dom for the optional portal')
 report.ok(!clientSource.includes('dsh-client-ui-primitives'), 'client does not import harness client packages')
 report.ok(/window\.__ModuleLoader__\.load\(/.test(clientSource), 'client uses the documented module-loader format')
 report.ok(!/document\.body\.(append|insert|prepend)/.test(clientSource), 'client never writes DOM into document.body')

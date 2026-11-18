@@ -45,5 +45,14 @@
   "setAutoExpandOnDone": "Expand the card when the answer finishes",
   "setAutoExpandOnDoneHint": "On: the answer appears in the card the moment it settles. Off: the one-line capsule stays until you click it",
   "errorReadonlyUnavailableBody": "The side answer is set to read-only (sideTools: readonly), but this host exposes no read-only carrier (preset or tool filter), so the answer was refused to keep the workspace untouched. Switch the side tool policy to \"inherit\" in settings.",
-  "setReadonlyBlocked": "⚠ This host exposes no read-only carrier right now: keeping \"read-only\" refuses every run. Switch to \"inherit\", or set a preset this host honours below."
+  "setReadonlyBlocked": "⚠ This host exposes no read-only carrier right now: keeping \"read-only\" refuses every run. Switch to \"inherit\", or set a preset this host honours below.",
+  "errorNoOriginBody": "The write is missing its Origin header: pages send one automatically, scripts must declare it; on the desktop, sign in to DSH again and retry",
+  "errorDesktopOriginBody": "The request came from the desktop shell page (dsh-app://app) but the host session did not validate: sign in to DSH again and retry",
+  "errorUntrustedHostBody": "The Host is outside the trusted range: use http://127.0.0.1:<port> or add the address to trustedHosts",
+  "errorForeignOriginBody": "The referring page is a different origin: the Origin host:port must match Host exactly",
+  "errorOpaqueOriginBody": "The referring page has an opaque origin (Origin: null — sandboxed iframe / file:// / data:), refused as cross-site",
+  "errorCrossSiteBody": "Cross-site request refused (the browser marked Sec-Fetch-Site: cross-site)",
+  "errorMissingMarkerBody": "The write is missing the x-sidecard-ask: 1 header (the page adds it automatically; scripts must declare it)",
+  "errorStarttlsMissingBody": "The SMTP server never advertised STARTTLS, so nothing was sent — that keeps the credential off a cleartext socket. For a local plaintext relay, turn STARTTLS off in settings.",
+  "copyInsecureHint": "This address is not a secure context (plain http), so the browser hides the clipboard API: the text is selected — press Ctrl+C"
 }

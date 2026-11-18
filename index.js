@@ -45,7 +45,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.3.1'
+export const PLUGIN_VERSION = '2.3.2'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -230,6 +230,17 @@ export const DEFAULT_CONFIG = {
   feedbackSmtpHost: '',
   feedbackSmtpPort: 465,
   feedbackSmtpSecure: true,
+  /**
+   * 2.3.2: require STARTTLS on a cleartext-connected relay.
+   *
+   * Defaults to `true`, which means "upgrade or do not send": a relay that never
+   * advertises the capability is refused BEFORE the credential is written, so a
+   * stripped EHLO reply can no longer downgrade the session to plaintext. A local
+   * plaintext relay (MailHog, Papercut, the offline fixture) sets this to `false`
+   * explicitly — the page's settings offer it, and the URL form spells it
+   * `?starttls=0`.
+   */
+  feedbackSmtpStarttls: true,
   feedbackSmtpUser: '',
   feedbackSmtpPass: '',
   feedbackSmtpFrom: '',
@@ -548,8 +559,17 @@ export function sanitizeLayer(raw, problems = []) {
   }
   if (raw.feedbackSmtpHost !== undefined) {
     const value = typeof raw.feedbackSmtpHost === 'string' ? raw.feedbackSmtpHost.trim() : null
-    if (value !== null && value.length <= 255) out.feedbackSmtpHost = value
-    else problems.push('feedbackSmtpHost: 必须是 1–255 字符的字符串，已忽略')
+    if (value !== null && value.length <= 255 && !isReservedRelayHost(value)) out.feedbackSmtpHost = value
+    // 2.3.2: `/config` used to accept ANY authority, and `/feedback` then ran
+    // `net`/`tls.connect` against it — a bounded port scanner / protocol probe
+    // aimed at the local network, five messages per rate window. The relay host
+    // is now restricted to names and public addresses; a LOOPBACK address stays
+    // allowed on purpose (a local relay such as `127.0.0.1:1025` is a normal
+    // development and offline setup, and it is the machine the user is already
+    // on). Private ranges and link-local addresses are refused.
+    else if (value !== null && isReservedRelayHost(value)) {
+      problems.push('feedbackSmtpHost: 指向内网/保留地址，已忽略（回环地址与公网主机仍可用）')
+    } else problems.push('feedbackSmtpHost: 必须是 1–255 字符的字符串，已忽略')
   }
   if (raw.feedbackSmtpPort !== undefined) {
     const clamped = clampNumber(raw.feedbackSmtpPort, 1, 65_535)
@@ -559,6 +579,10 @@ export function sanitizeLayer(raw, problems = []) {
   if (raw.feedbackSmtpSecure !== undefined) {
     if (typeof raw.feedbackSmtpSecure === 'boolean') out.feedbackSmtpSecure = raw.feedbackSmtpSecure
     else problems.push('feedbackSmtpSecure: 必须是布尔值，已忽略')
+  }
+  if (raw.feedbackSmtpStarttls !== undefined) {
+    if (typeof raw.feedbackSmtpStarttls === 'boolean') out.feedbackSmtpStarttls = raw.feedbackSmtpStarttls
+    else problems.push('feedbackSmtpStarttls: 必须是布尔值，已忽略')
   }
   if (raw.feedbackSmtpUser !== undefined) {
     const value = typeof raw.feedbackSmtpUser === 'string' ? raw.feedbackSmtpUser.trim() : null
@@ -1010,7 +1034,10 @@ export function resolveSmtp(config = {}, env = process.env) {
   if (user === '' || pass === '') return { ok: false, reason: '设置页里的 SMTP 账号或密码还没填全' }
   const from = (typeof config.feedbackSmtpFrom === 'string' ? config.feedbackSmtpFrom.trim() : '') || user
   if (!looksLikeEmail(from)) return { ok: false, reason: 'SMTP 发件邮箱格式不合法' }
-  return { ok: true, source: 'config', endpoint: { host, port, secure, starttls: !secure, user, pass, from } }
+  // 2.3.2: a cleartext connection demands STARTTLS unless the operator turned it
+  // off explicitly. `feedbackSmtpSecure: true` (implicit TLS) needs neither.
+  const starttls = secure ? false : config.feedbackSmtpStarttls !== false
+  return { ok: true, source: 'config', endpoint: { host, port, secure, starttls, user, pass, from } }
 }
 
 /**
@@ -1025,6 +1052,10 @@ export function describeSmtpSettings(config = {}, env = process.env) {
     host: typeof config.feedbackSmtpHost === 'string' ? config.feedbackSmtpHost.trim() : '',
     port: clampNumber(config.feedbackSmtpPort, 1, 65_535) ?? 465,
     secure: config.feedbackSmtpSecure !== false,
+    // 2.3.2: whether a cleartext connection must upgrade before the credential
+    // is written. The settings page shows it, so "why did my local relay stop
+    // working" points at a switch the user can actually flip.
+    starttls: config.feedbackSmtpSecure === false && config.feedbackSmtpStarttls !== false,
     user: typeof config.feedbackSmtpUser === 'string' ? config.feedbackSmtpUser.trim() : '',
     from: typeof config.feedbackSmtpFrom === 'string' ? config.feedbackSmtpFrom.trim() : '',
     // True when a password is actually available to send with, from EITHER
@@ -1266,10 +1297,23 @@ export async function sendSmtpMessage(endpoint, mail, { timeoutMs = 20_000, now 
     await smtpCommand(reader, socket, null)
     const identify = `EHLO dsh-sidecard-ask`
     const greeting = await smtpCommand(reader, socket, identify)
-    // Only upgrade when the server says it can. A relay that never advertises
-    // STARTTLS answers 500 to the verb, and a 587 endpoint on a local network
-    // would then look "broken" for a step nobody asked for.
-    if (endpoint.secure === false && endpoint.starttls !== false && /\bSTARTTLS\b/i.test(greeting.text)) {
+    // 2.3.2 — STARTTLS is REQUIRED unless the endpoint explicitly says otherwise.
+    //
+    // This used to upgrade only when the server advertised the capability, and
+    // otherwise continue in the clear. An attacker who can strip one line from
+    // the EHLO reply (a hostile network, a spoofed relay) therefore downgraded
+    // the session to plaintext, and the very next command wrote the credential
+    // into `AUTH PLAIN <base64>` on that socket. The user's own escape hatch is
+    // unchanged and explicit: `?starttls=0` on the relay URL, or
+    // `feedbackSmtpSecure: true` for implicit TLS. Anything else fails closed
+    // BEFORE a credential is ever written.
+    if (endpoint.secure === false && endpoint.starttls !== false) {
+      if (!/\bSTARTTLS\b/i.test(greeting.text)) {
+        throw Object.assign(
+          new Error('SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次不发送；若这是本地明文中继，请在端点 URL 上显式加 ?starttls=0'),
+          { code: 'smtp-starttls-missing' },
+        )
+      }
       await smtpCommand(reader, socket, 'STARTTLS', [2])
       reader.dispose()
       const upgraded = await new Promise((resolve, reject) => {
@@ -1487,13 +1531,66 @@ export function readOnlyToolFilter(ctx) {
 // Implemented locally on purpose: the shipped helper is not a public export.
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Whether a hostname names the local loopback authority. */
+/**
+ * Whether a hostname names the local loopback authority. */
 export function isLoopbackHostname(hostname) {
   if (hostname === 'localhost' || hostname === '[::1]') return true
   const parts = hostname.split('.')
   return parts.length === 4
     && parts[0] === '127'
     && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+}
+
+/**
+ * Whether a configured SMTP relay host points into a private or reserved range.
+ *
+ * 2.3.2: `/config` accepted any authority and `/feedback` then opened a socket
+ * to it, so the pair formed a small outbound-connect primitive (a port probe and
+ * protocol prober aimed at the local network). This predicate is what the config
+ * sanitiser uses to refuse those targets.
+ *
+ * LOOPBACK IS DELIBERATELY ALLOWED: `127.0.0.1:1025`, `localhost`, `[::1]` are
+ * how a local relay (MailHog, Papercut, the offline test fixture) is configured,
+ * and that machine is the one the user is already on. What is refused is every
+ * PRIVATE/RESERVED target that is not the local host: RFC 1918 ranges, link-local
+ * 169.254/16 and fe80::/10, CGNAT 100.64/10, unique-local fc00::/7, `0.0.0.0`,
+ * multicast and the reserved 240/4 block.
+ *
+ * Names that are not literals (`smtp.example.com`) are allowed: resolving them
+ * here would duplicate the resolver the socket is about to use, and a name that
+ * resolves into a private range is the operator's DNS, not this sanitiser's.
+ * @param {unknown} host - the configured relay host.
+ * @returns {boolean} true when the target is a non-loopback private/reserved address.
+ */
+export function isReservedRelayHost(host) {
+  const value = typeof host === 'string' ? host.trim().toLowerCase() : ''
+  if (value === '') return false
+  const bare = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value
+  if (bare === 'localhost' || bare.endsWith('.localhost')) return false
+  if (bare === '::1' || bare === '0:0:0:0:0:0:0:1') return false
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare)
+  if (ipv4 !== null) {
+    const octets = [Number(ipv4[1]), Number(ipv4[2]), Number(ipv4[3]), Number(ipv4[4])]
+    if (octets.some(octet => octet > 255)) return false
+    const [a, b] = octets
+    if (a === 127) return false
+    if (a === 10) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+    if (a === 169 && b === 254) return true
+    if (a === 100 && b >= 64 && b <= 127) return true
+    if (a === 0) return true
+    if (a === 198 && (b === 18 || b === 19)) return true
+    if (a >= 224) return true
+    return false
+  }
+  if (bare.includes(':')) {
+    if (/^f[cd][0-9a-f]{2}:/.test(bare)) return true
+    if (/^fe[89ab][0-9a-f]:/.test(bare)) return true
+    if (bare.startsWith('::ffff:')) return isReservedRelayHost(bare.slice('::ffff:'.length))
+    return false
+  }
+  return false
 }
 
 /**
@@ -1532,11 +1629,34 @@ export function isTrustedRequest(req, trustedHosts = []) {
  *   desktop-origin           the request came from the Electron page instead of the HTTP one
  *   foreign-origin           a page on another host:port talked to us
  *   opaque-origin            `Origin: null` (sandboxed iframe, file://, data:)
+ *
+ * 2.3.2 — the desktop shell never sends an Origin, so the strict rule above
+ * made the whole desktop window read-only. It is not a page bug on the plugin
+ * side: `dsh-app://app/` requests are forwarded by the Electron main process
+ * through `forwardWebRequest`, which DELETES `origin` and `sec-fetch-site` and
+ * injects the Host's own authority-bound cookie
+ * (`resources/app/lib/main.js:15356-15362`, entry `:20804-20811`). Measured on
+ * the live desktop host: `/state` answered 200 while `/ask`, `/config`,
+ * `/reset`, `/cancel`, `/diagnose` and `/feedback` all answered 403.
+ *
+ * `options.delegated` is the caller's answer to one question: "is the Host's
+ * own session gate present AND does this request carry its credential?" When
+ * true, the two no-page shapes (`no-origin`, `desktop-origin`) are handed to
+ * that gate instead of being refused here — which is what the Host's own fence
+ * already does (`dsh-client-connection`: `if (origin === undefined) return
+ * true`). A composition with NO gate keeps refusing them, because there
+ * "loopback" is the entire model and any local process could write. The caller
+ * signals that by passing false or omitting the option.
+ *
+ * The verdict stays a pure function: the argument may be a boolean or a lazy
+ * `() => boolean`, which is invoked at most once and only for those two shapes.
  * @param {{headers: Record<string, string|string[]|undefined>}} req - node request.
  * @param {readonly string[]} trustedHosts - non-loopback authorities to accept.
- * @returns {{ok: boolean, reason?: string}} verdict; `reason` is absent when ok.
+ * @param {{delegated?: boolean|(() => boolean)}} [options] - Host-gate delegation.
+ * @returns {{ok: boolean, reason?: string, via?: string}} verdict; `reason` is
+ *   absent when ok, `via: 'host-gate'` marks a shape the Host gate accepted.
  */
-export function fenceVerdict(req, trustedHosts = []) {
+export function fenceVerdict(req, trustedHosts = [], options = {}) {
   const headers = req?.headers ?? {}
   const host = typeof headers.host === 'string' ? headers.host : undefined
   if (host === undefined) return { ok: false, reason: 'no-host' }
@@ -1559,6 +1679,11 @@ export function fenceVerdict(req, trustedHosts = []) {
   })
   if (!isLoopbackHostname(hostUrl.hostname) && !trusted) return { ok: false, reason: 'untrusted-host' }
   if (headers['sec-fetch-site'] === 'cross-site') return { ok: false, reason: 'cross-site' }
+  /** Ask the caller's gate, at most once, and only for the two no-page shapes. */
+  const delegated = () => {
+    const value = options?.delegated
+    return typeof value === 'function' ? value() === true : value === true
+  }
   const origin = typeof headers.origin === 'string' ? headers.origin : undefined
   if (origin === undefined) {
     // A page always names itself on a request that can change state. A request
@@ -1568,11 +1693,21 @@ export function fenceVerdict(req, trustedHosts = []) {
     // "same origin" for anything that writes or spends. Safe verbs stay open
     // (the host session gate still applies to them); an unsafe verb has to come
     // from a page we can name — which the phone's WebView always is.
+    //
+    // 2.3.2: the desktop shell is the one caller that never sends one, because
+    // its main process strips it. When that shell's own session gate vouches
+    // for the request, the gate is the door and this fence steps aside.
     const method = typeof req?.method === 'string' && req.method !== '' ? req.method.toUpperCase() : 'GET'
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return { ok: true }
+    if (delegated()) return { ok: true, via: 'host-gate' }
     return { ok: false, reason: 'no-origin' }
   }
-  if (origin.startsWith('dsh-app:')) return { ok: false, reason: 'desktop-origin' }
+  if (origin.startsWith('dsh-app:')) {
+    // Same delegation: an authenticated desktop window reaching the Host's HTTP
+    // port directly is the legacy shape the gate already guards.
+    if (delegated()) return { ok: true, via: 'host-gate' }
+    return { ok: false, reason: 'desktop-origin' }
+  }
   let originUrl
   try {
     originUrl = new URL(origin)
@@ -2086,6 +2221,37 @@ function createSideEngine(ctx, configOf) {
     }
   }
 
+  /**
+   * Whether the configured read-only promise can be honoured RIGHT NOW.
+   *
+   * `sideTools: 'readonly'` needs a carrier (a preset the host honours, or an
+   * advertised tool filter); without one every run is refused, and the settings
+   * page otherwise only finds out by losing an answer. Reporting it up front is
+   * what makes an upgrade from a persisted `readonly` (2.1.10 changed only the
+   * defaults) visible instead of mysterious.
+   *
+   * 2.3.2: `effective` names the policy actually in force. The settings page used
+   * to infer "inherit is on" from the absence of `requested`, so a reader of
+   * /state could not tell a deliberate `inherit` from a lost `readonly`.
+   * @returns {{requested: boolean, viable: boolean, carrier: string, effective: string}}
+   */
+  function readonlySurface() {
+    const config = configOf()
+    if (config.sideTools !== 'readonly') {
+      return { requested: false, viable: true, carrier: 'none', effective: 'inherit' }
+    }
+    const caps = providerCapabilities(resolveProvider(config.sideProvider))
+    const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
+    const presetOk = preset !== '' && caps?.agentPreset === true
+    const filterOk = caps?.toolFilter === true
+    return {
+      requested: true,
+      viable: presetOk || filterOk,
+      carrier: presetOk ? 'preset' : filterOk ? 'tool-filter' : 'none',
+      effective: 'readonly',
+    }
+  }
+
   /** Report what the side card can do right now. */
   function capabilities() {
     const providers = providerNames()
@@ -2104,32 +2270,7 @@ function createSideEngine(ctx, configOf) {
         }
       })(),
       activeRuns: runs.size,
-      // Whether the configured read-only promise can be honoured RIGHT NOW.
-      // `sideTools: 'readonly'` needs a carrier (a preset the host honours, or
-      // an advertised tool filter); without one every run is refused, and the
-      // settings page otherwise only finds out by losing an answer. Reporting
-      // it up front is what makes an upgrade from a persisted `readonly` (2.1.10
-      // changed only the defaults) visible instead of mysterious.
-      readonly: (() => {
-        const config = configOf()
-        if (config.sideTools !== 'readonly') {
-          return { requested: false, viable: true, carrier: 'none' }
-        }
-        let caps
-        try {
-          caps = providerCapabilities(resolveProvider(config.sideProvider))
-        } catch {
-          caps = undefined
-        }
-        const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
-        const presetOk = preset !== '' && caps?.agentPreset === true
-        const filterOk = caps?.toolFilter === true
-        return {
-          requested: true,
-          viable: presetOk || filterOk,
-          carrier: presetOk ? 'preset' : filterOk ? 'tool-filter' : 'none',
-        }
-      })(),
+      readonly: readonlySurface(),
       // The parent the next side answer would be published under, and whether
       // the archived-session gate would reject it. This is what makes a
       // "作答失败（refusal）" report diagnosable from the settings page.
@@ -2609,17 +2750,59 @@ function createSideEngine(ctx, configOf) {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Schema version stamped into every saved config file (2.3.2).
+ *
+ * Before this, `~/.dsh/sidecard-ask/config.json` was a bare bag of keys with no
+ * version: a downgrade (or a newer build meeting an older one) had no way to
+ * know which shape it was reading, so the only strategy was "drop what you do
+ * not know" — and the only signal was a backup file nobody looks at. The field
+ * is metadata, not a config key: readers strip it before the layer reaches
+ * `sanitizeLayer`, and `migrateConfigLayer` is the single place a future
+ * change gets applied.
+ */
+export const CONFIG_SCHEMA_VERSION = 2
+
+/**
+ * Migrate one persisted layer from the version recorded in the file.
+ *
+ * v1 → v2 has no structural change to apply: v2 only ADDS the version stamp and
+ * the keys that already existed keep their meaning. The function exists so the
+ * next change has an obvious home, and so an unreadable future version is
+ * reported instead of being silently reinterpreted.
+ * @param {Record<string, unknown>} data - the layer as read.
+ * @param {number} from - the recorded version (0 when the file predates the stamp).
+ * @param {(line: string) => void} [note] - collects human-readable problems.
+ * @returns {Record<string, unknown>} the layer to use.
+ */
+export function migrateConfigLayer(data, from, note) {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return {}
+  if (from > CONFIG_SCHEMA_VERSION) {
+    note?.(`配置文件来自更新的版本（schemaVersion ${from} > ${CONFIG_SCHEMA_VERSION}），未知键会被保留，未识别的键值按默认处理`)
+  }
+  return { ...data }
+}
+
+/**
  * Read ONE config file. A missing or unreadable file is not an error — it only
  * means "no user overrides here".
  * @param {string} path - absolute file path.
  * @param {object} [logger] - optional ctx.logger.
- * @returns {{data: Record<string, unknown>, path: string, present: boolean, error?: string}}
+ * @returns {{data: Record<string, unknown>, path: string, present: boolean, schemaVersion?: number, error?: string}}
  */
 function readConfigFile(path, logger) {
   try {
     const raw = readFileSync(path, 'utf8')
     const parsed = JSON.parse(raw)
-    return { data: parsed !== null && typeof parsed === 'object' ? parsed : {}, path, present: true }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { data: {}, path, present: true }
+    }
+    const { schemaVersion, ...data } = parsed
+    return {
+      data,
+      path,
+      present: true,
+      schemaVersion: typeof schemaVersion === 'number' && Number.isFinite(schemaVersion) ? schemaVersion : 0,
+    }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       logger?.warn?.(`[sidecard-ask] 读取 ${path} 失败，按未配置处理：`, error?.message ?? error)
@@ -2708,8 +2891,13 @@ function writePersistedConfig(data, logger) {
     // A downgrade (or a newer build's keys meeting an older one) used to drop
     // unknown keys on the first save, permanently. Keep a copy of the file
     // whenever the new layer is about to lose a key it does not know.
-    const backup = backupIfDroppingKeys(path, data, logger)
-    writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    // 2.3.2: stamp the schema version alongside the layer. The reader strips it
+    // again, so the layer that reaches `sanitizeLayer` is unchanged; what changes
+    // is that a future build (or a downgrade) can tell which shape it is reading
+    // instead of guessing from the keys that happen to be present.
+    const payload = { schemaVersion: CONFIG_SCHEMA_VERSION, ...data }
+    const backup = backupIfDroppingKeys(path, payload, logger)
+    writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
     renameSync(temp, path)
     return { ok: true, path, ...(backup === undefined ? {} : { backup }) }
   } catch (error) {
@@ -2738,8 +2926,18 @@ export function apply(ctx, patchConfig) {
   // a previous host's name (two hosts in one process must not share a path).
   hostProfileName = profileNameFromContext(ctx)
   const persisted = readPersistedConfig(ctx.logger)
-  let state = normalizeConfig(patchConfig, persisted.present ? persisted.data : undefined)
-  let userLayer = persisted.present ? sanitizeLayer(persisted.data) : {}
+  // 2.3.2: run the persisted layer through the migration seam before anything
+  // reads it. `persisted.schemaVersion` is 0 for a file written before the stamp
+  // existed (or for the shared legacy file), which is exactly the v1 shape.
+  const persistedNotes = []
+  const persistedLayer = persisted.present
+    ? migrateConfigLayer(persisted.data, persisted.schemaVersion ?? 0, line => persistedNotes.push(line))
+    : undefined
+  let state = normalizeConfig(patchConfig, persistedLayer)
+  let userLayer = persisted.present ? sanitizeLayer(persistedLayer, persistedNotes) : {}
+  // Migration/downgrade notes reach the operator through the same channel as
+  // every other "this value was ignored" line, instead of only the log file.
+  if (persistedNotes.length > 0) state.problems = [...state.problems, ...persistedNotes]
   const configOf = () => state.config
 
   /** Recompute the effective config and its provenance. */
@@ -3092,8 +3290,16 @@ export function apply(ctx, patchConfig) {
       writeOk(res, { sent: true, at: now.toISOString(), transport: 'smtp', toMasked: maskEmail(to) })
     } catch (error) {
       const wire = toWireError(error, 'feedback-send-failed')
+      // 2.3.2: keep the mailer's own terminal code when it has one.
+      // This used to answer `feedback-send-failed` for everything, which hid the
+      // ONE failure the user can fix from the settings page: a cleartext relay
+      // that never offered STARTTLS (`smtp-starttls-missing`). The status stays
+      // 502 and the message is unchanged; only the code travels.
+      const code = typeof wire.code === 'string' && wire.code !== '' && wire.code !== 'internal'
+        ? wire.code
+        : 'feedback-send-failed'
       ctx.logger?.warn?.(`[sidecard-ask] feedback failed to ${maskEmail(to)}: ${wire.code} ${wire.message}`)
-      writeError(res, 502, 'feedback-send-failed', wire.message)
+      writeError(res, 502, code, wire.message)
     }
   }
 
@@ -3209,7 +3415,11 @@ export function apply(ctx, patchConfig) {
     // point the host at an attacker and the next /feedback hands them the
     // password in cleartext AUTH PLAIN. Losing the password is recoverable;
     // leaking it is not.
-    const endpointChanged = ['feedbackSmtpHost', 'feedbackSmtpPort', 'feedbackSmtpSecure', 'feedbackSmtpUser']
+    const endpointChanged = ['feedbackSmtpHost', 'feedbackSmtpPort', 'feedbackSmtpSecure', 'feedbackSmtpUser',
+      // 2.3.2: turning STARTTLS OFF is a downgrade of the very channel the
+      // password travels on, so it invalidates the stored code exactly like
+      // pointing the host elsewhere does.
+      'feedbackSmtpStarttls']
       .some(key => accepted[key] !== undefined && String(accepted[key]) !== String(state.config[key] ?? ''))
     if (endpointChanged && accepted.feedbackSmtpPass === undefined) {
       stageClearedPassword = true
@@ -3255,7 +3465,7 @@ export function apply(ctx, patchConfig) {
    * apart from "the Host is up" once the session gate is in front of
    * everything else. It exposes nothing but the version and the Host clock.
    */
-  const API_METHODS = ['ping', 'state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
+  const API_METHODS = ['ping', 'diag', 'state', 'ask', 'cancel', 'config', 'reset', 'diagnose', 'feedback']
 
   /**
    * The Host's own browser-session gate, borrowed for the plugin's routes.
@@ -3313,6 +3523,45 @@ export function apply(ctx, patchConfig) {
   }
 
   /**
+   * The non-sensitive half of `/state`, answerable without a session (2.3.2).
+   *
+   * Deliberately narrow: every field is a boolean, a version or a count. It is
+   * the difference between "the fence refuses everything" and "the plugin never
+   * loaded" for a headless acceptance run, and it is what proves the desktop
+   * delegation is active on a live host. Nothing here identifies the machine —
+   * no paths, no configuration values, no client report.
+   * @returns {Record<string, unknown>} the diagnostic surface.
+   */
+  const diagSurface = () => {
+    const gate = connectionService() !== undefined
+    const readonly = readonlySurface()
+    return {
+      version: PLUGIN_VERSION,
+      at: Date.now(),
+      // The registration shape that actually succeeded on this host.
+      route: 'prefix',
+      // `host-gate` = the host session gate is mounted; `fence-only` = the
+      // loopback/Origin fence is the entire model.
+      authGate: gate ? 'host-gate' : 'fence-only',
+      // True when a request that names no page (the desktop shell's forwarded
+      // shape, and any native client) is handed to that gate instead of being
+      // refused by the fence.
+      fenceDelegation: gate,
+      readonly: {
+        requested: readonly.requested,
+        viable: readonly.viable,
+        carrier: readonly.carrier,
+        effective: readonly.effective,
+      },
+      config: {
+        schemaVersion: CONFIG_SCHEMA_VERSION,
+        userLayerKeys: Object.keys(userLayer).length,
+        problems: Array.isArray(state.problems) ? state.problems.length : 0,
+      },
+    }
+  }
+
+  /**
    * The custom request header every state-changing call must carry.
    *
    * A cross-site page cannot set it without a CORS preflight, and this API
@@ -3325,7 +3574,28 @@ export function apply(ctx, patchConfig) {
 
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
-    const verdict = fenceVerdict(req, trustedHostsOf())
+    // The Host's session gate is consulted AT MOST ONCE per request: the fence
+    // needs its answer only for the two no-page shapes (an unset Origin, or the
+    // desktop shell's `dsh-app:` one), and the dispatch below needs it for every
+    // other verb. Memoising keeps the desktop path from running the HMAC check
+    // twice and keeps both call sites looking at the same verdict.
+    let authOutcome
+    let authKnown = false
+    const authOnce = () => {
+      if (!authKnown) {
+        authOutcome = authRejection(req)
+        authKnown = true
+      }
+      return authOutcome
+    }
+    const verdict = fenceVerdict(req, trustedHostsOf(), {
+      // 2.3.2 desktop fix. Delegation needs BOTH halves: a Host gate must
+      // exist (a `fence-only` composition has no session at all, so "loopback"
+      // would become the whole model and any local process could write), and
+      // that gate must accept this request's authority-bound cookie. Only then
+      // is "no page named itself" read the way the host's own fence reads it.
+      delegated: () => connectionService() !== undefined && authOnce() === undefined,
+    })
     if (!verdict.ok) {
       // 说明"为什么被拒 + 怎么放行"。2.1.15 起按原因分文案：此前所有子条件都吐
       // 「Host 不在信任范围 …… 写进 trustedHosts」，而 Origin 不匹配（桌面外壳的
@@ -3366,7 +3636,23 @@ export function apply(ctx, patchConfig) {
       writeOk(res, { version: PLUGIN_VERSION, at: Date.now() })
       return
     }
-    const unauthorized = authRejection(req)
+    // 2.3.2: `/diag` — the diagnosis a cross-end failure needs, WITHOUT a
+    // session. `/state` is behind the host gate (correctly: it carries paths,
+    // config and the client report), so a headless acceptance run could not tell
+    // "the fence refuses everything" from "the plugin never loaded". This answers
+    // only what an operator cannot otherwise see from outside: which fence shape
+    // the host is in, whether the desktop delegation is active, whether the
+    // read-only promise is honourable, and the config file's own version.
+    // No paths, no config values, no client report.
+    if (method === 'diag') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        writeError(res, 405, 'method-error', 'method not allowed')
+        return
+      }
+      writeOk(res, diagSurface())
+      return
+    }
+    const unauthorized = authOnce()
     if (unauthorized !== undefined) {
       writeError(
         res,

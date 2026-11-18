@@ -45,5 +45,14 @@
   "setAutoExpandOnDone": "答完自动展开卡片",
   "setAutoExpandOnDoneHint": "开启后，回答一结束就展开成卡片显示正文；关闭后保持一行胶囊，点一下才展开",
   "errorReadonlyUnavailableBody": "当前设为只读作答（sideTools: readonly），但这台宿主没有只读载体（预设或工具过滤），为保证不写工作区，本次已拒绝。可在设置页把侧边工具改为「继承父代理」",
-  "setReadonlyBlocked": "⚠ 这台宿主当前没有任何只读载体：保持“只读”会让每一次追问都被拒绝。请改为“继承父代理”，或在下面填写一个 host 认得的 preset。"
+  "setReadonlyBlocked": "⚠ 这台宿主当前没有任何只读载体：保持“只读”会让每一次追问都被拒绝。请改为“继承父代理”，或在下面填写一个 host 认得的 preset。",
+  "errorNoOriginBody": "写操作缺少 Origin 头：页面会自动带上，脚本调用请显式声明来源；若在桌面端出现，请重新登录 DSH 后再试",
+  "errorDesktopOriginBody": "请求来自桌面外壳页（dsh-app://app），但宿主会话未通过校验：请重新登录 DSH 后再试",
+  "errorUntrustedHostBody": "Host 不在信任范围：请用 http://127.0.0.1:<端口> 访问，或把该地址写进 trustedHosts 配置",
+  "errorForeignOriginBody": "请求来源页与该接口不同源（Origin 的 host:port 必须与 Host 完全一致）",
+  "errorOpaqueOriginBody": "请求来源页是不透明源（Origin: null，常见于沙箱 iframe / file:// / data:），已按跨站拒绝",
+  "errorCrossSiteBody": "跨站点请求被拒（浏览器标记 Sec-Fetch-Site: cross-site）",
+  "errorMissingMarkerBody": "写操作缺少 x-sidecard-ask: 1 请求头（页面会自动添加；脚本调用请显式声明）",
+  "errorStarttlsMissingBody": "SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次未发送；若这是本地明文中继，请在设置页显式关闭 STARTTLS",
+  "copyInsecureHint": "当前地址不是安全域（http），浏览器不提供剪贴板接口：已选中文本，请按 Ctrl+C 复制"
 }

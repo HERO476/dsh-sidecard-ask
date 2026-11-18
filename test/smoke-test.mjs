@@ -893,11 +893,16 @@ report.equal(trusted.status, 403, 'an untrusted non-loopback authority is refuse
 // not — and on Android every app shares the network namespace, so "loopback" is
 // not an app boundary. Pinned so a future compatibility change cannot quietly
 // loosen this back to "no Origin means same origin".
+//
+// 2.3.2 scoped this to compositions WITHOUT a host session gate (`fence-only`):
+// there the fence is the whole model, so the rule must stay. `a.harness` here
+// has no `connection` service, which is exactly that shape. The gated shape —
+// where the host's own gate vouches for the request — is covered in §10.
 const noOriginWrite = await callRoute(a.harness, '/config', {
   body: { maxChars: 100 },
   headers: { host: '127.0.0.1:8080', origin: undefined },
 })
-report.equal(noOriginWrite.status, 403, 'a write with no Origin is refused by the fence')
+report.equal(noOriginWrite.status, 403, 'a write with no Origin is refused by the fence (fence-only composition)')
 report.equal(noOriginWrite.json().error.reason, 'no-origin', 'the refusal names the missing Origin')
 const noOriginAsk = await callRoute(a.harness, '/ask', {
   body: { id: 'n', question: 'q', selection: 's' },
@@ -1005,6 +1010,34 @@ report.equal(afterReport.value.client.native.available, true, 'native adapter av
 report.ok(afterReport.value.client.evil === undefined, 'unknown keys are dropped')
 report.ok(typeof afterReport.value.client.at === 'number', 'the report is timestamped by the host')
 
+// 2.3.2 (R4): the native right-rail adapter is the one surface the plugin itself
+// calls a PLACEHOLDER — it has never been verified against a live right-rail
+// composition. When it fails, the card silently falls back to the floating
+// layer, which looks exactly like normal operation. Its reason has to survive
+// the round trip, or nobody can tell a deliberate fallback from a broken host.
+// A separate harness keeps these observations out of `fresh`'s merge history.
+const degradedHost = await boot()
+const degraded = await callRoute(degradedHost.harness, '/diagnose', {
+  body: {
+    surface: 'flow',
+    native: { available: false, reason: 'PLACEHOLDER: native-rightbar' },
+    better: { available: false, reason: 'betterSidebar missing' },
+  },
+})
+report.equal(degraded.status, 200, 'a degraded report is accepted')
+const afterDegraded = (await callRoute(degradedHost.harness, '/state', { method: 'GET' })).json()
+report.equal(afterDegraded.value.client.native.available, false, 'the native adapter state is reported as unavailable')
+report.equal(
+  afterDegraded.value.client.native.reason,
+  'PLACEHOLDER: native-rightbar',
+  'the native adapter failure reason reaches /state, so a silent fallback is visible',
+)
+report.equal(
+  afterDegraded.value.client.better.reason,
+  'betterSidebar missing',
+  'the side-card plugin failure reason reaches /state too',
+)
+
 const truncated = await callRoute(fresh.harness, '/diagnose', {
   body: { version: 'x'.repeat(500), better: { reason: 'y'.repeat(5000), features: ['ok', 42, 'z'.repeat(100)] } },
 })
@@ -1091,6 +1124,68 @@ const broken = await boot({
 })
 const gateBroken = await callRoute(broken.harness, '/state', { method: 'GET' })
 report.equal(gateBroken.status, 401, 'an auth service that throws fails closed')
+
+// 2.3.2 — the desktop shell's request shape, which the fence used to kill.
+//
+// The Electron main process forwards every non-static `dsh-app://app/` request
+// through `forwardWebRequest`, which DELETES `origin` and `sec-fetch-site` and
+// injects the Host's own authority-bound cookie
+// (`resources/app/lib/main.js:15356-15362`, route `:20804-20811`). Measured on
+// the live desktop host before the fix: `/state` answered 200 while `/ask`,
+// `/config`, `/reset`, `/cancel`, `/diagnose` and `/feedback` all answered 403
+// `no-origin` — the desktop window could read but never write.
+//
+// The fix delegates exactly that shape to the host gate that already guards it,
+// and ONLY when that gate exists and accepts the credential.
+const desktopShell = await boot({ services: { connection: { requestRejection: () => undefined } } })
+const desktopWrite = await callRoute(desktopShell.harness, '/config', {
+  body: { maxChars: 100 },
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.equal(desktopWrite.status, 200, 'an authenticated write with no Origin passes (desktop forward shape)')
+const desktopAsk = await callRoute(desktopShell.harness, '/ask', {
+  body: { id: 'desk', question: 'q', selection: 's' },
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.ok(desktopAsk.status !== 403, 'an authenticated ask with no Origin is no longer fence-refused')
+const desktopAppOrigin = await callRoute(desktopShell.harness, '/config', {
+  body: { maxChars: 120 },
+  headers: { host: '127.0.0.1:8080', origin: 'dsh-app://app' },
+})
+report.equal(desktopAppOrigin.status, 200, 'an authenticated dsh-app Origin passes too (legacy direct path)')
+const desktopState = await callRoute(desktopShell.harness, '/state', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.equal(desktopState.status, 200, 'the desktop read still answers')
+report.equal(desktopState.json().ok, true, 'the desktop read is a success envelope')
+
+// The delegation must NOT widen when the same shape arrives without a credential:
+// a local process that reaches the loopback port cannot sign the host cookie, so
+// it keeps getting the fence's own refusal (and the reason still names the cause).
+const desktopDenied = await boot({ services: { connection: { requestRejection: () => 401 } } })
+const desktopDeniedWrite = await callRoute(desktopDenied.harness, '/config', {
+  body: { maxChars: 100 },
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.equal(desktopDeniedWrite.status, 403, 'the delegated shape is still refused when the gate rejects the credential')
+report.equal(desktopDeniedWrite.json().error.reason, 'no-origin', 'the refusal still names the missing Origin')
+const desktopDeniedApp = await callRoute(desktopDenied.harness, '/config', {
+  body: { maxChars: 100 },
+  headers: { host: '127.0.0.1:8080', origin: 'dsh-app://app' },
+})
+report.equal(desktopDeniedApp.status, 403, 'the dsh-app shape is refused without a credential too')
+report.equal(desktopDeniedApp.json().error.reason, 'desktop-origin', 'the dsh-app refusal keeps its own reason')
+
+// A composition with NO gate must keep the strict rule: delegation is gated on
+// the gate existing, never on "the request is on loopback".
+const fenceOnlyShape = await boot()
+const fenceOnlyWrite = await callRoute(fenceOnlyShape.harness, '/config', {
+  body: { maxChars: 100 },
+  headers: { host: '127.0.0.1:8080', origin: undefined },
+})
+report.equal(fenceOnlyWrite.status, 403, 'a fence-only composition never delegates a no-Origin write')
+report.equal(fenceOnlyWrite.json().error.reason, 'no-origin', 'the fence-only refusal names the missing Origin')
 
 // ────────────────────────────────────────────────────────────────────────────
 // 10b. liveness probe — the one method OUTSIDE the session gate

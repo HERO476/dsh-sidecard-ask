@@ -514,7 +514,7 @@ dsh-better-sidebar 为此专门带了一条防御（`html[data-platform] body>[d
 | 宿主版本落差 | 桌面 `dsh-desktop 0.2.0-rc.2`（包内 `dsh` 同版本）；网页 **`0.2.1-rc.2`** | 适配矩阵要按两端分别列，不能写成"DSH 0.2.x" |
 | 渲染内核 | Electron **43.3.0 = Chromium 150.0.7871.212**（`~/.dsh/electron/version` 亦为 43.3.0）；网页端取决于访问者浏览器（本机对照 Edge/Chromium 155） | `renderRichText` 在 150 与 155 上实测同量级（8 k 0.2–0.3 ms，64 k 1.2–2.0 ms） |
 | 自定义 scheme | `dsh-app://app/` 特权：`standard/secure/supportFetchAPI/corsEnabled/stream/codeCache` | `fetch` + 流式读取可用，不需要 EventSource |
-| 请求转发 | `forwardWebRequest`：只放行 `origin=dsh-app://app`，删 `host/origin/cookie/sec-fetch-site` 后注入宿主 cookie，`duplex:"half"` | 2.0.2 起的会话门在桌面端靠这条链路通过；插件侧 `origin` 缺失时被判为可信（`isTrustedRequest`） |
+| 请求转发 | `forwardWebRequest`：只放行 `origin=dsh-app://app`，删 `host/origin/cookie/sec-fetch-site` 后注入宿主 cookie，`duplex:"half"` | 2.0.2 起的会话门在桌面端靠这条链路通过。**这条链路把 `Origin` 删掉了**，所以插件围栏必须把「无 Origin」交给宿主闸门裁决：2.3.2 起如此（`fenceVerdict` 的 `delegated` 选项），而 2.2.0–2.3.1 期间它判成 `no-origin`，桌面端所有写操作 403 |
 | 权限 | 主窗口 `setPermissionRequestHandler`：非 `media` 一律放行；登录窗/侧栏 webview 一律拒绝并拦下载 | 剪贴板与通知**有**权限；导出下载走主窗口，不受拦截 |
 | 通知 | 全包 **无 `setAppUserModelId`** | Windows toast 可能不弹；`notifyOnDone` 默认关，打开后仍以卡片状态为兜底 |
 | 菜单加速键 | 全包 `Alt+Q` **0 命中** | 外壳不抢默认快捷键（输入法/其它程序仍可能抢） |
@@ -1037,7 +1037,8 @@ Host: ctx.subagents.start('spawn')
 - 插件路由带**两层**围栏：回环 / 可信域 + 同源校验（Host 头、`Origin`、`Sec-Fetch-Site`），然后交给宿主的
   `connection.requestRejection()` 校验 **DSH 浏览器会话**（宿主没挂载该服务时才只保留第一层）。
   因此未登录的外部程序拿到 loopback 地址也读不到 `/state`、更发不出 `/ask`。
-- **2.2.0 起，改写状态的请求必须有 `Origin`**：`GET` / `HEAD` / `OPTIONS` 之外，缺 `Origin` 一律 403 `no-origin`。
+- **改写状态的请求必须有 `Origin`**：`GET` / `HEAD` / `OPTIONS` 之外，缺 `Origin` 一律 403 `no-origin`。
+  **2.3.2 起的唯一例外**：宿主会话闸门存在、且它接受该请求的凭证时，「无 Origin」与 `Origin: dsh-app://app` 两种形态交给闸门裁决——这正是桌面外壳的请求形状（主进程转发前删掉了 `Origin`）。没有闸门的 `fence-only` 组合维持一律 403。
   浏览器页面一定会带，脚本、原生客户端、同机其它 App 不会带 —— 而手机上所有 App 共享网络命名空间，
   "回环"并不等于"应用隔离"，所以"没有 Origin"不能再被当成"同源"。
   这条是给移动端补的：它同时也让"用脚本直接打 `/ask`"变成显式失败，而不是悄悄花掉一次子代理。
