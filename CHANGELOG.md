@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.3.3
+
+**主题：修 2.3.2 的发布事故——`/diag` 上线即坏，外加三处被审计挖出的残留。**
+
+### 修复
+
+- **P0 · `/diag` 在 2.3.2 上一律返回裸 400（已复现）**：`diagSurface()` 位于 `apply` 作用域，却直接调用了定义在 `createSideEngine` 闭包内的 `readonlySurface()`，抛 `ReferenceError: readonlySurface is not defined`；宿主 `dsh-host-webserver` 把未捕获的 handler 拒绝统一译成 `res.writeHead(400); res.end()`（无 body、无 content-type），于是现场看起来像"宿主拒绝了畸形请求"。现在改为读 `engine.capabilities().readonly`（引擎自己发布的同一个值），并给 `diagSurface` 加了兜底。
+- **P0 · 未捕获异常不再变成裸 400**：新增 `guardedHandler` 包裹路由处理器，任何未捕获抛出改为 `500` + JSON `{"code":"internal"}`，并记日志。之前一次 `ReferenceError` 在 wire 上完全没有痕迹。
+- **P0 · `/diag` 补上测试**：2.3.2 发布时该端点零覆盖，整套 2120 条断言全绿而线上接口是坏的。新增 15 条断言（200/字段白名单/405/外部 Origin 403/cross-site 403/fence-only 形态/不泄露）。
+- **S3 · IPv4-mapped IPv6 的十六进制写法绕过中继过滤（已复现）**：`::ffff:a9fe:a9fe` 就是 `169.254.169.254`（云元数据），`::ffff:0a00:0001` 就是 `10.0.0.1`；`dns.lookup` 以 `family: 6` 解析、内核再走 IPv4，所以内网/元数据目标仍可达。现在两种写法都归一化成四段十进制再进 IPv4 判定；`::ffff:7f00:1` 这类回环映射仍然放行。
+- **S4 · 发送前不复查中继地址**：过滤只在 `sanitizeLayer`，而 `resolveSmtp` 也会读手改的配置文件，等于绕过。现在 `resolveSmtp` 末段复查 `isReservedRelayHost`；环境变量 `DSH_SIDECARD_SMTP_URL` 保持豁免（运维自有通道，有意留逃生口）。
+- **S2 · `/diag` 两个字段语义失真**：`route` 硬编码 `'prefix'`（退化到逐方法精确路由时仍这么报），`fenceDelegation` 只报"闸门存在"却被读成"已委派"。现在 `route` 反映真实注册形态，新增 `gateMounted`，`fenceDelegation` 改为 `'credential-gated' | 'disabled'`（名称即条件，不冒充结果）。
+- **S7 · `/state` 被能力查询拖垮**：`capabilities()` 会读可选服务与 provider 能力表，任一抛错就让整份 `/state` 变 500 —— 而 `/state` 正是用来诊断这个组合的。现在降级而不是失败（与 `/diag` 同一道兜底）。
+- **RA3 · `/diag` 的 schemaVersion 是假阳性（架构评审）**：它报的是代码常量 `CONFIG_SCHEMA_VERSION`，而配置文件里根本没有 `schemaVersion` 键时它照样答 `2` —— 恰好把这个字段存在的唯一问题（"文件迁移了没"）永久答错。现在拆成 `config.targetSchema`（本版本写入的）与 `config.fileSchema`（文件实际带的，无文件为 `null`，无版本戳为 `0`）。
+- **RB2 · 内网中继不再在加载期被删（架构评审）**：2.3.2 把 `feedbackSmtpHost` 指向内网时直接从配置层丢弃，于是升级过的人只剩内存里的一份值，下一次保存任何设置都会用不含该键的层覆盖磁盘 —— 永久、静默地丢配置。现在值保留并记一条 problems，拒绝发生在发送期（`resolveSmtp`），可读且可回退。
+- **RB1 · 桌面直连端口的分支注释与事实相反（架构评审）**：`Origin: dsh-app://app` 的委派分支在当前宿主上**不可达** —— 宿主 `api-request-trust` 只认 http/https scheme，所以该 Origin 先被闸门判 403、`delegated()` 永远为 false，实际仍返回 `desktop-origin`。分支保留（将来宿主放宽时不必发版），注释改为如实描述，不再暗示"直连端口已支持"。
+- **RB2 续 · 域名解析后的地址也复核（架构评审）**：字面量过滤挡不住 `internal.corp` 这类指向 10.x 的名字。发送前新增一次 DNS 解析（`assertRelayTargetAllowed`）：**任一**解析结果落在内网/保留段即拒绝；解析失败同样拒绝（"判不了"不等于"放行"）。`127.0.0.1` 这类回环字面量照旧可用。
+- **R6 · 500 带引用号（现实核查）**：未捕获异常现在是 `500 {"code":"internal"}` + 8 位 `errId`，完整堆栈只进宿主日志。之前同一个裸 400/500 无法分诊。
+- **S6 续 · `/diag` 收窄暴露面（安全 handoff）**：`readonly` 只留 `viable` 与 `effective`（去掉 `requested`——它只是 `effective` 的布尔化，以及 `carrier`——它描述宿主的 provider 形态）；`config.problems` 从计数改为 `hasProblems` 布尔。免会话端点不再透露"配置错了几条"。
+- **RB3 · 去掉冗余字段**：`gateMounted` 与 `authGate` 由同一个布尔派生，多一个字段就多一处与断言漂移的机会。`/diag` 的键集稳定为 7 个。
+- **文档**：端点表补 `diag` 行，删除"`ping` 是唯一免会话豁免"的过期说法（现在是 `ping` 与 `diag` 两个）。
+
+### 测试
+
+- 新增/更新：`/diag` 15 条；`guardedHandler` 4 条结构防护（两处注册都必须绑它）；IPv4-mapped 六条；无 Origin + 伪造 cookie 两象限。
+- `npm test` 全绿：verify 79 / contract 1574 / float-placement 160 / wire-geometry 15 / smoke 395；locale zh/en 各 56 键同步。
+- **已证实能抓到这个 bug**：把 2.3.2 的 `index.js` 换回 `git show ed672b8:index.js` 跑新测试 → exit 1 并抛同一个 `ReferenceError`。
+- **未验证**：重载宿主后的 live 复验（`/diag` 应 200）、桌面端真机、macOS/Linux。
+
+### 为什么 2.3.2 会带着这个缺陷发出去
+
+`/diag` 是 2.3.2 新增的端点，但当时只写了实现、没写测试；而宿主把 handler 异常译成无 body 的 400，所以连"错误形状"都不指向插件。教训写进测试：新端点必须同时有正向断言与异常路径断言。
+
 ## 2.3.2
 
 **主题：跨端审计后的整轮修复——桌面端恢复可写、SMTP 不再可降级、配置带版本。**

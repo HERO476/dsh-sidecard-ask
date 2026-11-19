@@ -1177,6 +1177,33 @@ const desktopDeniedApp = await callRoute(desktopDenied.harness, '/config', {
 report.equal(desktopDeniedApp.status, 403, 'the dsh-app shape is refused without a credential too')
 report.equal(desktopDeniedApp.json().error.reason, 'desktop-origin', 'the dsh-app refusal keeps its own reason')
 
+// 2.3.3 (security review): a FORGED `dsh-auth-*` cookie must not help either.
+// The gate verifies an authority-bound HMAC the plugin never sees, so a guessed
+// cookie is rejected exactly like no cookie — and the fence must never fall back
+// to "a cookie is present, therefore trust it".
+const forgedCookie = await callRoute(desktopDenied.harness, '/config', {
+  body: { maxChars: 100 },
+  headers: {
+    host: '127.0.0.1:8080',
+    origin: undefined,
+    cookie: 'dsh-auth-signature=forged; dsh-auth-session=forged',
+  },
+})
+report.equal(forgedCookie.status, 403, 'a forged host cookie does not unlock the delegated shape')
+report.equal(forgedCookie.json().error.reason, 'no-origin', 'the refusal still names the missing Origin')
+
+// The same forged cookie WITH a named origin is only as strong as the gate:
+// the fence steps aside (same authority) and the gate answers 401.
+const forgedCookieSameOrigin = await callRoute(desktopDenied.harness, '/config', {
+  body: { maxChars: 100 },
+  headers: {
+    host: '127.0.0.1:8080',
+    origin: 'http://127.0.0.1:8080',
+    cookie: 'dsh-auth-signature=forged',
+  },
+})
+report.equal(forgedCookieSameOrigin.status, 401, 'with a same-origin page the gate itself refuses the forged cookie')
+
 // A composition with NO gate must keep the strict rule: delegation is gated on
 // the gate existing, never on "the request is on loopback".
 const fenceOnlyShape = await boot()
@@ -1218,6 +1245,82 @@ report.equal(pingBroken.status, 200, 'ping does not consult the auth service')
 // …while every other method still does, in the same composition.
 const stateBroken = await callRoute(probeBroken.harness, '/state', { method: 'GET' })
 report.equal(stateBroken.status, 401, 'the rest of the API still fails closed')
+
+// ────────────────────────────────────────────────────────────────────────────
+// 10c. `/diag` — the non-sensitive half of /state, without a session (2.3.2)
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\n/diag')
+// 2.3.3 regression: this endpoint shipped answering `400` with an EMPTY body on
+// the live host, because `diagSurface()` called `readonlySurface()` — a function
+// that lives inside `createSideEngine`'s scope — so every request threw
+// `ReferenceError: readonlySurface is not defined`. The host's own listener turns
+// an uncaught handler rejection into `res.writeHead(400); res.end()` (no body, no
+// content-type), which reads like the host rejecting a malformed request.
+//
+// Nothing tested this endpoint, so the whole suite stayed green while the shipped
+// build was broken. These assertions are the missing coverage.
+const diag = await callRoute(unauthenticated.harness, '/diag', { method: 'GET' })
+report.equal(diag.status, 200, '/diag answers without a browser session')
+const diagValue = diag.json().value
+report.equal(diag.json().ok, true, '/diag answers with a success envelope')
+report.equal(diagValue.version, a.host.PLUGIN_VERSION, '/diag names the plugin version')
+report.equal(diagValue.route, 'prefix', '/diag reports the registration shape that succeeded')
+report.equal(diagValue.authGate, 'host-gate', '/diag names the host gate when the composition has one')
+// 2.3.3 (security review S2): the old `fenceDelegation: true` claimed delegation
+// had happened, when all it meant was "a gate exists". The field now names the
+// RULE — delegation is conditional on that gate accepting the credential.
+// (architecture review RB3 then removed the redundant `gateMounted`: `authGate`
+// already carries the existence fact, and two fields for one boolean is two
+// places to drift from the assertions.)
+report.equal(diagValue.fenceDelegation, 'credential-gated', '/diag names the delegation rule, not an outcome')
+report.ok(diagValue.readonly !== null && typeof diagValue.readonly === 'object', '/diag carries a read-only verdict')
+report.equal(typeof diagValue.readonly.effective, 'string', 'the verdict names the policy actually in force')
+// 2.3.3 (security review handoff): `requested` and `carrier` were extra surface
+// on a session-free endpoint — `requested` only restated `effective` as a
+// boolean, `carrier` named the host's provider shape.
+report.equal(Object.keys(diagValue.readonly).sort().join(','), 'effective,viable', 'the verdict exposes only what a reader needs')
+// 2.3.3 (architecture review RA3): target schema vs the schema the FILE actually
+// carries. Reporting only the code constant answered "2" for files with no
+// version key at all — a permanent false positive on the one question it exists
+// to answer. A harness boot has no persisted file, so fileSchema is null here.
+report.equal(diagValue.config.targetSchema, 2, '/diag reports the schema this build writes')
+report.ok(
+  diagValue.config.fileSchema === null || typeof diagValue.config.fileSchema === 'number',
+  '/diag reports the schema the FILE carries (null when there is no file)',
+)
+report.ok(typeof diagValue.config.userLayerKeys === 'number', '/diag counts the persisted keys')
+// The whole point of a session-free endpoint: nothing that identifies the machine.
+const diagText = JSON.stringify(diagValue)
+for (const forbidden of ['trustedHosts', 'feedbackSmtpPass', 'feedbackAddress', 'persistedPath', 'C:\\\\', '/home/', 'sidecard-ask/config']) {
+  report.equal(diagText.includes(forbidden), false, `/diag never leaks "${forbidden}"`)
+}
+report.equal(Object.keys(diagValue).sort().join(','),
+  'at,authGate,config,fenceDelegation,readonly,route,version',
+  '/diag exposes exactly the documented fields')
+
+const diagPost = await callRoute(unauthenticated.harness, '/diag', { method: 'POST', body: {} })
+report.equal(diagPost.status, 405, '/diag is a read-only probe')
+
+// A diagnostic endpoint is still behind the same fence as everything else.
+const diagForeign = await callRoute(unauthenticated.harness, '/diag', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', origin: 'https://evil.example' },
+})
+report.equal(diagForeign.status, 403, '/diag is refused for a foreign Origin')
+report.equal(diagForeign.json().error.reason, 'foreign-origin', 'the refusal names the foreign origin')
+const diagCrossSite = await callRoute(unauthenticated.harness, '/diag', {
+  method: 'GET',
+  headers: { host: '127.0.0.1:8080', 'sec-fetch-site': 'cross-site' },
+})
+report.equal(diagCrossSite.status, 403, '/diag is refused for a cross-site marker')
+
+// The fence-only shape reports itself honestly: with no `connection` service
+// there is no gate to delegate to, and the strict rule stays.
+const diagFenceOnly = await callRoute(a.harness, '/diag', { method: 'GET' })
+report.equal(diagFenceOnly.status, 200, '/diag answers on a fence-only composition too')
+report.equal(diagFenceOnly.json().value.authGate, 'fence-only', 'fence-only is named as such')
+report.equal(diagFenceOnly.json().value.fenceDelegation, 'disabled', 'fence-only reports delegation disabled')
 
 const unknownUnauthenticated = await callRoute(unauthenticated.harness, '/nope', { method: 'GET' })
 report.equal(unknownUnauthenticated.status, 404, 'an unknown endpoint is still a 404, gate or no gate')

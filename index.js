@@ -33,6 +33,7 @@
  */
 
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { lookup as dnsLookup } from 'node:dns/promises'
 import net from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -45,7 +46,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.3.2'
+export const PLUGIN_VERSION = '2.3.3'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -559,16 +560,24 @@ export function sanitizeLayer(raw, problems = []) {
   }
   if (raw.feedbackSmtpHost !== undefined) {
     const value = typeof raw.feedbackSmtpHost === 'string' ? raw.feedbackSmtpHost.trim() : null
-    if (value !== null && value.length <= 255 && !isReservedRelayHost(value)) out.feedbackSmtpHost = value
     // 2.3.2: `/config` used to accept ANY authority, and `/feedback` then ran
     // `net`/`tls.connect` against it — a bounded port scanner / protocol probe
-    // aimed at the local network, five messages per rate window. The relay host
-    // is now restricted to names and public addresses; a LOOPBACK address stays
-    // allowed on purpose (a local relay such as `127.0.0.1:1025` is a normal
-    // development and offline setup, and it is the machine the user is already
-    // on). Private ranges and link-local addresses are refused.
-    else if (value !== null && isReservedRelayHost(value)) {
-      problems.push('feedbackSmtpHost: 指向内网/保留地址，已忽略（回环地址与公网主机仍可用）')
+    // aimed at the local network, five messages per rate window. A LOOPBACK
+    // address stays allowed on purpose (a local relay such as `127.0.0.1:1025` is
+    // a normal development and offline setup, and it is the machine the user is
+    // already on); private ranges and link-local addresses do not.
+    //
+    // 2.3.3 (architecture review RB2): the value is now KEPT and reported, not
+    // dropped. Dropping it here meant an existing internal relay survived only in
+    // memory — the next save (any setting) rewrote the file without that key, so
+    // the user's configuration was erased permanently by an unrelated edit. The
+    // refusal moved to the SEND path (`resolveSmtp`), where it is a readable
+    // error instead of silent data loss.
+    if (value !== null && value.length <= 255) {
+      out.feedbackSmtpHost = value
+      if (isReservedRelayHost(value)) {
+        problems.push('feedbackSmtpHost: 指向内网/保留地址，发送反馈时会被拒绝（回环地址与公网主机仍可用）')
+      }
     } else problems.push('feedbackSmtpHost: 必须是 1–255 字符的字符串，已忽略')
   }
   if (raw.feedbackSmtpPort !== undefined) {
@@ -1034,7 +1043,17 @@ export function resolveSmtp(config = {}, env = process.env) {
   if (user === '' || pass === '') return { ok: false, reason: '设置页里的 SMTP 账号或密码还没填全' }
   const from = (typeof config.feedbackSmtpFrom === 'string' ? config.feedbackSmtpFrom.trim() : '') || user
   if (!looksLikeEmail(from)) return { ok: false, reason: 'SMTP 发件邮箱格式不合法' }
-  // 2.3.2: a cleartext connection demands STARTTLS unless the operator turned it
+  // 2.3.3: re-check the target HERE, not only in the config sanitiser.
+  // `sanitizeLayer` refuses a private relay when the page writes it, but this
+  // resolver also reads a hand-edited config file — which bypassed the filter
+  // entirely, so the "no intranet targets" promise only covered one of the ways
+  // in. The ENVIRONMENT path (`DSH_SIDECARD_SMTP_URL`, returned above) stays
+  // exempt on purpose: it is the operator's own channel, set by whoever runs the
+  // process, and an escape hatch there is what lets someone point the feedback
+  // mailer at an internal relay deliberately.
+  if (isReservedRelayHost(host)) {
+    return { ok: false, reason: 'SMTP 主机指向内网/保留地址：请改用公网中继或本机回环地址' }
+  }  // 2.3.2: a cleartext connection demands STARTTLS unless the operator turned it
   // off explicitly. `feedbackSmtpSecure: true` (implicit TLS) needs neither.
   const starttls = secure ? false : config.feedbackSmtpStarttls !== false
   return { ok: true, source: 'config', endpoint: { host, port, secure, starttls, user, pass, from } }
@@ -1585,12 +1604,69 @@ export function isReservedRelayHost(host) {
     return false
   }
   if (bare.includes(':')) {
+    // 2.3.3: IPv4-mapped IPv6 reaches the kernel's IPv4 stack, so it must be
+    // judged as the IPv4 address it carries. The DOTTED spelling was handled
+    // (`::ffff:192.168.1.5`); the HEX spelling was not — and `::ffff:a9fe:a9fe`
+    // IS 169.254.169.254 (the cloud metadata service), `::ffff:0a00:0001` IS
+    // 10.0.0.1. `dns.lookup` resolves both with `family: 6`, and the socket then
+    // connects over IPv4, so the private-target refusal could be walked straight
+    // past. Both spellings now normalise to the four octets and re-enter the
+    // IPv4 branch, which is the single place the ranges are decided.
+    const mappedDotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(bare)
+    if (mappedDotted !== null) return isReservedRelayHost(mappedDotted[1])
+    const mappedHex = /^(?:0{1,4}:){5}ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(bare)
+      ?? /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(bare)
+    if (mappedHex !== null) {
+      const hi = Number.parseInt(mappedHex[1], 16)
+      const lo = Number.parseInt(mappedHex[2], 16)
+      return isReservedRelayHost(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`)
+    }
     if (/^f[cd][0-9a-f]{2}:/.test(bare)) return true
     if (/^fe[89ab][0-9a-f]:/.test(bare)) return true
-    if (bare.startsWith('::ffff:')) return isReservedRelayHost(bare.slice('::ffff:'.length))
     return false
   }
   return false
+}
+
+/**
+ * Resolve one relay host and refuse it when ANY address it maps to is private
+ * or reserved (2.3.3, architecture review RB2).
+ *
+ * `isReservedRelayHost` judges LITERALS. That left the obvious hole: an operator
+ * (or a compromised settings page) could name `internal.corp`, which resolves to
+ * 10.x, and the "no intranet targets" promise held only for people who typed the
+ * number. A name is now resolved at SEND time — the only moment the answer is
+ * both available and worth spending a DNS query on — and every returned address
+ * must pass the same predicate.
+ *
+ * Failure to resolve is itself a refusal: a relay that cannot be named cannot be
+ * judged, and "cannot be judged" must not mean "allowed".
+ * @param {unknown} host - the configured relay host (name or literal).
+ * @param {{lookup?: (host: string, options: object) => Promise<Array<{address: string}>>}} [deps] - injectable resolver (tests pass a fake).
+ * @returns {Promise<{ok: boolean, reason: string}>} the verdict.
+ */
+export async function assertRelayTargetAllowed(host, deps = {}) {
+  const name = typeof host === 'string' ? host.trim() : ''
+  if (name === '') return { ok: true, reason: '' }
+  if (isReservedRelayHost(name)) {
+    return { ok: false, reason: 'SMTP 主机指向内网/保留地址：请改用公网中继或本机回环地址' }
+  }
+  const lookup = typeof deps.lookup === 'function' ? deps.lookup : dnsLookup
+  let addresses
+  try {
+    addresses = await lookup(name, { all: true, verbatim: true })
+  } catch (error) {
+    return { ok: false, reason: `SMTP 主机无法解析（${error?.code ?? 'lookup failed'}）：无法确认它指向公网，已拒绝发送` }
+  }
+  const list = Array.isArray(addresses) ? addresses : []
+  if (list.length === 0) {
+    return { ok: false, reason: 'SMTP 主机没有解析出任何地址，已拒绝发送' }
+  }
+  const blocked = list.find(entry => isReservedRelayHost(entry?.address))
+  if (blocked !== undefined) {
+    return { ok: false, reason: `SMTP 主机解析到内网/保留地址 ${blocked.address}，已拒绝发送` }
+  }
+  return { ok: true, reason: '' }
 }
 
 /**
@@ -1598,8 +1674,7 @@ export function isReservedRelayHost(host) {
  * @param {{headers: Record<string, string|string[]|undefined>}} req - node request.
  * @param {readonly string[]} trustedHosts - non-loopback authorities to accept.
  * @returns {boolean} true when the request is same-origin.
- */
-export function isTrustedRequest(req, trustedHosts = []) {
+ */export function isTrustedRequest(req, trustedHosts = []) {
   return fenceVerdict(req, trustedHosts).ok
 }
 
@@ -1703,8 +1778,20 @@ export function fenceVerdict(req, trustedHosts = [], options = {}) {
     return { ok: false, reason: 'no-origin' }
   }
   if (origin.startsWith('dsh-app:')) {
-    // Same delegation: an authenticated desktop window reaching the Host's HTTP
-    // port directly is the legacy shape the gate already guards.
+    // 2.3.3 (architecture review RB1): this delegation branch is DEAD CODE on
+    // every host we can measure, and the previous comment said the opposite.
+    //
+    // The host's own trust check (`dsh-client-connection`, api-request-trust.ts)
+    // parses the Origin and returns false for any scheme other than http/https —
+    // `Origin: dsh-app://app` therefore FAILS it, `authRejection` answers 403, and
+    // `delegated()` is false. So a desktop window that talks to the HTTP port
+    // directly is refused here as `desktop-origin`, exactly as before 2.3.2.
+    //
+    // The branch stays so that a future host which starts accepting the custom
+    // scheme does not need a plugin release, but it must never be read as "the
+    // desktop direct path is supported". The supported desktop path is the
+    // document-relative one (`dsh-app://app/sidecard-ask/api/...` → the main
+    // process's `forwardWebRequest`, which strips Origin and injects the cookie).
     if (delegated()) return { ok: true, via: 'host-gate' }
     return { ok: false, reason: 'desktop-origin' }
   }
@@ -3156,6 +3243,25 @@ export function apply(ctx, patchConfig) {
   }
 
   /** `/state` — the Client's single source of truth at boot and after a save. */
+  /**
+   * `engine.capabilities()` with a floor (2.3.3).
+   *
+   * The capability map touches services the composition may not provide, and the
+   * read-only verdict asks the provider registry. A throw there must not turn
+   * `/state` into an error — that endpoint is how a user diagnoses the very
+   * composition that is misbehaving. `undefined` on failure means "report
+   * nothing extra", and the caller keeps the rest of the answer.
+   * @returns {Record<string, unknown>|undefined} the capability map, or undefined.
+   */
+  const safeCapabilities = () => {
+    try {
+      return engine.capabilities()
+    } catch (error) {
+      ctx.logger?.warn?.('[sidecard-ask] capabilities() failed, /state degrades:', error?.message ?? error)
+      return undefined
+    }
+  }
+
   const handleState = (res) => {
     // Two secrets never reach the page: the recipient stays server-side (the page
     // gets `hasRecipient` and `toMasked` only), and the SMTP password is
@@ -3190,7 +3296,13 @@ export function apply(ctx, patchConfig) {
         patchKeys: Object.keys(sanitizeLayer(patchConfig)),
       },
       capabilities: {
-        ...engine.capabilities(),
+        // 2.3.3 (security review S7): `capabilities()` reads optional services
+        // (`agents`, `subagents`, the provider registry) and the read-only
+        // verdict walks the provider capability map. Any of those throwing used
+        // to take the WHOLE `/state` answer down with it — the one endpoint the
+        // settings page needs to explain a broken composition. The diagnostic
+        // surface now degrades instead of failing: the same seam `/diag` uses.
+        ...(safeCapabilities() ?? {}),
         // Informational: which process-local stream the host bridges.
         streamSource: 'agent/assistant-stream',
         // Where a settings-page report would go, and why it cannot (if so).
@@ -3283,6 +3395,15 @@ export function apply(ctx, patchConfig) {
       to,
       from: smtp.endpoint.from,
     })
+    // 2.3.3 (architecture review RB2): the literal-name filter cannot see a NAME
+    // that resolves into the private network, so the target is resolved here —
+    // once per send, right before the socket opens — and every address must pass.
+    const target = await assertRelayTargetAllowed(smtp.endpoint.host)
+    if (target.ok !== true) {
+      ctx.logger?.warn?.(`[sidecard-ask] feedback relay refused: ${target.reason}`)
+      writeError(res, 400, 'feedback-relay-refused', target.reason)
+      return
+    }
     try {
       await sendSmtpMessage(smtp.endpoint, { to, raw: mail.raw, subject: mail.subject })
       feedbackGate.record()
@@ -3523,40 +3644,85 @@ export function apply(ctx, patchConfig) {
   }
 
   /**
+   * Which registration shape this host actually accepted (2.3.3).
+   *
+   * `/diag` used to report the literal `'prefix'`; after a fallback to exact
+   * per-method routes it kept claiming the better shape, so a reader could not
+   * tell a healthy registration from a degraded one. `registerRoutes` is the
+   * only writer.
+   */
+  let routeShape = 'prefix'
+
+  /**
    * The non-sensitive half of `/state`, answerable without a session (2.3.2).
    *
    * Deliberately narrow: every field is a boolean, a version or a count. It is
    * the difference between "the fence refuses everything" and "the plugin never
    * loaded" for a headless acceptance run, and it is what proves the desktop
-   * delegation is active on a live host. Nothing here identifies the machine —
+   * delegation is wired on a live host. Nothing here identifies the machine —
    * no paths, no configuration values, no client report.
+   *
+   * 2.3.3 honesty pass (security review S2): two fields used to overstate what
+   * they knew. `route` was the string "prefix" even when registration had fallen
+   * back to per-method exact routes, and `fenceDelegation` was `gate` — i.e. "a
+   * session gate exists" — even though the real decision also requires that gate
+   * to ACCEPT the request's credential. A headless reader could not tell
+   * "delegation is available" from "delegation happened". They are now
+   * `route: routeShape` (what actually registered) and
+   * `fenceDelegation: 'credential-gated' | 'disabled'` (the exact condition),
+   * plus `gateMounted` for the bare existence fact.
    * @returns {Record<string, unknown>} the diagnostic surface.
    */
   const diagSurface = () => {
     const gate = connectionService() !== undefined
-    const readonly = readonlySurface()
+    // 2.3.3: `readonlySurface()` lives inside `createSideEngine`'s scope (it needs
+    // `configOf`, `providerCapabilities` and `resolveProvider`). Calling it from
+    // here threw `ReferenceError: readonlySurface is not defined`, and the host
+    // turns an uncaught handler error into a bare `400` with NO body — so this
+    // endpoint answered 400 on the live host while every unit test stayed green
+    // (nothing tested `/diag`). The engine already publishes the same value
+    // through `capabilities().readonly`, which is the supported seam.
+    let readonly = { requested: false, viable: true, carrier: 'none', effective: 'unknown' }
+    const capabilityReport = safeCapabilities()
+    if (capabilityReport?.readonly !== undefined) readonly = capabilityReport.readonly
     return {
       version: PLUGIN_VERSION,
       at: Date.now(),
-      // The registration shape that actually succeeded on this host.
-      route: 'prefix',
+      // What actually registered on this host: 'prefix' or 'per-method'. A
+      // hardcoded 'prefix' claimed the better shape even after a fallback.
+      route: routeShape,
       // `host-gate` = the host session gate is mounted; `fence-only` = the
       // loopback/Origin fence is the entire model.
       authGate: gate ? 'host-gate' : 'fence-only',
-      // True when a request that names no page (the desktop shell's forwarded
-      // shape, and any native client) is handed to that gate instead of being
-      // refused by the fence.
-      fenceDelegation: gate,
+      // The exact condition, not an optimistic boolean: a request that names no
+      // page is delegated ONLY when the gate is mounted AND it accepts that
+      // request's credential. This endpoint cannot know the credential state of
+      // a hypothetical future request, so it names the rule, never the outcome.
+      //
+      // 2.3.3 (architecture review RB3): a third field `gateMounted` repeated the
+      // same boolean, giving two places to drift from the tests. `authGate`
+      // already carries the existence fact.
+      fenceDelegation: gate ? 'credential-gated' : 'disabled',
+      // 2.3.3 (security review handoff): the verdict is reduced to what a
+      // headless reader actually needs. `requested` restated `effective` as a
+      // boolean and `carrier` named the host's provider shape — both were free
+      // extra surface on a session-free endpoint. Anything an operator must know
+      // beyond `viable` + `effective` is already in `/state`, behind the gate.
       readonly: {
-        requested: readonly.requested,
         viable: readonly.viable,
-        carrier: readonly.carrier,
         effective: readonly.effective,
       },
+      // 2.3.3 (architecture review RA3): two versions, two facts. This used to
+      // report only the code constant, so it answered "2" for a config file that
+      // had NO `schemaVersion` key at all — the one question the field exists to
+      // answer ("has this file been migrated?") got a permanent false positive.
       config: {
-        schemaVersion: CONFIG_SCHEMA_VERSION,
+        targetSchema: CONFIG_SCHEMA_VERSION,
+        fileSchema: persisted.present ? (persisted.schemaVersion ?? 0) : null,
         userLayerKeys: Object.keys(userLayer).length,
-        problems: Array.isArray(state.problems) ? state.problems.length : 0,
+        // A boolean, not a count: "the config has problems" is operationally
+        // useful, "it has 3" is a hint an unauthenticated caller does not need.
+        hasProblems: Array.isArray(state.problems) && state.problems.length > 0,
       },
     }
   }
@@ -3571,6 +3737,42 @@ export function apply(ctx, patchConfig) {
    * `authRejection` remains the real door.
    */
   const CSRF_HEADER = 'x-sidecard-ask'
+
+  /**
+   * The handler the host actually sees (2.3.3).
+   *
+   * `dsh-host-webserver` answers `400` with an EMPTY body when the route handler
+   * rejects:
+   *
+   *   handle(req, res).catch(err => { log(err); if (res.headersSent) res.destroy();
+   *                                   else { res.writeHead(400); res.end() } })
+   *
+   * That is how `/diag` shipped broken: a `ReferenceError` inside the handler
+   * reached the browser as a bare 400 that looked like the host rejecting a
+   * malformed request — no code, no message, nothing to search for. Every
+   * uncaught throw now answers `500 internal` with a JSON body, so the next one
+   * is diagnosable from the wire instead of from the host log.
+   */
+  const guardedHandler = async (req, res) => {
+    try {
+      await routeHandler(req, res)
+    } catch (error) {
+      // 2.3.3 (reality-checker R6): a short reference id makes the failure
+      // triageable from the wire without echoing internals. Two different
+      // throws get two different ids; the full stack stays in the host log.
+      const errId = Math.random().toString(16).slice(2, 10)
+      ctx.logger?.warn?.(`[sidecard-ask] 路由处理器抛出未捕获异常（ref ${errId}）：`, error?.stack ?? error?.message ?? error)
+      if (res.headersSent === true) {
+        try { res.destroy() } catch { /* the socket is already gone */ }
+        return
+      }
+      try {
+        writeError(res, 500, 'internal', `插件内部错误（引用号 ${errId}，完整堆栈已写入宿主日志）`)
+      } catch {
+        try { res.destroy() } catch { /* nothing left to salvage */ }
+      }
+    }
+  }
 
   /** One request → one response; the dispatcher owns path parsing and the fence. */
   const routeHandler = async (req, res) => {
@@ -3717,17 +3919,21 @@ export function apply(ctx, patchConfig) {
   const registerRoutes = () => {
     const disposers = []
     try {
-      disposers.push(ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler: routeHandler }))
+      disposers.push(ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler: guardedHandler }))
+      routeShape = 'prefix'
       return () => { for (const dispose of disposers) dispose() }
     } catch (error) {
       ctx.logger?.warn?.(`[sidecard-ask] 前缀路由注册失败，改用逐方法精确路由：${String(error?.message ?? error)}`)
     }
+    // 2.3.3: `/diag` reports what actually registered, so the fallback is visible
+    // instead of being papered over with a hardcoded 'prefix'.
+    routeShape = 'per-method'
     for (const method of API_METHODS) {
       try {
         disposers.push(ctx.webServer.register({
           kind: 'exact',
           path: `${ROUTE_PREFIX}/${method}`,
-          handler: routeHandler,
+          handler: guardedHandler,
         }))
       } catch (error) {
         ctx.logger?.warn?.(`[sidecard-ask] 路由 ${method} 注册失败：${String(error?.message ?? error)}`)

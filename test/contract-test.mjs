@@ -838,8 +838,17 @@ console.log('\nP2 pure helpers (1.8.0)')
   // local network, five messages per rate window. The sanitiser now refuses
   // private and reserved targets while keeping a local relay usable (that
   // machine is the one the user is already on).
-  const relayAllowed = ['', 'smtp.example.com', '127.0.0.1', '127.9.9.9', 'localhost', 'mail.localhost', '[::1]', '::1', '8.8.8.8']
-  const relayRefused = ['10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.10', '169.254.1.1', '100.64.0.1', '0.0.0.0', '224.0.0.1', '198.18.0.1', 'fc00::1', 'fd12:3456::1', 'fe80::1', '::ffff:192.168.1.5']
+  // 2.3.3 (security review S3): the IPv4-mapped IPv6 HEX spelling walked straight
+  // past the refusal. `::ffff:a9fe:a9fe` IS 169.254.169.254, `::ffff:0a00:0001`
+  // IS 10.0.0.1 — `dns.lookup` resolves both with `family: 6` and the socket then
+  // connects over IPv4, so a metadata/private target was reachable even though
+  // the dotted spelling was refused. Both spellings now normalise to octets.
+  const relayAllowed = ['', 'smtp.example.com', '127.0.0.1', '127.9.9.9', 'localhost', 'mail.localhost', '[::1]', '::1', '8.8.8.8',
+    // loopback in mapped form stays usable, exactly like its dotted twin
+    '::ffff:7f00:1', '::ffff:127.0.0.1']
+  const relayRefused = ['10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.10', '169.254.1.1', '100.64.0.1', '0.0.0.0', '224.0.0.1', '198.18.0.1', 'fc00::1', 'fd12:3456::1', 'fe80::1', '::ffff:192.168.1.5',
+    // the hex-mapped spellings of the same private/metadata targets
+    '::ffff:a9fe:a9fe', '::ffff:0a00:0001', '::ffff:c0a8:010a', '0:0:0:0:0:ffff:a9fe:a9fe', '::FFFF:A9FE:A9FE']
   for (const value of relayAllowed) {
     report.equal(host.isReservedRelayHost(value), false, `relay host "${value === '' ? '(empty)' : value}" stays usable`)
   }
@@ -848,8 +857,55 @@ console.log('\nP2 pure helpers (1.8.0)')
   }
   const relayProblems = []
   const relayLayer = host.sanitizeLayer({ feedbackSmtpHost: '192.168.1.10' }, relayProblems)
-  report.equal(relayLayer.feedbackSmtpHost, undefined, 'sanitizeLayer drops a private relay host')
-  report.ok(relayProblems.some(line => line.includes('feedbackSmtpHost')), 'the dropped relay host is reported, not swallowed')
+  // 2.3.3 (architecture review RB2): the value is KEPT. Dropping it meant an
+  // existing internal relay survived only in memory, and the next save of ANY
+  // setting rewrote the file without that key — permanent, silent config loss.
+  report.equal(relayLayer.feedbackSmtpHost, '192.168.1.10', 'sanitizeLayer keeps a private relay host instead of erasing it')
+  report.ok(relayProblems.some(line => line.includes('feedbackSmtpHost')), 'the kept-but-refused relay host is reported, not swallowed')
+  // …and the refusal happens where it matters: dialling it.
+  const relayResolved = host.resolveSmtp(
+    { feedbackSmtpHost: '192.168.1.10', feedbackSmtpUser: 'a@example.test', feedbackSmtpPass: 'x', feedbackSmtpSecure: true },
+    {},
+  )
+  report.equal(relayResolved.ok, false, 'resolveSmtp refuses to dial a private relay at send time')
+  report.ok(String(relayResolved.reason).includes('内网'), 'the send-time refusal names the cause')
+
+  // 2.3.3 (architecture review RB2): a NAME that resolves into the private
+  // network was never judged — only literals were, so `internal.corp` (→10.x)
+  // walked past the "no intranet targets" rule. The send path resolves once and
+  // requires EVERY answer to pass; an unresolvable name is refused rather than
+  // assumed public.
+  const nameAllowed = await host.assertRelayTargetAllowed('smtp.example.com', {
+    lookup: async () => [{ address: '93.184.216.34' }],
+  })
+  report.equal(nameAllowed.ok, true, 'a name resolving to a public address passes')
+  const nameBlocked = await host.assertRelayTargetAllowed('internal.corp', {
+    lookup: async () => [{ address: '10.1.2.3' }],
+  })
+  report.equal(nameBlocked.ok, false, 'a name resolving into the private network is refused')
+  report.ok(String(nameBlocked.reason).includes('10.1.2.3'), 'the refusal names the resolved address')
+  const nameMixed = await host.assertRelayTargetAllowed('rebind.example', {
+    lookup: async () => [{ address: '203.0.113.9' }, { address: '169.254.169.254' }],
+  })
+  report.equal(nameMixed.ok, false, 'one private answer poisons a mixed set (DNS rebinding)')
+  const literalLoopback = await host.assertRelayTargetAllowed('127.0.0.1', {
+    lookup: async () => [{ address: '127.0.0.1' }],
+  })
+  report.equal(literalLoopback.ok, true, 'a loopback literal still passes')
+  const unresolvable = await host.assertRelayTargetAllowed('nope.invalid', {
+    lookup: async () => { throw Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }) },
+  })
+  report.equal(unresolvable.ok, false, 'a name that cannot be resolved is refused, not assumed public')
+
+  // 2.3.3 (architecture review RA3): `/diag` answers two DIFFERENT schema
+  // questions — what this build writes, and what the file on disk carries. The
+  // migration seam is the one place that decides the second one.
+  const migratedFromZero = host.migrateConfigLayer({ maxChars: 1234 }, 0)
+  report.equal(migratedFromZero.maxChars, 1234, 'a file without a version stamp migrates unchanged')
+  const futureNotes = []
+  host.migrateConfigLayer({ maxChars: 1 }, 99, line => futureNotes.push(line))
+  report.equal(futureNotes.length, 1, 'a file from a NEWER build is reported, not silently reinterpreted')
+  report.ok(String(futureNotes[0]).includes('99'), 'the note names the version it read')
   const loopbackProblems = []
   const loopbackLayer = host.sanitizeLayer({ feedbackSmtpHost: '127.0.0.1' }, loopbackProblems)
   report.equal(loopbackLayer.feedbackSmtpHost, '127.0.0.1', 'a loopback relay is still configurable')

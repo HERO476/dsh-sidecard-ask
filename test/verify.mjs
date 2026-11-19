@@ -84,6 +84,28 @@ report.equal(
   'engines.dsh excludes 0.3.0 prereleases, which includePrerelease would otherwise admit',
 )
 
+// 2.3.3 — a throwing route handler must never reach the wire as the host's bare
+// 400. `dsh-host-webserver` answers `400` with an EMPTY body when a handler
+// rejects (`handle(req, res).catch(...) { res.writeHead(400); res.end() }`), so
+// `/diag` shipped broken with no code, no message and nothing to search for.
+// Every registration therefore binds the guarded wrapper, and a future edit that
+// binds the raw handler fails here instead of in the field.
+report.ok(hostSource.includes('const guardedHandler = async'), 'the route handler is wrapped for uncaught throws')
+report.equal(
+  hostSource.split('handler: guardedHandler').length - 1,
+  2,
+  'both registration shapes (prefix and per-method) bind the guarded handler',
+)
+report.equal(
+  hostSource.includes('handler: routeHandler'),
+  false,
+  'no registration binds the unguarded handler',
+)
+report.ok(
+  hostSource.includes("writeError(res, 500, 'internal'"),
+  'the wrapper answers 500 with a JSON body instead of letting the host answer 400',
+)
+
 // Structural guards for the two contract breaks that caused it. These read the
 // shipped source, so a future refactor that reinstates the retired shape fails
 // here rather than in the field.

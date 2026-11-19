@@ -12,7 +12,7 @@
 
 1. **这个插件不是"可选 Node"**：它 import 了 `node:fs` / `node:os` / `node:path` / `node:net` / `node:tls`，用了全局 `Buffer` 与 `process.env`，并且把 Node 的 `(req, res)` 双流对象**直接当成契约**（`req.on('data'|'end'|'error')`、`res.write` 分块刷出 SSE）。**换宿主 = 换运行时语义，不是换 HTTP 框架。**
 2. **硬依赖只有两条链路**：①`webServer` 注册路由 + 这套 req/res 语义；②前端 `window.__ModuleLoader__` + React + 具名槽位。其余（`subagents` / `tools` / `connection` / `sidebarRightTabs` / `sidebarRight` / `betterSidebar`）**全是软依赖**：拿不到就降级，插件照跑。
-3. **最容易被忽略的一条**：`Buffer` 与 `Buffer.byteLength` 被用于响应体长度与请求体拼接（`index.js:1781`、`index.js:1746`）。任何宿主必须提供 UTF-8 字节语义的等价物，否则 `content-length` 一算错就会挂住连接。
+3. **最容易被忽略的一条**：`Buffer` 与 `Buffer.byteLength` 被用于响应体长度与请求体拼接（`index.js:1868`、`index.js:1833`）。任何宿主必须提供 UTF-8 字节语义的等价物，否则 `content-length` 一算错就会挂住连接。
 
 ---
 
@@ -40,7 +40,7 @@
 
 `[源码]`
 
-- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:42`）、`inject`（`index.js:45`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:48`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:2923`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
+- 插件是 **ESM**（`package.json` `"type": "module"`），入口 `index.js` **没有 default 导出**：loader 认的是四个具名符号——`name`（`index.js:43`）、`inject`（`index.js:46`，硬依赖声明数组）、`PLUGIN_VERSION`（`index.js:49`），以及真正的入口函数 `apply(ctx, patchConfig)`（`index.js:3010`）。四者合起来就是 Cordis 的「模块对象形态」插件；照着找 `export default` 会一无所获。
 - 硬依赖声明：**只有** `webServer`
 
   ```js
@@ -86,7 +86,7 @@
 
 ### 4.1 注册形状
 
-`[源码]` `index.js:3719` 起（prefix 分支在 `index.js:3726`）：
+`[源码]` `index.js:3778` 起（prefix 分支在 `index.js:3726`）：
 
 ```js
 ctx.webServer.register({ kind: 'prefix', path: '/sidecard-ask/api', handler })
@@ -122,7 +122,7 @@ ctx.webServer.register({ kind: 'exact', path: '/sidecard-ask/api/ping', handler 
 
 ### 4.3 请求体读取
 
-`[源码]` `index.js:1781` `readJsonBody`：
+`[源码]` `index.js:1868` `readJsonBody`：
 
 - 流式累积 chunk，累计超过 **`1 << 20` 字节（1 MiB）** 立即 `req.destroy()` 并抛 `{code:'too-large'}` → 客户端收 400。
 - **空体返回 `null`**（不是 `{}`，也不是错误）。
@@ -131,7 +131,7 @@ ctx.webServer.register({ kind: 'exact', path: '/sidecard-ask/api/ping', handler 
 
 ### 4.4 响应与错误形状
 
-`[源码]` `writeJson`（`index.js:1746`）设置的三个头是硬要求：
+`[源码]` `writeJson`（`index.js:1833`）设置的三个头是硬要求：
 
 ```
 content-type: application/json; charset=utf-8
@@ -139,7 +139,7 @@ cache-control: no-store
 content-length: Buffer.byteLength(body)     // UTF-8 字节数，不是字符串长度
 ```
 
-成功：`{"ok":true,"value":<任意>}`；失败：`{"ok":false,"error":{"code":"<token>","message":"<中文可读>"}}`（`writeError`，`index.js:1769`）。
+成功：`{"ok":true,"value":<任意>}`；失败：`{"ok":false,"error":{"code":"<token>","message":"<中文可读>"}}`（`writeError`，`index.js:1856`）。
 
 `[实测]` 线上真实响应（未登录访问）：
 
@@ -161,7 +161,9 @@ const API_METHODS = ['ping', 'diag', 'state', 'ask', 'cancel', 'config', 'reset'
 
 | 方法 | 动词 | 过鉴权闸门 | 说明 |
 |---|---|---|---|
-| `ping` | GET / HEAD | **否**（唯一豁免） | 只回 `{version, at}`，用于探活 |
+| `ping` | GET / HEAD | **否**（免会话） | 只回 `{version, at}`，用于探活 |
+| `diag` | GET / HEAD | **否**（免会话） | 2.3.2 起：只回围栏形态、委派规则、只读可行性、配置版本；**无路径、无配置值、无客户端上报**。与 `ping` 一样受同源围栏保护，但不过会话闸门。
+  <br>2.3.3 字段：`version` `at` `route`（`prefix`/`per-method`，真实注册形态）`authGate`（`host-gate`/`fence-only`）`fenceDelegation`（`credential-gated`/`disabled`，名称即条件不是结果）`readonly{viable,effective}` `config{targetSchema,fileSchema,userLayerKeys,hasProblems}` |
 | `state` | GET / POST | 是 | 返回能力、SMTP 解析、provenance 等全量诊断面 |
 | `ask` | POST | 是 | 起一次子代理并开 SSE |
 | `cancel` | POST | 是 | 取消某次运行（带归属校验） |
@@ -172,17 +174,21 @@ const API_METHODS = ['ping', 'diag', 'state', 'ask', 'cancel', 'config', 'reset'
 
 未在表内的方法名一律 404（**动词错误不改变 404**：方法是先于动词判定的）。
 
+> 2.3.3 更正：`ping` 曾是"唯一免会话豁免"，2.3.2 新增 `diag` 后是**两个**。免会话端点仍受信任围栏（Host/Origin/`sec-fetch-site`）约束，只是不查宿主会话 cookie。
+
 ### 5.2 两道闸门，顺序不可换
 
-`[源码]` `routeHandler`（`index.js:3576`）顺序是：**信任围栏 → 方法名校验 → ping → 鉴权 → 写操作标记 → 业务**。
+`[源码]` `routeHandler`（`index.js:3778`）顺序是：**信任围栏 → 方法名校验 → ping/diag（免会话）→ 鉴权 → 写操作标记 → 业务**。
 
-**闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1602`）—— 2.1.15 起真正的判定在
-`fenceVerdict(req, trustedHosts)`（`index.js:1603`），前者只是它的布尔外壳：
+> 2.3.3：`diag` 与 `ping` 在鉴权之前返回；其余一切方法都要过闸门 2。
+
+**闸门 1 · 信任围栏** `isTrustedRequest(req, trustedHosts)`（`index.js:1677`）—— 2.1.15 起真正的判定在
+`fenceVerdict(req, trustedHosts)`（`index.js:1734`），前者只是它的布尔外壳：
 
 1. 必须有 `host` 头，且能构成合法 authority，否则拒（`reason: no-host` / `bad-host`）。
 2. `trustedHosts` 里带端口 → 比 `host:port` 全等；不带端口 → 只比 hostname。
 3. hostname 既非 loopback 又不在 `trustedHosts` → 拒（`untrusted-host`）。
-   - loopback 判定（`isLoopbackHostname`，`index.js:1536`）：`localhost`、`[::1]`、`127.x.y.z`（四段、每段 1–3 位数字且 ≤255）。**不含 `::ffff:127.0.0.1`、不含 `0.0.0.0`**。
+   - loopback 判定（`isLoopbackHostname`，`index.js:1555`）：`localhost`、`[::1]`、`127.x.y.z`（四段、每段 1–3 位数字且 ≤255）。**不含 `::ffff:127.0.0.1`、不含 `0.0.0.0`**。
 4. `sec-fetch-site: cross-site` → 拒（`cross-site`）。
 5. 有 `origin` → 必须与 `host` 的**完整 authority** 相同（端口不同即不同源）；无 `origin` → 放行。
    - `dsh-app://` 开头的 Origin（桌面外壳页自己的 origin）→ `desktop-origin`。
@@ -195,7 +201,7 @@ const API_METHODS = ['ping', 'diag', 'state', 'ask', 'cancel', 'config', 'reset'
 而 `dsh-app://app` 与 `Origin: null` **无法**用 `trustedHosts` 修好（条目会被解析成 authority，
 自定义 scheme 与不透明源都没有 host 可匹配），文案把人引向了错误的配置项。
 
-**闸门 2 · 会话认证** `authRejection(req)`（`index.js:3494`）—— 返回值语义是这份契约里最需要精确复制的一段：
+**闸门 2 · 会话认证** `authRejection(req)`（`index.js:3615`）—— 返回值语义是这份契约里最需要精确复制的一段：
 
 | `connection.requestRejection(req)` 返回 | 插件行为 |
 |---|---|
@@ -212,7 +218,7 @@ const API_METHODS = ['ping', 'diag', 'state', 'ask', 'cancel', 'config', 'reset'
 
 ## §6 R5 · SSE 契约
 
-`[源码]` `openSse`（`index.js:1837`）：
+`[源码]` `openSse`（`index.js:1924`）：
 
 响应头：
 
@@ -240,7 +246,7 @@ data: <JSON>\n
 
 ## §7 R6 · 子代理（两代 API 并存）
 
-`[源码]` `index.js:1978` `subagentsService()` / `usesActivationApi()` / `activationSpecShape()` / `startSubagent()`：
+`[源码]` `index.js:2065` `subagentsService()` / `usesActivationApi()` / `activationSpecShape()` / `startSubagent()`：
 
 - 服务被认为"可启动"的条件：`typeof service.start === 'function' || typeof service.startActivation === 'function'`。
 - **旧面（≤0.2.1-alpha.1）**：`service.start(provider, request)` → 返回 `{ id, localAgent?, result: Promise, dispose }`。
@@ -265,7 +271,7 @@ ctx.on('session/event', (session, event) => …)   // index.js:1710（event.type
 
 ## §8 R7 · 工具白名单
 
-`[源码]` `readOnlyToolFilter(ctx)`（`index.js:1507`）：
+`[源码]` `readOnlyToolFilter(ctx)`（`index.js:1526`）：
 
 - `ctx.get('tools')`；无服务或 `typeof tools.schemas !== 'function'` → 返回 `undefined`（= 不限制，子代理继承全量工具）。
 - `tools.schemas()` 抛错 → `undefined`。
