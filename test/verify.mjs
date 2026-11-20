@@ -73,15 +73,29 @@ report.ok(host.Config === undefined, 'host deliberately exports no Config schema
 // are exactly the untested generation the bound exists to exclude. `<0.3.0-0`
 // is the semver spelling of "no 0.3.0 prerelease either", while still admitting
 // every 0.2.x.
+// 2.3.4 (architecture review A7): the range now also parses under PLAIN semver.
+// `>=0.2.1-rc.5 <0.3.0-0` admits 0.2.2-rc.3 only with `{includePrerelease:true}`
+// — which the host uses — but a standard consumer (pnpm's engines check, a
+// marketplace validator, CI) reads it as "incompatible" for 0.2.2-rc.3/rc.5,
+// which are exactly the builds this machine runs (dsh-desktop and dsh are both
+// 0.2.2-rc.5). The second alternative carries a prerelease lower bound, which is
+// what makes a prerelease version eligible under the default rules. Measured with
+// semver 7.8.6 against both flags:
+//   0.2.1-rc.5 / 0.2.2-rc.3 / 0.2.2-rc.5 / 0.2.2  → true  (both flags)
+//   0.3.0-0 / 0.3.0-rc.1                          → false (both flags)
 report.equal(
   manifest.engines?.dsh,
-  '>=0.2.1-rc.5 <0.3.0-0',
+  '>=0.2.1-rc.5 <0.3.0-0 || >=0.2.2-0 <0.3.0-0',
   'engines.dsh starts at the oldest generation this code speaks',
 )
 report.equal(
   manifest.engines?.dsh?.endsWith('-0'),
   true,
   'engines.dsh excludes 0.3.0 prereleases, which includePrerelease would otherwise admit',
+)
+report.ok(
+  manifest.engines?.dsh?.includes('>=0.2.2-0'),
+  'engines.dsh names a prerelease lower bound so plain semver also admits 0.2.2-rc.*',
 )
 
 // 2.3.3 — a throwing route handler must never reach the wire as the host's bare
@@ -208,7 +222,21 @@ const clientRequires = [...new Set([...clientSource.matchAll(/require\(['"]([^'"
 report.equal(clientRequires, ['react', 'react-dom'], 'client requires react, plus react-dom for the optional portal')
 report.ok(!clientSource.includes('dsh-client-ui-primitives'), 'client does not import harness client packages')
 report.ok(/window\.__ModuleLoader__\.load\(/.test(clientSource), 'client uses the documented module-loader format')
-report.ok(!/document\.body\.(append|insert|prepend)/.test(clientSource), 'client never writes DOM into document.body')
+// 2.3.4 (architecture review A9): the invariant used to read "never touches
+// document.body", which the 2.3.2 portal path silently broke — the regex only
+// looked for direct `append/insert/prepend` calls, so a layer mounted through
+// `createPortal` passed while violating the intent. State the real invariant:
+// there is exactly ONE body-level mount, it is a portal, its container is
+// `document.body`, it is gated on the slot shape, and the mounted layer carries
+// `data-dsa-root` (the marker every click-through / self-hit test keys on).
+report.ok(!/document\.body\.(append|insert|prepend)/.test(clientSource), 'client never appends DOM into document.body by hand')
+const portalCalls = [...clientSource.matchAll(/createPortal\(([^)]*)\)/g)].map(match => match[1])
+report.equal(portalCalls.length, 1, 'the layer reaches document.body through exactly one createPortal call')
+report.ok(portalCalls[0]?.includes('document.body') === true, 'that one portal targets document.body', `call: ${portalCalls[0] ?? 'none'}`)
+report.ok(
+  clientSource.includes('portalToBody === true && createPortal !== null'),
+  'the portal is gated on the slot shape (composer slots), not taken unconditionally',
+)
 report.ok(!/createRoot\(/.test(clientSource), 'client never mounts a second React application')
 report.ok(
   !/dangerouslySetInnerHTML\s*:/.test(clientSource) && !/\.innerHTML\s*=/.test(clientSource),
@@ -260,6 +288,26 @@ report.ok(readme.includes('替换方式'), 'README documents how to replace a pl
 // red. Guard the citations the doc itself declares as `symbol`（`file.js:NNN`）;
 // anchor-first citations are out of scope here because their symbol is not
 // mechanically extractable.
+// 2.3.4 (reality check F2): the blind spot that shipped 2.3.2's broken `/diag`.
+// `API_METHODS` lists the routes the host serves; nothing guaranteed that a NEW
+// method had even one assertion, so an endpoint could answer 400 on every call
+// while the whole suite stayed green — `git show v2.3.2:test/smoke-test.mjs`
+// contains ZERO occurrences of '/diag'. One text check per method closes the
+// class: a method added to the table without a smoke assertion fails here.
+console.log('\napi method coverage')
+const methodListMatch = hostSource.match(/const API_METHODS = \[([^\]]*)\]/)
+const apiMethods = methodListMatch === null
+  ? []
+  : [...methodListMatch[1].matchAll(/'([^']+)'/g)].map(match => match[1])
+const smokeSource = readFileSync(join(ROOT, 'test', 'smoke-test.mjs'), 'utf8')
+report.ok(apiMethods.length >= 9, 'the API method table is present', `found ${apiMethods.length}`)
+const uncoveredMethods = apiMethods.filter(method => !smokeSource.includes(`'/${method}'`))
+report.ok(
+  uncoveredMethods.length === 0,
+  'every API method has at least one smoke assertion',
+  `uncovered: ${uncoveredMethods.join(', ')}`,
+)
+
 console.log('\ncontract doc anchors')
 const contractDoc = readFileSync(join(ROOT, 'NODE-HOST-CONTRACT.md'), 'utf8')
 const docSources = { 'index.js': hostSource.split('\n'), 'client.js': clientSource.split('\n') }

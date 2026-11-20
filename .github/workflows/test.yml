@@ -45,3 +45,26 @@ jobs:
         run: node --version
       - name: npm test
         run: npm test
+
+  # 2.3.4（现实核查 F9）：`engines.dsh` 声称覆盖整个区间，但此前没有任何作业
+  # 真的装过一个 DSH 版本 —— “在 0.2.1-rc.5 上能跑”只是一句声明，没有证据。
+  # 这里用发布产物（`npm pack` 那套，与 README §7 的矩阵同源）探测区间两端：
+  # 插件实际调用的方法（list/getProvider/start/startActivation）一旦在某个版本
+  # 上消失，作业就红，而不是等用户在 0.2.1-rc.5 上撞到 `no-side-engine`。
+  #
+  # 这是“发布产物探针”，不是端到端运行：它证明的是契约面存在，不是“在该版本上
+  # 答过一个问题”。端到端仍需真机（见 docs/OPERATIONS.md 的验收清单）。
+  compat:
+    name: dsh ${{ matrix.dsh }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dsh: ['0.2.1-rc.5', '0.2.2-rc.3', '0.2.2-rc.5']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: probe the published artifact
+        run: node tools/compat-probe.mjs ${{ matrix.dsh }}

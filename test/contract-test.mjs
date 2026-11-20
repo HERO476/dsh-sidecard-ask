@@ -118,8 +118,16 @@ const mirrorableDefaults = defaults => Object.fromEntries(
   Object.keys(defaults).filter(key => key !== 'feedbackAddress').map(key => [key, defaults[key]]),
 )
 report.equal(mirrorableDefaults(pure.CLIENT_DEFAULTS), mirrorableDefaults(host.DEFAULT_CONFIG), 'client defaults mirror the host defaults exactly')
-report.equal(host.DEFAULT_CONFIG.feedbackAddress.startsWith('b64:'), true, 'the packed inbox is stored obfuscated')
-report.equal(host.decodeAddress(host.DEFAULT_CONFIG.feedbackAddress).includes('@'), true, 'the packed inbox decodes to a mailbox')
+// 2.3.4 (security review S7): the default is EMPTY. It used to ship the
+// maintainer's real inbox as `b64:` (obfuscation, not encryption) — the decoder
+// is exported from the same file, so the address was recoverable from the
+// published tarball, and every default install pointed user-written reports at a
+// personal mailbox. Empty is a legal value and the panel renders that state.
+report.equal(host.DEFAULT_CONFIG.feedbackAddress, '', 'no personal inbox ships as the default recipient')
+// The packing/dispatch pair still exists and still round-trips: an operator who
+// sets `b64:` gets the same obfuscation this test used to pin on the default.
+report.equal(host.decodeAddress(`b64:${Buffer.from('ops@example.com', 'utf8').toString('base64')}`), 'ops@example.com', 'a b64: recipient still decodes')
+report.equal(host.decodeAddress('ops@example.com'), 'ops@example.com', 'a plain recipient passes through unchanged')
 
 // D16: the card-history cap lived as a bare `6` on both sides; one drifted
 // constant would silently change what the child ever sees.
@@ -902,6 +910,14 @@ console.log('\nP2 pure helpers (1.8.0)')
   // migration seam is the one place that decides the second one.
   const migratedFromZero = host.migrateConfigLayer({ maxChars: 1234 }, 0)
   report.equal(migratedFromZero.maxChars, 1234, 'a file without a version stamp migrates unchanged')
+  // 2.3.4 (reality check F8): the case every 2.3.1 file actually carries was the
+  // one missing — the suite covered from=0 (no stamp) and from=99 (a newer
+  // build), skipping v1 entirely.
+  const migratedFromOne = host.migrateConfigLayer({ maxChars: 1234, sideTools: 'inherit' }, 1, () => {})
+  report.equal(migratedFromOne, { maxChars: 1234, sideTools: 'inherit' }, 'a v1 layer passes through unchanged')
+  const v1Notes = []
+  host.migrateConfigLayer({ maxChars: 1 }, 1, line => v1Notes.push(line))
+  report.equal(v1Notes.length, 0, 'a v1 layer is not reported as a problem')
   const futureNotes = []
   host.migrateConfigLayer({ maxChars: 1 }, 99, line => futureNotes.push(line))
   report.equal(futureNotes.length, 1, 'a file from a NEWER build is reported, not silently reinterpreted')
@@ -4986,6 +5002,47 @@ report.ok(
 report.ok(
   /\(surface \?\? state\.surface\) === 'better-sidebar'/.test(clientSource),
   'the host label follows the pinned surface instead of the global preference',
+)
+
+// 2.3.4 (reality check F5 / security review S6): the two destructive history
+// actions are only as good as their wiring, and NEITHER had a test — 2.3.1's
+// single-row fix shipped with `git show --stat 4206641` touching zero test files,
+// and the batch path kept a `window.confirm` guard that silently cleared
+// everything where that function does not exist. These are STRUCTURAL
+// assertions (the React double cannot drive a state change), and they pin the
+// property that matters: the destructive call is reachable from ONE place, and
+// that place sits behind a pending flag.
+console.log('\nhistory deletion wiring')
+report.equal(
+  [...clientSource.matchAll(/actions\.deleteHistoryCard\(/g)].length,
+  1,
+  'deleteHistoryCard has exactly one call site',
+)
+report.ok(
+  clientSource.includes('const id = pendingHistoryDelete'),
+  'that call site is the confirmation handler, reading the parked id',
+)
+report.ok(
+  clientSource.includes('pendingHistoryDelete !== null && pendingHistoryEntry !== undefined'),
+  'the single-row dialog only exists while an id is parked',
+)
+report.equal(
+  [...clientSource.matchAll(/actions\.clearHistory\(\)/g)].length,
+  1,
+  'clearHistory has exactly one call site',
+)
+report.ok(
+  clientSource.includes('pendingHistoryClear === true'),
+  'the batch clear is gated on a pending flag, like the single row',
+)
+report.ok(
+  clientSource.includes('setPendingHistoryClear(true)'),
+  'the button parks the intent instead of clearing',
+)
+report.equal(
+  /window\.confirm\s*\(/.test(clientSource),
+  false,
+  'no destructive action CALLS window.confirm any more (prose mentions are fine)',
 )
 
 console.log('\n2.1.9 side-card adaptation')

@@ -53,6 +53,6 @@
   "errorOpaqueOriginBody": "The referring page has an opaque origin (Origin: null — sandboxed iframe / file:// / data:), refused as cross-site",
   "errorCrossSiteBody": "Cross-site request refused (the browser marked Sec-Fetch-Site: cross-site)",
   "errorMissingMarkerBody": "The write is missing the x-sidecard-ask: 1 header (the page adds it automatically; scripts must declare it)",
-  "errorStarttlsMissingBody": "The SMTP server never advertised STARTTLS, so nothing was sent — that keeps the credential off a cleartext socket. For a local plaintext relay, turn STARTTLS off in settings.",
+  "errorStarttlsMissingBody": "The SMTP server never advertised STARTTLS, so nothing was sent — that keeps the credential off a cleartext socket. For a local plaintext relay, set feedbackSmtpStarttls: false in the config file, or append ?starttls=0 to the DSH_SIDECARD_SMTP_URL address.",
   "copyInsecureHint": "This address is not a secure context (plain http), so the browser hides the clipboard API: the text is selected — press Ctrl+C"
 }

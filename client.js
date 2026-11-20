@@ -162,7 +162,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.3.3'
+    const CLIENT_VERSION = '2.3.4'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -935,7 +935,9 @@ window.__ModuleLoader__.load({
         errorMissingMarkerBody: '写操作缺少 x-sidecard-ask: 1 请求头（页面会自动添加；脚本调用请显式声明）',
         // 2.3.2: closing the STARTTLS downgrade gave the mailer a new terminal
         // code. It carries an action the user can take, so it is phraseable here.
-        errorStarttlsMissingBody: 'SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次未发送；若这是本地明文中继，请在设置页显式关闭 STARTTLS',
+        errorStarttlsMissingBody: 'SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次未发送；若这是本地明文中继，请在配置文件里写 feedbackSmtpStarttls: false，或在 DSH_SIDECARD_SMTP_URL 的地址后加 ?starttls=0',
+        errorFeedbackRelayRefused: '反馈邮件的目标中继指向内网或保留地址，已拒绝发送；请改用公网中继或本机回环地址',
+        errorNoSessionMultiParent: '没指定会话，而宿主当前有多个活动会话：请从具体会话里追问，否则无法确定子代理该继承哪套工具、答案该归属哪个对话',
         errorBadResponseBody: '宿主返回了无法解析的响应',
         errorStreamBrokenBody: '流式连接中断',
         errorStreamEndedBody: '流式连接意外结束',
@@ -1084,6 +1086,7 @@ window.__ModuleLoader__.load({
         historyRestore: '恢复',
         historyDelete: '删除',
         historyClear: '清空全部',
+        historyClearTitle: '清空全部历史',
         historyClearConfirm: '确定清空全部历史卡片吗？此操作不可撤销。',
         historyClearDone: '历史已清空',
         historyRestored: '已恢复到浮层',
@@ -1229,7 +1232,9 @@ window.__ModuleLoader__.load({
         errorOpaqueOriginBody: 'The referring page has an opaque origin (Origin: null — sandboxed iframe / file:// / data:), refused as cross-site',
         errorCrossSiteBody: 'Cross-site request refused (the browser marked Sec-Fetch-Site: cross-site)',
         errorMissingMarkerBody: 'The write is missing the x-sidecard-ask: 1 header (the page adds it automatically; scripts must declare it)',
-        errorStarttlsMissingBody: 'The SMTP server never advertised STARTTLS, so nothing was sent — that keeps the credential off a cleartext socket. For a local plaintext relay, turn STARTTLS off in settings.',
+        errorStarttlsMissingBody: 'The SMTP server never advertised STARTTLS, so nothing was sent — that keeps the credential off a cleartext socket. For a local plaintext relay, set feedbackSmtpStarttls: false in the config file, or append ?starttls=0 to the DSH_SIDECARD_SMTP_URL address.',
+        errorFeedbackRelayRefused: 'The feedback relay resolves into a private or reserved address, so nothing was sent. Use a public relay, or a loopback one.',
+        errorNoSessionMultiParent: 'No session was named and this host has several live conversations — ask from a specific session, or the side answer cannot inherit a defensible tool set and has nowhere to belong.',
         errorBadResponseBody: 'The host returned an unreadable response',
         errorStreamBrokenBody: 'The stream connection broke',
         errorStreamEndedBody: 'The stream ended without a terminal event',
@@ -1378,6 +1383,7 @@ window.__ModuleLoader__.load({
         historyRestore: 'Restore',
         historyDelete: 'Delete',
         historyClear: 'Clear all',
+        historyClearTitle: 'Clear all history',
         historyClearConfirm: 'Clear every history card? This cannot be undone.',
         historyClearDone: 'History cleared',
         historyRestored: 'Restored to the floating layer',
@@ -1545,6 +1551,10 @@ window.__ModuleLoader__.load({
       'missing-request-marker': { key: 'errorMissingMarkerBody' },
       // 2.3.2: the mailer refuses a cleartext relay that never offered STARTTLS.
       'smtp-starttls-missing': { key: 'errorStarttlsMissingBody' },
+      // 2.3.4: both codes are fully known Client-side, so an English UI does not
+      // have to show the Host's Chinese line (architecture review A3/A10).
+      'feedback-relay-refused': { key: 'errorFeedbackRelayRefused' },
+      'no-session-multi-parent': { key: 'errorNoSessionMultiParent' },
     }
 
     /**
@@ -6141,6 +6151,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
       // PRD §3.7), so a single click must never destroy a record. The row's
       // Delete only parks the id here; the shared confirmation layer decides.
       const [pendingHistoryDelete, setPendingHistoryDelete] = React.useState(null)
+      // 2.3.4 (security review S6): "clear ALL" used to rely on `window.confirm`,
+      // which is absent in embedded WebViews — and the code then cleared
+      // everything with no confirmation at all, on the LARGEST blast radius in
+      // the panel. 2.3.1 fixed exactly this class for a single row; the batch
+      // path kept the old shape. One dialog component, one pending flag.
+      const [pendingHistoryClear, setPendingHistoryClear] = React.useState(false)
       // ── feedback form ──────────────────────────────────────────────────
       // `idle` → typing; `sending` → one POST in flight (button locked);
       // `sent` → the draft was cleared; `error` → the draft is KEPT, so a
@@ -6440,13 +6456,28 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                   type: 'button',
                   className: 'dsa-btn',
                   onClick: () => {
-                    // confirm() is optional in embedded WebViews; when absent,
-                    // clear immediately (the manager is explicitly user-driven).
-                    if (typeof window.confirm === 'function' && !window.confirm(t('historyClearConfirm'))) return
-                    actions.clearHistory()
+                    // 2.3.4 (security review S6): park the intent and let the
+                    // shared dialog layer ask. `window.confirm` is optional in
+                    // embedded WebViews, and the old `if (confirm available)`
+                    // guard made "absent" mean "clear everything silently".
+                    setPendingHistoryClear(true)
                   },
                 }, t('historyClear')))
               : null,
+          pendingHistoryClear === true
+            ? h(DeleteConfirmDialog, {
+              title: t('historyClearTitle'),
+              body: t('historyClearConfirm'),
+              detail: null,
+              cancelLabel: t('askCancel'),
+              confirmLabel: t('historyClear'),
+              onCancel: () => setPendingHistoryClear(false),
+              onConfirm: () => {
+                setPendingHistoryClear(false)
+                actions.clearHistory()
+              },
+            })
+            : null,
           pendingHistoryDelete !== null && pendingHistoryEntry !== undefined
             ? h(DeleteConfirmDialog, {
               // Same layer as the card's ×: names the object, states that it is
@@ -6775,6 +6806,16 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         /** Everything this activation must undo. */
         const disposers = []
         const controllers = new Map()
+        /**
+         * Cancel credentials for sessionless runs (2.3.4, security review S3).
+         *
+         * A run started without a session id is owned by the one-shot token the
+         * Host puts in its `start` frame; `/cancel` must present it. Kept in
+         * memory on purpose — the token lives exactly as long as the run, and
+         * persisting it would put a credential in localStorage for a run that no
+         * longer exists.
+         */
+        const runOwnerTokens = new Map()
         /** Pending surface render-proof timers (cleared on unload). */
         const pendingProofs = new Map()
         let lastSignature = null
@@ -7398,9 +7439,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             const controller = controllers.get(id)
             if (controller !== undefined) {
               controller.abort()
-              void postJson('cancel', { id, sessionId: cardSessionId(card, ctx) }).catch(() => {})
+              void postJson('cancel', { id, sessionId: cardSessionId(card, ctx), ownerToken: runOwnerTokens.get(id) ?? null }).catch(() => {})
             }
             controllers.delete(id)
+            runOwnerTokens.delete(id)
             pendingDeltas.delete(id)
             pendingReasonings.delete(id)
             // Every surface gets the same chance to close its own container as
@@ -7781,7 +7823,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               // so POST /cancel too. Fire-and-forget on purpose — the card is
               // already stopped locally, and a dead host must not turn the
               // Stop button into a failure.
-              void postJson('cancel', { id: card.id, sessionId: cardSessionId(card, ctx) }).catch(() => {})
+              void postJson('cancel', { id: card.id, sessionId: cardSessionId(card, ctx), ownerToken: runOwnerTokens.get(card.id) ?? null }).catch(() => {})
             }
             patchCard(card.id, { status: 'stopped' })
           },
@@ -7830,9 +7872,10 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               controller.abort()
               // Same host-side release as the Stop button: closing a card
               // mid-stream must not leave the child running server-side.
-              void postJson('cancel', { id: card.id, sessionId: cardSessionId(card, ctx) }).catch(() => {})
+              void postJson('cancel', { id: card.id, sessionId: cardSessionId(card, ctx), ownerToken: runOwnerTokens.get(card.id) ?? null }).catch(() => {})
             }
             controllers.delete(card.id)
+            runOwnerTokens.delete(card.id)
             // A closed card's buffered-but-unflushed deltas belong to nobody:
             // drop them here so the next tick's flush cannot touch them.
             pendingDeltas.delete(card.id)
@@ -8003,6 +8046,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           }, {
             signal: controller.signal,
             onStart: (data) => {
+              // 2.3.4 (security review S3): remember the cancel credential the
+              // Host issued for this run (present only when the run has no
+              // owning session).
+              if (typeof data?.ownerToken === 'string' && data.ownerToken !== '') {
+                runOwnerTokens.set(cardId, data.ownerToken)
+              }
               patchCard(cardId, {
                 truncated: data?.truncated === true || card.truncated,
                 droppedChars: data?.droppedChars ?? card.droppedChars,
@@ -8031,6 +8080,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 elapsedMs: Date.now() - startedAt,
               })
               controllers.delete(cardId)
+              runOwnerTokens.delete(cardId)
               syncPersisted()
               // 2.1.9：答完就让答案出现在卡片里（胶囊态不再只显示一行状态）。
               revealFinishedCard(cardId)
@@ -8043,6 +8093,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               flushStreamBuffers()
               patchCard(cardId, { status: 'error', error, elapsedMs: Date.now() - startedAt })
               controllers.delete(cardId)
+              runOwnerTokens.delete(cardId)
               // A terminal error is still a terminal state: whatever the user
               // was already shown has to survive a reload. Only `onDone` used
               // to persist, so a dropped connection — routine when Android

@@ -28,9 +28,9 @@ const CONFIG_FILE = join(HOME, 'sidecard-ask', 'config.json')
 const report = createReporter('smoke')
 
 /** Boot one host instance over a fresh fake context. */
-async function boot({ patch = {}, engineOptions = {}, services = {} } = {}) {
+async function boot({ patch = {}, engineOptions = {}, services = {}, hostOptions = {} } = {}) {
   const host = await import(hostModuleUrl())
-  const harness = makeHostCtx({ services })
+  const harness = makeHostCtx({ services, ...hostOptions })
   const engine = makeSubagentEngine({ emit: (event, ...args) => harness.emit(event, ...args), ...engineOptions })
   // An explicit service always wins (including an explicit `undefined`), so a
   // test can hand the plugin a slimmer composition on purpose.
@@ -368,10 +368,14 @@ report.equal(lifecycle.events().at(-1).data.text, '这是一个流式答案', 't
 console.log('\ncancel')
 const c = await boot({ engineOptions: { delayMs: 25, frames: ['a', 'b', 'c', 'd', 'e', 'f'] } })
 const pending = callRoute(c.harness, '/ask', {
-  body: { id: 'ask-cancel', question: '慢一点', selection: '等待中的文本', zone: 'chat' },
+  // 2.3.4 (security review S3): a sessionless run now needs its token to be
+  // cancelled, so the functional cancellation case names its session.
+  body: { id: 'ask-cancel', question: '慢一点', selection: '等待中的文本', zone: 'chat', sessionId: 'session-alpha' },
 })
 await wait(60)
-const cancelRes = await callRoute(c.harness, '/cancel', { body: { id: 'ask-cancel' } })
+const cancelRes = await callRoute(c.harness, '/cancel', {
+  body: { id: 'ask-cancel', sessionId: 'session-alpha' },
+})
 const cancelBody = cancelRes.json()
 report.equal(cancelBody.ok, true, '/cancel answers ok')
 report.equal(cancelBody.value.cancelled, true, '/cancel found and aborted the run')
@@ -424,14 +428,48 @@ report.equal(ownerSession.json().value.cancelled, true, 'cancel accepts the owni
 const ownedAnswer = await ownedPending
 report.ok(ownedAnswer.events().length > 0, 'the owned run still delivers its partial answer')
 
+// 2.3.4 (security review S3): a run started WITHOUT a session used to be
+// cancellable by anyone who knew the id — the ownership check only ran for a
+// string owner, and `null` fell straight through it. Such a run now carries a
+// one-shot token in its `start` frame and `/cancel` must present it. Driven
+// through the raw route so the test can read that frame while the run is open.
+{
+  const tokenless = await boot({ engineOptions: { delayMs: 40, frames: ['a', 'b', 'c', 'd'] } })
+  const tokenlessRoute = tokenless.harness.route()
+  const openRes = makeRes()
+  const openReq = makeReq({
+    url: `${tokenlessRoute.path}/ask`,
+    headers: { 'x-sidecard-ask': '1' },
+    body: { id: 'ask-tokenless', question: 'q', selection: 'text', zone: 'chat' },
+  })
+  const openRun = tokenlessRoute.handler(openReq, openRes)
+  await wait(80)
+  const startFrame = openRes.events().find(event => event.event === 'start')
+  report.ok(
+    typeof startFrame?.data?.ownerToken === 'string' && startFrame.data.ownerToken !== '',
+    'a sessionless run is issued a cancel token',
+  )
+  const withoutToken = (await callRoute(tokenless.harness, '/cancel', { body: { id: 'ask-tokenless' } })).json()
+  report.equal(withoutToken.value.cancelled, false, 'a sessionless run is not cancelled without its token')
+  const wrongToken = (await callRoute(tokenless.harness, '/cancel', {
+    body: { id: 'ask-tokenless', ownerToken: 'not-the-token' },
+  })).json()
+  report.equal(wrongToken.value.cancelled, false, 'a wrong token is refused exactly like an unknown id')
+  const rightToken = (await callRoute(tokenless.harness, '/cancel', {
+    body: { id: 'ask-tokenless', ownerToken: startFrame.data.ownerToken },
+  })).json()
+  report.equal(rightToken.value.cancelled, true, 'the token that started the run cancels it')
+  await openRun
+}
+
 // A run cancelled before ANY frame produces a plain error instead of an empty
 // "done": the Client shows the retryable error card.
 const c2 = await boot({ engineOptions: { delayMs: 60, frames: ['x'] } })
 const pendingEarly = callRoute(c2.harness, '/ask', {
-  body: { id: 'ask-cancel-early', question: '立刻停', selection: '还没开始', zone: 'chat' },
+  body: { id: 'ask-cancel-early', question: '立刻停', selection: '还没开始', zone: 'chat', sessionId: 'session-alpha' },
 })
 await wait(10)
-await callRoute(c2.harness, '/cancel', { body: { id: 'ask-cancel-early' } })
+await callRoute(c2.harness, '/cancel', { body: { id: 'ask-cancel-early', sessionId: 'session-alpha' } })
 const earlyEvents = (await pendingEarly).events()
 report.equal(earlyEvents.at(-1).event, 'error', 'a run cancelled before its first frame ends in an error')
 report.equal(earlyEvents.at(-1).data.code, 'aborted', 'the early abort keeps the aborted code')
@@ -751,16 +789,61 @@ const archiving = await boot({
 const archivedState = (await callRoute(archiving.harness, '/state', { method: 'GET' })).json()
 report.equal(archivedState.value.capabilities.parent.id, 'live-root', '/state reports a non-archived parent')
 report.equal(archivedState.value.capabilities.parent.archived, false, '/state reports the parent as not archived')
+// 2.3.4 (security review S2): the COUNT still makes a refusal diagnosable, the
+// IDS were the ingredient the per-session rate limit could not defend against —
+// a page holding several real session ids could rotate them and spend unlimited
+// quota while every single call stayed under the per-session ceiling.
 report.equal(
-  archivedState.value.capabilities.parent.candidates.length,
+  archivedState.value.capabilities.parent.candidates.count,
   2,
-  '/state lists every candidate so a refusal can be diagnosed',
+  '/state counts every candidate so a refusal can be diagnosed',
+)
+report.equal(
+  archivedState.value.capabilities.parent.candidates.archivedCount,
+  1,
+  '/state counts the archived candidates too',
+)
+report.equal(
+  JSON.stringify(archivedState.value.capabilities.parent.candidates).includes('live-root'),
+  false,
+  '/state never hands out session ids to rotate the rate limit against',
 )
 const archivedAsk = await callRoute(archiving.harness, '/ask', {
   body: { id: 'ask-live-parent', question: 'q', selection: 'text' },
 })
 report.equal(archivedAsk.events().at(-1).event, 'done', 'an archived root does not become the parent')
 report.equal(archiving.engine.starts[0].request.parent.id, 'live-root', 'the non-archived agent was chosen')
+
+// 2.3.4 (security review S8): an ask that names NO session on a host with
+// several LIVE conversations used to be answered from whichever one came first —
+// the child inherited THAT session's tool set and the answer was published into
+// a conversation the asker never named. One live candidate stays unambiguous
+// (the phone/Web-View shape); more than one is a guess, not a default.
+{
+  const liveAgent = id => ({ id, session: { header: { id } } })
+  const twoLive = await boot({
+    services: {
+      agents: {
+        get: id => (id === 'live-a' || id === 'live-b' ? liveAgent(id) : undefined),
+        roots: () => [liveAgent('live-a'), liveAgent('live-b')],
+        list: () => [liveAgent('live-a'), liveAgent('live-b')],
+      },
+    },
+  })
+  const ambiguous = await callRoute(twoLive.harness, '/ask', {
+    body: { id: 'ask-ambiguous', question: 'q', selection: 'text' },
+  })
+  report.equal(
+    ambiguous.events().at(-1).data.code,
+    'no-session-multi-parent',
+    'an unnamed ask on a multi-session host is refused with its own code',
+  )
+  report.equal(twoLive.engine.starts.length, 0, 'no child is started when the parent would be a guess')
+  const namedOk = await callRoute(twoLive.harness, '/ask', {
+    body: { id: 'ask-named', question: 'q', selection: 'text', sessionId: 'live-a' },
+  })
+  report.equal(namedOk.events().at(-1).event, 'done', 'naming the session still answers')
+}
 
 // Every candidate archived → the run is still ATTEMPTED with a flag, because
 // the archived-session gate that rejects such a child's steps exists only from
@@ -1152,7 +1235,15 @@ const desktopAppOrigin = await callRoute(desktopShell.harness, '/config', {
   body: { maxChars: 120 },
   headers: { host: '127.0.0.1:8080', origin: 'dsh-app://app' },
 })
-report.equal(desktopAppOrigin.status, 200, 'an authenticated dsh-app Origin passes too (legacy direct path)')
+// 2.3.4 (reality check F4 / architecture review A6): this used to assert 200 —
+// "an authenticated dsh-app Origin passes too (legacy direct path)" — under a
+// stub that always allows. The host's own trust check rejects any scheme other
+// than http/https, so `delegated()` is false in production and that path cannot
+// be reached; the assertion was proving a fiction and would have blocked the
+// honest fix. The desktop window never sends this Origin (its main process
+// strips it), and the plugin now refuses it unconditionally.
+report.equal(desktopAppOrigin.status, 403, 'a dsh-app Origin is refused: the host never trusts that scheme')
+report.equal(desktopAppOrigin.json().error.reason, 'desktop-origin', 'the refusal names the desktop origin')
 const desktopState = await callRoute(desktopShell.harness, '/state', {
   method: 'GET',
   headers: { host: '127.0.0.1:8080', origin: undefined },
@@ -1296,8 +1387,12 @@ for (const forbidden of ['trustedHosts', 'feedbackSmtpPass', 'feedbackAddress', 
   report.equal(diagText.includes(forbidden), false, `/diag never leaks "${forbidden}"`)
 }
 report.equal(Object.keys(diagValue).sort().join(','),
-  'at,authGate,config,fenceDelegation,readonly,route,version',
+  'at,authGate,config,fenceDelegation,readonly,route,routesRegistered,version',
   '/diag exposes exactly the documented fields')
+// 2.3.4 (architecture review F1): the count is the one fact the old surface could
+// not express — a composition that accepted ZERO routes reported nothing, and
+// the log still said "host ready".
+report.equal(diagValue.routesRegistered, 1, '/diag counts the routes the host actually accepted')
 
 const diagPost = await callRoute(unauthenticated.harness, '/diag', { method: 'POST', body: {} })
 report.equal(diagPost.status, 405, '/diag is a read-only probe')
@@ -1321,6 +1416,67 @@ const diagFenceOnly = await callRoute(a.harness, '/diag', { method: 'GET' })
 report.equal(diagFenceOnly.status, 200, '/diag answers on a fence-only composition too')
 report.equal(diagFenceOnly.json().value.authGate, 'fence-only', 'fence-only is named as such')
 report.equal(diagFenceOnly.json().value.fenceDelegation, 'disabled', 'fence-only reports delegation disabled')
+
+// 2.3.4 (reality check F2): `/feedback` had NO route-level assertion in this
+// suite — the transport cases live in contract-test — which is precisely the
+// blind spot that shipped 2.3.2's broken `/diag` (zero occurrences of '/diag' in
+// that tag's smoke file). With the 2.3.4 default (no recipient) the route must
+// answer a NAMED refusal, not a bare 400/500 from the host.
+const feedbackNoRecipient = await callRoute(a.harness, '/feedback', {
+  body: { kind: 'bug', title: '路由覆盖', body: '这一条只用来钉住 /feedback 路由的未配置分支。' },
+})
+report.equal(feedbackNoRecipient.status, 503, '/feedback answers 503 when no recipient is configured')
+report.equal(feedbackNoRecipient.json().error.code, 'feedback-unconfigured', 'the refusal names the missing recipient')
+
+// ────────────────────────────────────────────────────────────────────────────
+// 10d. registration shapes: the per-method fallback and the "no route at all" state
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nroute registration')
+{
+  // 2.3.4 (reality check F3): `route: 'per-method'` was never observed. The fake
+  // host's `callRoute` takes `routes[0]`, which under the fallback is the first
+  // EXACT route, so the URL it built could never reach `/diag` — the fallback
+  // shape was documented, reported by `/diag`, and untested.
+  const fallbackBoot = await boot({ hostOptions: { refuseRegistrationKinds: ['prefix'] } })
+  report.equal(
+    fallbackBoot.harness.routes.length,
+    9,
+    'every method registers its own exact route when the prefix shape is refused',
+  )
+  report.equal(
+    fallbackBoot.harness.routes[0].path,
+    '/sidecard-ask/api/ping',
+    'the fallback registers exact paths, one per method',
+  )
+  const fallbackDiag = fallbackBoot.harness.routes.find(route => route.path === '/sidecard-ask/api/diag')
+  report.ok(fallbackDiag !== undefined, 'the fallback registers a /diag route')
+  const fallbackRes = makeRes()
+  await fallbackDiag.handler(
+    makeReq({ method: 'GET', url: fallbackDiag.path, headers: { host: '127.0.0.1:8080' } }),
+    fallbackRes,
+  )
+  report.equal(fallbackRes.status, 200, '/diag answers under the per-method fallback')
+  report.equal(fallbackRes.json().value.route, 'per-method', '/diag reports the fallback shape it actually used')
+}
+{
+  // 2.3.4 (architecture review F1): a composition that refused BOTH shapes used
+  // to log a healthy "host ready" while serving zero routes — and `/diag`, the
+  // endpoint that exists to tell "not loaded" from "loaded but not answering",
+  // answered 404 in exactly that state.
+  const deadBoot = await boot({ hostOptions: { refuseRegistrationKinds: ['prefix', 'exact'] } })
+  report.equal(deadBoot.harness.routes.length, 0, 'a host that refuses every shape registers nothing')
+  report.equal(
+    deadBoot.harness.log.filter(([level]) => level === 'error').length,
+    1,
+    'a fully failed registration logs an error',
+  )
+  report.equal(
+    deadBoot.harness.log.some(([, line]) => line.includes('host ready')),
+    false,
+    'no "host ready" line is printed when nothing registered',
+  )
+}
 
 const unknownUnauthenticated = await callRoute(unauthenticated.harness, '/nope', { method: 'GET' })
 report.equal(unknownUnauthenticated.status, 404, 'an unknown endpoint is still a 404, gate or no gate')
@@ -1547,6 +1703,17 @@ await withHome(async () => {
   })
   report.equal(allowed.status, 200, 'with a host gate the bind authority stays trusted (A3 preserved)')
   report.equal(allowed.json().value?.provenance?.authGate, 'host-gate', 'the gate is reported on the wire')
+  // 2.3.4 (security review S1): `/diag` answers without a session BY DESIGN, so
+  // "unreachable from off-box" is the only thing that makes that safe. Same
+  // host, same gate, same LAN authority — the endpoint must refuse, while
+  // `/state` (which has a credential here) still answers.
+  const diagLan = await callRoute(gated.harness, '/diag', {
+    method: 'GET',
+    headers: { host: '192.168.1.5:4321', origin: 'http://192.168.1.5:4321' },
+  })
+  report.equal(diagLan.status, 403, '/diag refuses a LAN authority even with a gate mounted')
+  const diagLoopback = await callRoute(gated.harness, '/diag', { method: 'GET' })
+  report.equal(diagLoopback.status, 200, '/diag still answers on loopback')
 })
 
 // A write to an already-destroyed socket does not throw: it emits 'error' on

@@ -33,6 +33,7 @@
  */
 
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import net from 'node:net'
 import { homedir } from 'node:os'
@@ -46,7 +47,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.3.3'
+export const PLUGIN_VERSION = '2.3.4'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -208,15 +209,17 @@ export const DEFAULT_CONFIG = {
   /**
    * Recipient of the settings page's 「反馈」 mail.
    *
-   * The default is the maintainer's real inbox, stored as `b64:<base64>` so a
-   * plain `name@domain` string cannot be grepped out of the published tarball.
-   * That is OBFUSCATION, NOT ENCRYPTION — `decodeAddress()` ships in this same
-   * file, so anyone holding the package can recover it; it only defeats naive
-   * scraping. `DSH_SIDECARD_FEEDBACK_TO` (or the shared `DSH_CRB_FEEDBACK_TO`
-   * from dsh-conversation-recycle-bin) wins over this value, and an empty value
-   * disables the mailbox again.
+   * 2.3.4 (security review S7): the default is EMPTY. It used to be the
+   * maintainer's real inbox, stored as `b64:<base64>` — obfuscation, not
+   * encryption, since `decodeAddress()` ships in this same file — so every
+   * default install carried a recoverable personal address in the published
+   * tarball and pointed user-written reports at it. Empty is a legal value
+   * ("mail feedback disabled"), the panel already renders that state
+   * (`feedback-unconfigured`, with the copy/manual path next to it), and an
+   * operator who wants a mailbox sets `DSH_SIDECARD_FEEDBACK_TO` (or the shared
+   * `DSH_CRB_FEEDBACK_TO`) or fills `feedbackAddress` themselves.
    */
-  feedbackAddress: 'b64:MzQzMzI3NjU3N0BxcS5jb20=',
+  feedbackAddress: '',
   /**
    * SMTP transport, editable in the settings page so a normal user never has to
    * touch environment variables.
@@ -238,8 +241,14 @@ export const DEFAULT_CONFIG = {
    * advertises the capability is refused BEFORE the credential is written, so a
    * stripped EHLO reply can no longer downgrade the session to plaintext. A local
    * plaintext relay (MailHog, Papercut, the offline fixture) sets this to `false`
-   * explicitly — the page's settings offer it, and the URL form spells it
-   * `?starttls=0`.
+   * explicitly.
+   *
+   * 2.3.4 (architecture review A2): this comment used to say "the page's settings
+   * offer it", and the 502 copy told the user the same thing — but the SMTP form
+   * was removed from the page entirely (`client.js` says so in its own words),
+   * so there is NO control to flip. The two real ways are spelled out instead: a
+   * hand edit of `feedbackSmtpStarttls: false` in the config file, or
+   * `?starttls=0` on the relay URL in `DSH_SIDECARD_SMTP_URL`.
    */
   feedbackSmtpStarttls: true,
   feedbackSmtpUser: '',
@@ -1072,8 +1081,10 @@ export function describeSmtpSettings(config = {}, env = process.env) {
     port: clampNumber(config.feedbackSmtpPort, 1, 65_535) ?? 465,
     secure: config.feedbackSmtpSecure !== false,
     // 2.3.2: whether a cleartext connection must upgrade before the credential
-    // is written. The settings page shows it, so "why did my local relay stop
-    // working" points at a switch the user can actually flip.
+    // is written. 2.3.4 (architecture review A2): the settings page does NOT
+    // show it — the SMTP form is gone from the page — so the value is published
+    // here for a reader who is already editing config, not as a pointer to a
+    // switch that does not exist.
     starttls: config.feedbackSmtpSecure === false && config.feedbackSmtpStarttls !== false,
     user: typeof config.feedbackSmtpUser === 'string' ? config.feedbackSmtpUser.trim() : '',
     from: typeof config.feedbackSmtpFrom === 'string' ? config.feedbackSmtpFrom.trim() : '',
@@ -1273,9 +1284,17 @@ function attachSmtpReader(socket) {
 function openSmtpSocket(endpoint, timeoutMs) {
   return new Promise((resolve, reject) => {
     const onError = (error) => { socket.destroy(); reject(error) }
+    // 2.3.4 (security review S4): connect to the address that was JUDGED, not to
+    // the name it came from. `dns.lookup` runs again inside the socket call, so
+    // connecting by name reopened the window the send-time check had closed.
+    // `servername` stays the original name: TLS SNI and certificate validation
+    // must keep naming the relay the operator configured.
+    const connectHost = typeof endpoint.connectHost === 'string' && endpoint.connectHost !== ''
+      ? endpoint.connectHost
+      : endpoint.host
     const socket = endpoint.secure
-      ? tls.connect({ host: endpoint.host, port: endpoint.port, servername: endpoint.host })
-      : net.connect({ host: endpoint.host, port: endpoint.port })
+      ? tls.connect({ host: connectHost, port: endpoint.port, servername: endpoint.host })
+      : net.connect({ host: connectHost, port: endpoint.port })
     socket.once('error', onError)
     socket.setTimeout(timeoutMs, () => {
       socket.destroy()
@@ -1561,6 +1580,29 @@ export function isLoopbackHostname(hostname) {
 }
 
 /**
+ * Whether a request's own Host header names loopback (2.3.4, security review S1).
+ *
+ * `/diag` answers without a browser session on purpose, so "who is asking" has to
+ * be decided from the request alone. The Host header is the authority the caller
+ * claims and the one the fence already trusts for loopback: a LAN-bound host that
+ * actually receives `Host: 10.0.0.5:8080` fails here, while a local visitor
+ * (`127.0.0.1`, `localhost`, `[::1]`) passes. An absent or unparsable Host is
+ * refused — "cannot tell" must not mean "allowed" for a session-free endpoint.
+ * @param {{headers?: Record<string, string|string[]|undefined>}} req - node request.
+ * @returns {boolean} true when the request targets the loopback authority.
+ */
+export function isLoopbackRequest(req) {
+  const raw = req?.headers?.host
+  const host = typeof raw === 'string' ? raw.trim() : ''
+  if (host === '') return false
+  try {
+    return isLoopbackHostname(new URL(`http://${host}`).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
  * Whether a configured SMTP relay host points into a private or reserved range.
  *
  * 2.3.2: `/config` accepted any authority and `/feedback` then opened a socket
@@ -1666,7 +1708,12 @@ export async function assertRelayTargetAllowed(host, deps = {}) {
   if (blocked !== undefined) {
     return { ok: false, reason: `SMTP 主机解析到内网/保留地址 ${blocked.address}，已拒绝发送` }
   }
-  return { ok: true, reason: '' }
+  // 2.3.4 (security review S4): the judged address is returned so the caller can
+  // CONNECT to it. Handing the name back to the socket let a second DNS answer
+  // land somewhere this predicate never saw (the TOCTOU the check exists to
+  // close). Every address in `list` passed, so taking the first is faithful to
+  // the verdict; `undefined` (no entries) cannot happen here — it is refused above.
+  return { ok: true, reason: '', address: list[0]?.address }
 }
 
 /**
@@ -1778,21 +1825,23 @@ export function fenceVerdict(req, trustedHosts = [], options = {}) {
     return { ok: false, reason: 'no-origin' }
   }
   if (origin.startsWith('dsh-app:')) {
-    // 2.3.3 (architecture review RB1): this delegation branch is DEAD CODE on
-    // every host we can measure, and the previous comment said the opposite.
+    // 2.3.4 (reality check F4 / architecture review A6): the delegation branch is
+    // GONE, not merely documented as unreachable.
     //
     // The host's own trust check (`dsh-client-connection`, api-request-trust.ts)
     // parses the Origin and returns false for any scheme other than http/https —
-    // `Origin: dsh-app://app` therefore FAILS it, `authRejection` answers 403, and
-    // `delegated()` is false. So a desktop window that talks to the HTTP port
-    // directly is refused here as `desktop-origin`, exactly as before 2.3.2.
+    // `Origin: dsh-app://app` therefore FAILS it, `authRejection` answers 403 and
+    // `delegated()` is false on every host we can measure. Keeping `if
+    // (delegated()) return ok` meant a stub that always allows could make this
+    // branch answer 200 and a TEST asserted exactly that ("legacy direct path"),
+    // i.e. the suite proved a path production cannot reach and would have blocked
+    // the honest fix. The supported desktop path never carries this Origin: the
+    // main process's `forwardWebRequest` strips it and the request arrives with
+    // no Origin at all (the branch above).
     //
-    // The branch stays so that a future host which starts accepting the custom
-    // scheme does not need a plugin release, but it must never be read as "the
-    // desktop direct path is supported". The supported desktop path is the
-    // document-relative one (`dsh-app://app/sidecard-ask/api/...` → the main
-    // process's `forwardWebRequest`, which strips Origin and injects the cookie).
-    if (delegated()) return { ok: true, via: 'host-gate' }
+    // If a future host starts accepting the custom scheme, the plugin should
+    // still refuse it here and let the host's gate be the door — "the plugin
+    // trusts a scheme the host does not" is never the safer half of that bet.
     return { ok: false, reason: 'desktop-origin' }
   }
   let originUrl
@@ -2240,13 +2289,15 @@ function createSideEngine(ctx, configOf) {
    *
    * @param {string|undefined} sessionId - the asking session, when known.
    * @returns {{agent: object|undefined, id: string|undefined, archived: boolean,
-   *   candidates: Array<{id: string, archived: boolean}>}}
+   *   candidates: {count: number, archivedCount: number}, ambiguous?: boolean}}
    */
   function resolveParent(sessionId) {
     const agents = ctx.get('agents')
     const archived = archivedSessionIds()
-    const candidates = []
-    if (agents === undefined) return { agent: undefined, id: undefined, archived: false, candidates }
+    const empty = { count: 0, archivedCount: 0 }
+    if (agents === undefined) {
+      return { agent: undefined, id: undefined, archived: false, candidates: empty }
+    }
     if (typeof sessionId === 'string' && sessionId !== '' && typeof agents.get === 'function') {
       const exact = agents.get(sessionId)
       if (exact !== undefined) {
@@ -2256,7 +2307,13 @@ function createSideEngine(ctx, configOf) {
           agent: exact,
           id,
           archived: isArchived,
-          candidates: id === undefined ? [] : [{ id, archived: isArchived }],
+          // 2.3.4 (security review S2): COUNTS, never ids. `/state` used to hand
+          // out every live session id here, which was the ingredient `/ask`'s
+          // per-session rate limit could not defend against — a page that knew
+          // twelve real ids could rotate them and spend unlimited quota while
+          // every single call stayed "under the limit". Nothing in the client
+          // consumes the ids (`liveAgents` is a count), so they were pure surface.
+          candidates: id === undefined ? empty : { count: 1, archivedCount: isArchived ? 1 : 0 },
           named: true,
         }
       }
@@ -2268,19 +2325,35 @@ function createSideEngine(ctx, configOf) {
     const seen = new Set()
     let fallback
     let live
+    let candidateCount = 0
+    let archivedCount = 0
+    let liveCount = 0
     for (const agent of listed) {
       const id = agentSessionId(agent)
       if (id === undefined || seen.has(id)) continue
       seen.add(id)
       const isArchived = archived.has(id)
-      candidates.push({ id, archived: isArchived })
+      candidateCount += 1
+      if (isArchived) archivedCount += 1
+      else liveCount += 1
       if (fallback === undefined) fallback = { agent, id, archived: isArchived }
       if (live === undefined && !isArchived) live = { agent, id, archived: false }
     }
-    // A caller that NAMED a session which is not live is answered by another
-    // one (the host's historical fallback — older clients depend on it), but the
-    // start frame now says WHICH session answered so the card can show it
-    // instead of silently publishing into an unfamiliar conversation.
+    const candidates = { count: candidateCount, archivedCount }
+    // 2.3.4 (security review S8): a caller that named NO session on a host with
+    // SEVERAL live conversations used to be answered from whichever one came
+    // first — the child inherited THAT session's tool set and the answer was
+    // published into a conversation the asker never named. The refusal is scoped
+    // to more than one LIVE candidate: one live agent is unambiguous (archived
+    // ones cannot host a run at all — the host's archived-session gate rejects
+    // every proposed step), and that is the phone/Web-View shape.
+    if (liveCount > 1) {
+      return { agent: undefined, id: undefined, archived: false, candidates, named: false, ambiguous: true }
+    }
+    // A caller that NAMED a session which is not live is answered by the only
+    // candidate there is, and the start frame says WHICH session answered so the
+    // card can show it instead of silently publishing into an unfamiliar
+    // conversation.
     const chosen = live ?? fallback
     return chosen === undefined
       ? { agent: undefined, id: undefined, archived: false, candidates, named: false }
@@ -2322,19 +2395,60 @@ function createSideEngine(ctx, configOf) {
    * /state could not tell a deliberate `inherit` from a lost `readonly`.
    * @returns {{requested: boolean, viable: boolean, carrier: string, effective: string}}
    */
+  /**
+   * The ONE read-only verdict (2.3.4, architecture review A1).
+   *
+   * There used to be two: `readonlySurface()` decided viability from the host's
+   * advertised capability alone (`caps.toolFilter === true`), while the ask path
+   * decided whether the guard was actually IN FORCE from `Array.isArray(filter.allow)`
+   * — and `readOnlyToolFilter()` answers `{blocked: 'no-readonly-guard'}` (no
+   * `allow`) exactly when the registry names none of our read-only tools, which
+   * is the host-upgrade case that comment in `readOnlyToolFilter` was written
+   * about. The two answers could therefore disagree: `/state` and `/diag` said
+   * `viable: true`, every `/ask` was refused with `no-readonly-guard`, and the
+   * settings-page warning that exists for this case (`viable === false`) never
+   * appeared. Both readers now call this, so they cannot disagree.
+   * @param {Record<string, unknown>} config - the effective config.
+   * @param {string} [providerName] - resolved provider; defaults to the configured one.
+   * @returns {{caps: object|undefined, preset: string, presetInForce: boolean,
+   *   filterSupported: boolean, filter: object|undefined, filterInForce: boolean,
+   *   blocked: string|undefined, guardInForce: boolean}} the verdict.
+   */
+  function readonlyGuard(config, providerName) {
+    const name = typeof providerName === 'string' ? providerName : resolveProvider(config.sideProvider)
+    const caps = providerCapabilities(name)
+    const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
+    const presetInForce = config.sideTools === 'readonly' && preset !== '' && caps?.agentPreset === true
+    const filterSupported = caps?.toolFilter === true
+    // Asked whenever read-only is requested, even when the host advertises no
+    // filter channel: `blocked` is what names the failure (`no-readonly-guard`),
+    // and a host that lost the channel still needs that reason rather than the
+    // generic `readonly-unavailable`.
+    const filter = config.sideTools === 'readonly' ? readOnlyToolFilter(ctx) : undefined
+    const filterInForce = filterSupported && filter !== undefined && Array.isArray(filter.allow)
+    return {
+      caps,
+      preset,
+      presetInForce,
+      filterSupported,
+      filter,
+      filterInForce,
+      blocked: filter !== undefined && filter.blocked !== undefined ? filter.blocked : undefined,
+      guardInForce: presetInForce || filterInForce,
+    }
+  }
+
+  /** Report whether the read-only promise can be honoured right now. */
   function readonlySurface() {
     const config = configOf()
     if (config.sideTools !== 'readonly') {
       return { requested: false, viable: true, carrier: 'none', effective: 'inherit' }
     }
-    const caps = providerCapabilities(resolveProvider(config.sideProvider))
-    const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
-    const presetOk = preset !== '' && caps?.agentPreset === true
-    const filterOk = caps?.toolFilter === true
+    const verdict = readonlyGuard(config)
     return {
       requested: true,
-      viable: presetOk || filterOk,
-      carrier: presetOk ? 'preset' : filterOk ? 'tool-filter' : 'none',
+      viable: verdict.guardInForce,
+      carrier: verdict.presetInForce ? 'preset' : verdict.filterInForce ? 'tool-filter' : 'none',
       effective: 'readonly',
     }
   }
@@ -2437,12 +2551,18 @@ function createSideEngine(ctx, configOf) {
     const named = typeof request.sessionId === 'string' && request.sessionId !== ''
     const parent = resolveParent(request.sessionId)
     if (parent.agent === undefined) {
+      // 2.3.4 (security review S8): an unnamed ask on a host with SEVERAL live
+      // conversations gets its own code. "Which session's tools the child
+      // inherits" must never be decided by list order.
+      const ambiguous = parent.ambiguous === true
       sink.send('error', {
         id,
-        code: named ? 'parent-session-unknown' : 'no-parent',
-        message: named
-          ? '请求里点名的会话在这台宿主上不存在；侧边作答不会借用别的会话（避免把答案挂到不认识的对话上）'
-          : '当前没有活动的会话代理，无法发起独立作答',
+        code: ambiguous ? 'no-session-multi-parent' : named ? 'parent-session-unknown' : 'no-parent',
+        message: ambiguous
+          ? '未指定会话，而宿主有多个活动会话：请从具体会话里追问，否则无法确定子代理该继承哪套工具、答案该归属哪个对话'
+          : named
+            ? '请求里点名的会话在这台宿主上不存在；侧边作答不会借用别的会话（避免把答案挂到不认识的对话上）'
+            : '当前没有活动的会话代理，无法发起独立作答',
         retryable: false,
         fallback: 'main',
       })
@@ -2499,15 +2619,25 @@ function createSideEngine(ctx, configOf) {
 
     /** Detach this run's stream listener (frames are per attempt). */
     let detach = () => {}
+    const runSession = typeof request.sessionId === 'string' && request.sessionId !== ''
+      ? request.sessionId
+      : null
+    // 2.3.4 (security review S3): a run started WITHOUT a session used to carry
+    // `sessionId: null`, and `cancel()` skipped the ownership check entirely for
+    // exactly that value — so any authenticated page that knew the run id could
+    // abort another tab's answer (the phone/Web-View shape always lands here).
+    // A sessionless run now gets a one-shot token, handed to the starter in the
+    // `start` frame; `/cancel` must present it. Nothing is guessed, and the
+    // session case keeps its existing rule.
+    const ownerToken = runSession === null ? randomBytes(16).toString('hex') : null
     const runRecord = {
       abort: () => controller.abort(),
       dispose: undefined,
       // Which session asked. `runs` is process-global, so `/cancel` needs an
       // owner to check against: without it any trusted page could abort any
       // other session's run by guessing (or sniffing) a run id.
-      sessionId: typeof request.sessionId === 'string' && request.sessionId !== ''
-        ? request.sessionId
-        : null,
+      sessionId: runSession,
+      ownerToken,
     }
     runs.set(id, runRecord)
 
@@ -2526,22 +2656,29 @@ function createSideEngine(ctx, configOf) {
         })
         return
       }
-      const toolFilter = config.sideTools === 'readonly' ? readOnlyToolFilter(ctx) : undefined
-      const caps = providerCapabilities(provider)
+      // 2.3.4 (architecture review A1): the ask path no longer re-derives the
+      // read-only verdict. It used to compute viability here with a DIFFERENT
+      // predicate than `readonlySurface()` did, so a host that advertises
+      // `toolFilter` but names none of our read-only tools reported
+      // "read-only is available" on `/state` while refusing every `/ask` with
+      // `no-readonly-guard` — and the settings-page warning for that case never
+      // fired. One verdict now feeds both readers.
+      const verdict = readonlyGuard(config, provider)
+      const toolFilter = verdict.filter
+      const caps = verdict.caps
       // `persona` and `toolFilter` are optional start fields: a provider that
       // does not advertise them must not receive them, so the persona degrades
       // into the prompt text and a missing tool filter is reported on the wire.
       const personaSupported = caps?.persona === true
-      const toolFilterSupported = caps?.toolFilter === true
+      const toolFilterSupported = verdict.filterSupported
       // The preset channel is the one that actually works on this host: the
       // capability object advertises `agentPreset`, and `startLocal` forwards
       // `request.agentPreset` into the child's composition (its `toolFilter`
       // is not read from the request at all). So a configured preset is the
       // only way to genuinely narrow the side answerer's tools — and when it
       // is the one in force, the card must not say "inherits".
-      const preset = typeof config.sideAgentPreset === 'string' ? config.sideAgentPreset.trim() : ''
-      const presetSupported = caps?.agentPreset === true
-      const presetInForce = config.sideTools === 'readonly' && preset !== '' && presetSupported
+      const preset = verdict.preset
+      const presetInForce = verdict.presetInForce
       // 2.1.9: the read-only guard must fail CLOSED. Without a preset there is
       // no other real narrowing channel on this host, so a guard we cannot
       // build is a refusal, not an inheritance.
@@ -2551,10 +2688,8 @@ function createSideEngine(ctx, configOf) {
       // write and bash included — so the honest answers are "refuse" or "say
       // inherit"; pretending is not one of them. `sideTools: 'inherit'` is the
       // documented opt-out and is confirmed in the settings page.
-      const filterInForce = toolFilterSupported
-        && toolFilter !== undefined
-        && Array.isArray(toolFilter.allow)
-      const guardInForce = presetInForce || filterInForce
+      const filterInForce = verdict.filterInForce
+      const guardInForce = verdict.guardInForce
       if (config.sideTools === 'readonly' && !guardInForce) {
         const blocked = toolFilter !== undefined && toolFilter.blocked !== undefined
         sink.send('error', {
@@ -2620,6 +2755,9 @@ function createSideEngine(ctx, configOf) {
         requestedSessionId: typeof request.sessionId === 'string' && request.sessionId !== ''
           ? request.sessionId
           : null,
+        // 2.3.4 (security review S3): the cancel credential for a sessionless
+        // run (null when the run belongs to a named session, which needs none).
+        ownerToken: runRecord.ownerToken,
       })
 
       const childId = run.id
@@ -2795,9 +2933,10 @@ function createSideEngine(ctx, configOf) {
    * used to mean "skip the check", which is exactly the bypass CANCEL closed.
    * @param {string} id - the run id.
    * @param {string|null} [sessionId] - the session asking for the cancel.
+   * @param {string|null} [ownerToken] - the one-shot token a sessionless run got.
    * @returns {boolean} whether a run was aborted.
    */
-  function cancel(id, sessionId = null) {
+  function cancel(id, sessionId = null, ownerToken = null) {
     const record = runs.get(id)
     if (record === undefined) return false
     const owner = record.sessionId
@@ -2807,6 +2946,13 @@ function createSideEngine(ctx, configOf) {
       // 页面都能中止别的会话的子代理（专家 CANCEL）。老客户端一直带
       // sessionId，因此这条收紧不会打断既有调用方。
       if (typeof sessionId !== 'string' || sessionId === '' || owner !== sessionId) return false
+    } else if (typeof record.ownerToken === 'string' && record.ownerToken !== '') {
+      // 2.3.4 (security review S3): a run with NO session used to fall through
+      // this check entirely, because `owner` was `null` and the branch above is
+      // guarded by a string test. Every sessionless run is now owned by its
+      // token: a caller that cannot present it is answered `false`, exactly like
+      // an unknown id, so the id's existence is not confirmed either.
+      if (typeof ownerToken !== 'string' || ownerToken === '' || ownerToken !== record.ownerToken) return false
     }
     record.abort()
     return true
@@ -3012,7 +3158,16 @@ export function apply(ctx, patchConfig) {
   // profile service therefore falls back to the shared file instead of keeping
   // a previous host's name (two hosts in one process must not share a path).
   hostProfileName = profileNameFromContext(ctx)
-  const persisted = readPersistedConfig(ctx.logger)
+  /**
+   * What the file ON DISK says right now (2.3.4, architecture review A4).
+   *
+   * This used to be a `const` snapshot taken at apply time, so `/diag` reported
+   * `fileSchema: null` for the rest of the process even after a successful save
+   * wrote `schemaVersion: 2` — the endpoint answered the one question it exists
+   * for ("has this file been migrated?") with a stale value. It is re-bound by
+   * every write below.
+   */
+  let persisted = readPersistedConfig(ctx.logger)
   // 2.3.2: run the persisted layer through the migration seam before anything
   // reads it. `persisted.schemaVersion` is 0 for a file written before the stamp
   // existed (or for the shared legacy file), which is exactly the v1 shape.
@@ -3398,14 +3553,36 @@ export function apply(ctx, patchConfig) {
     // 2.3.3 (architecture review RB2): the literal-name filter cannot see a NAME
     // that resolves into the private network, so the target is resolved here —
     // once per send, right before the socket opens — and every address must pass.
-    const target = await assertRelayTargetAllowed(smtp.endpoint.host)
+    //
+    // 2.3.4 (architecture review A3): the ENVIRONMENT path was documented as the
+    // operator's exempt escape hatch (see `resolveSmtp`, and the 2.3.3 note in
+    // CHANGELOG), but this call did not look at `smtp.source`, so an internal
+    // relay named in `DSH_SIDECARD_SMTP_URL` was refused with a 400 the panel
+    // cannot even name. The exemption the comments promise is now the exemption
+    // the code implements — for the environment only; a config-file target,
+    // hand-edited or not, is still resolved and judged.
+    //
+    // 2.3.4 (security review S4): that resolution used to be advisory. It named
+    // one answer, `tls/net.connect` then resolved the name AGAIN, so a DNS answer
+    // that flipped between the two lookups walked past the check while the
+    // socket still landed on 10.x. The judged address is now the address the
+    // socket connects to (`connectHost`), with the original name kept for TLS
+    // SNI so certificate validation still names the relay.
+    const target = smtp.source === 'env'
+      ? { ok: true, reason: '', address: undefined }
+      : await assertRelayTargetAllowed(smtp.endpoint.host)
     if (target.ok !== true) {
       ctx.logger?.warn?.(`[sidecard-ask] feedback relay refused: ${target.reason}`)
       writeError(res, 400, 'feedback-relay-refused', target.reason)
       return
     }
     try {
-      await sendSmtpMessage(smtp.endpoint, { to, raw: mail.raw, subject: mail.subject })
+      await sendSmtpMessage(
+        typeof target.address === 'string' && target.address !== ''
+          ? { ...smtp.endpoint, connectHost: target.address }
+          : smtp.endpoint,
+        { to, raw: mail.raw, subject: mail.subject },
+      )
       feedbackGate.record()
       ctx.logger?.info?.(`[sidecard-ask] feedback sent to ${maskEmail(to)} kind=${input.value.kind}`)
       writeOk(res, { sent: true, at: now.toISOString(), transport: 'smtp', toMasked: maskEmail(to) })
@@ -3487,7 +3664,12 @@ export function apply(ctx, patchConfig) {
     const sessionId = typeof body?.sessionId === 'string' && body.sessionId !== ''
       ? body.sessionId
       : null
-    writeOk(res, { cancelled: engine.cancel(id, sessionId) })
+    // 2.3.4 (security review S3): a sessionless run is owned by the one-shot
+    // token its `start` frame carried; without it the cancel is refused.
+    const ownerToken = typeof body?.ownerToken === 'string' && body.ownerToken !== ''
+      ? body.ownerToken
+      : null
+    writeOk(res, { cancelled: engine.cancel(id, sessionId, ownerToken) })
   }
 
   /** `/config` — merge a partial config into the user layer and persist it. */
@@ -3565,6 +3747,8 @@ export function apply(ctx, patchConfig) {
       return
     }
     userLayer = nextLayer
+    // A successful save makes the file's schema the current one (2.3.4/A4).
+    persisted = { ...persisted, present: true, schemaVersion: CONFIG_SCHEMA_VERSION }
     recompute()
     handleState(res)
   }
@@ -3573,6 +3757,7 @@ export function apply(ctx, patchConfig) {
   const handleReset = (_req, res) => {
     userLayer = {}
     const saved = writePersistedConfig(userLayer, ctx.logger)
+    if (saved.ok) persisted = { ...persisted, present: true, schemaVersion: CONFIG_SCHEMA_VERSION }
     recompute(saved.ok ? [] : ['重置时写入失败，本次运行按 patch 配置生效'])
     handleState(res)
   }
@@ -3652,6 +3837,12 @@ export function apply(ctx, patchConfig) {
    * only writer.
    */
   let routeShape = 'prefix'
+  /**
+   * How many routes the host actually accepted (2.3.4, architecture review F1).
+   * Zero means the plugin loaded and serves nothing — the one state the old
+   * unconditional "host ready" line could not express.
+   */
+  let routesRegistered = 0
 
   /**
    * The non-sensitive half of `/state`, answerable without a session (2.3.2).
@@ -3691,6 +3882,11 @@ export function apply(ctx, patchConfig) {
       // What actually registered on this host: 'prefix' or 'per-method'. A
       // hardcoded 'prefix' claimed the better shape even after a fallback.
       route: routeShape,
+      // 2.3.4 (architecture review F1): the count itself. `route` names the
+      // SHAPE that was attempted; this names how many registrations the host
+      // actually accepted. Zero is the state — "loaded, serving nothing" — that
+      // an unconditional "host ready" line used to hide.
+      routesRegistered,
       // `host-gate` = the host session gate is mounted; `fence-only` = the
       // loopback/Origin fence is the entire model.
       authGate: gate ? 'host-gate' : 'fence-only',
@@ -3818,8 +4014,10 @@ export function apply(ctx, patchConfig) {
     // Path parsing runs BEFORE the session gate now, because `ping` must be
     // answerable without a browser session. The order is deliberate: the fence
     // still rejects a foreign origin first, the method name is validated
-    // before anything is dispatched, and `ping` is the ONLY verb that skips the
-    // gate — everything else falls through to it immediately below.
+    // before anything is dispatched, and TWO verbs answer before the gate —
+    // `ping` (a liveness probe) and `diag` (the acceptance instrument, which is
+    // additionally loopback-only; see the branch below). Everything else falls
+    // through to `authOnce()` immediately after them.
     const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
     const method = pathname.startsWith(`${ROUTE_PREFIX}/`)
       ? pathname.slice(ROUTE_PREFIX.length + 1)
@@ -3849,6 +4047,17 @@ export function apply(ctx, patchConfig) {
     if (method === 'diag') {
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         writeError(res, 405, 'method-error', 'method not allowed')
+        return
+      }
+      // 2.3.4 (security review S1): this branch returns BEFORE `authOnce()`, by
+      // design — a headless acceptance run has no browser session. That is only
+      // safe while the endpoint is unreachable from off-box, and nothing said so:
+      // on a host bound to a LAN address (`webServer.host = 0.0.0.0`) any machine
+      // on that network got the version/fence/config-shape report with no cookie.
+      // The gate cannot be reused here (a headless run has no credential), so the
+      // narrowing is the addresses this endpoint exists for: loopback only.
+      if (!isLoopbackRequest(req)) {
+        writeError(res, 403, 'forbidden', '诊断接口只对本机回环开放：请从运行 DSH 的机器上访问')
         return
       }
       writeOk(res, diagSurface())
@@ -3921,28 +4130,42 @@ export function apply(ctx, patchConfig) {
     try {
       disposers.push(ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler: guardedHandler }))
       routeShape = 'prefix'
-      return () => { for (const dispose of disposers) dispose() }
     } catch (error) {
       ctx.logger?.warn?.(`[sidecard-ask] 前缀路由注册失败，改用逐方法精确路由：${String(error?.message ?? error)}`)
-    }
-    // 2.3.3: `/diag` reports what actually registered, so the fallback is visible
-    // instead of being papered over with a hardcoded 'prefix'.
-    routeShape = 'per-method'
-    for (const method of API_METHODS) {
-      try {
-        disposers.push(ctx.webServer.register({
-          kind: 'exact',
-          path: `${ROUTE_PREFIX}/${method}`,
-          handler: guardedHandler,
-        }))
-      } catch (error) {
-        ctx.logger?.warn?.(`[sidecard-ask] 路由 ${method} 注册失败：${String(error?.message ?? error)}`)
+      // 2.3.3: `/diag` reports what actually registered, so the fallback is
+      // visible instead of being papered over with a hardcoded 'prefix'.
+      routeShape = 'per-method'
+      for (const method of API_METHODS) {
+        try {
+          disposers.push(ctx.webServer.register({
+            kind: 'exact',
+            path: `${ROUTE_PREFIX}/${method}`,
+            handler: guardedHandler,
+          }))
+        } catch (inner) {
+          ctx.logger?.warn?.(`[sidecard-ask] 路由 ${method} 注册失败：${String(inner?.message ?? inner)}`)
+        }
       }
+    }
+    // 2.3.4 (architecture review F1): "host ready" used to print unconditionally,
+    // so a composition that refused BOTH registration shapes logged a healthy
+    // start line while serving zero routes — `/diag` and `/ping` both 404, i.e.
+    // the endpoint that exists to prove the plugin loaded was the first casualty
+    // and the log said nothing. The count is now the one fact the banner is made
+    // of, and `/diag` publishes it so a headless run can tell "no routes" from
+    // "no plugin".
+    routesRegistered = disposers.length
+    if (routesRegistered === 0) {
+      ctx.logger?.error?.(
+        `[sidecard-ask] 一条路由都没注册成功（${ROUTE_PREFIX}）：插件已加载，但全部接口不可用`,
+      )
+    } else {
+      ctx.logger?.info?.(
+        `[sidecard-ask] host ready at ${ROUTE_PREFIX}（v${PLUGIN_VERSION}，${routeShape}，${routesRegistered} 条路由）`,
+      )
     }
     return () => { for (const dispose of disposers) dispose() }
   }
 
   ctx.effect(registerRoutes, `sidecard-ask: ${ROUTE_PREFIX} routes`)
-
-  ctx.logger?.info?.(`[sidecard-ask] host ready at ${ROUTE_PREFIX}（v${PLUGIN_VERSION}）`)
 }

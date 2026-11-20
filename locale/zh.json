@@ -53,6 +53,6 @@
   "errorOpaqueOriginBody": "请求来源页是不透明源（Origin: null，常见于沙箱 iframe / file:// / data:），已按跨站拒绝",
   "errorCrossSiteBody": "跨站点请求被拒（浏览器标记 Sec-Fetch-Site: cross-site）",
   "errorMissingMarkerBody": "写操作缺少 x-sidecard-ask: 1 请求头（页面会自动添加；脚本调用请显式声明）",
-  "errorStarttlsMissingBody": "SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次未发送；若这是本地明文中继，请在设置页显式关闭 STARTTLS",
+  "errorStarttlsMissingBody": "SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次未发送；若这是本地明文中继，请在配置文件里写 feedbackSmtpStarttls: false，或在 DSH_SIDECARD_SMTP_URL 的地址后加 ?starttls=0",
   "copyInsecureHint": "当前地址不是安全域（http），浏览器不提供剪贴板接口：已选中文本，请按 Ctrl+C 复制"
 }

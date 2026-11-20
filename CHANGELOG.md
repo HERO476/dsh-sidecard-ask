@@ -1,5 +1,137 @@
 # Changelog
 
+## 2.3.4
+
+**主题：把 2.3.1→2.3.3 这轮的"实现与自我声明分叉"逐条对齐——以及让"新端点必须被测试"从教训变成门禁。**
+
+本轮起点是一次三线评审（架构 / 安全 / 验收边界），结论是 2.3.3 没有新引入的 P0，
+但有 6 条 P1 与一批 P2：多数不是"代码算错"，而是**代码做的和注释/文案/自述说的不是一件事**。
+
+### P1 · 实现与声明不一致
+
+- **A1 · 只读状态机有两份判定（可给出相反答案）**：`readonlySurface()` 只看宿主通报的
+  能力位（`caps.toolFilter === true`）就报 `viable: true`，而 `/ask` 期的判定还要求
+  `Array.isArray(filter.allow)`，而 `readOnlyToolFilter()` 在"注册表里认不出任何只读工具"
+  时返回 `{ blocked: 'no-readonly-guard' }`（没有 `allow`）——正是宿主升级改名那种场景。
+  于是 `/state`、`/diag` 说"只读可用"，每次 `/ask` 却被拒，而设置页那条
+  "保持只读会让每次追问都被拒绝"的警告永不出现。现在两边共用 `readonlyGuard()`，一个判定。
+- **A2 · STARTTLS 关不掉的死循环指引**：502 的文案让用户"在设置页显式关闭 STARTTLS"，
+  而 SMTP 表单早已从设置页移除（`client.js` 自己就这么写着），`feedbackSmtpStarttls`
+  在 Client 里只作为默认值出现，没有任何控件。文案改为点名两个真实出口：
+  配置文件里的 `feedbackSmtpStarttls: false`，或 `DSH_SIDECARD_SMTP_URL` 上加 `?starttls=0`；
+  `DEFAULT_CONFIG` 与本文件的说明同步更正。
+- **A3 · 环境变量中继的"豁免"从来没落地**：注释与 2.3.3 的 CHANGELOG 都说
+  `DSH_SIDECARD_SMTP_URL` 是运维逃生口、故意豁免内网过滤，但发送前的
+  `assertRelayTargetAllowed` 不看来源，照拒，并返回一个 Client 没映射的
+  `feedback-relay-refused`（英文界面直接露中文）。现在只有 `source === 'config'`
+  的目标才被复查；该码补上 zh/en 文案与 `ERROR_CODES` 映射。
+- **F1 · 一条路由都没注册成功也照打 "host ready"**：`registerRoutes` 里 prefix 与
+  9 条 exact 全部抛错时，`disposers` 为空却正常返回，日志还是健康的
+  `host ready at /sidecard-ask/api` —— 而 `/diag`、`/ping` 此时全是 404，
+  等于"用来证明插件加载了的端点"在最该生效时失明。现在按实际注册数决定日志级别，
+  并把 `routesRegistered` 放进 `/diag`。
+- **F5 · 2.3.1 的历史删除二次确认零测试**：`4206641` 改了 `client.js` 却**没改任何测试**。
+  现在有结构性断言：`deleteHistoryCard` 只有一个调用点、它在确认回调里、
+  对话框只在 park 了 id 时存在。
+- **F6 / A9 · portal 挂载分支从未被执行**：2.3.2 的浮层几何修复正是这个分支
+  （`position: fixed` 的层被 composer 的 `absolute` 容器裁切），而 `npm test` 里
+  `require('react-dom')` 直接抛错 → `createPortal === null`，整套只跑 in-slot。
+  现在 harness 支持 `withReactDom: true` 并记录每次 `createPortal(element, container)`；
+  `verify` 的不变量也从"从不写 document.body"（正则只看 `append/insert/prepend`，
+  portal 路径能绕过去）改为真实不变量：**恰好一处 portal、容器必须是 `document.body`、
+  受槽位形态门控、挂载层带 `data-dsa-root`**。
+
+### 安全
+
+- **S1 · `/diag` 在 LAN 绑定下未认证可达（已复现）**：该分支在 `authOnce()` **之前**返回
+  （这是有意的：无头验收没有会话），但没有任何"只给本机看"的限制。宿主把
+  `webServer.host` 绑到 `0.0.0.0` 且存在 `connection` 闸门时，同网段任意主机
+  `GET /sidecard-ask/api/diag` 得 200（同形态 `/state` 401、`/config` 403）。
+  现在 `isLoopbackRequest()` 把关：非回环一律 403，回环仍 200。
+- **S2 · 每会话限流可被轮换绕过（已复现）**：限流键来自请求体的 `sessionId`，
+  而 `/state.capabilities.parent.candidates` 恰好把**所有**真实会话 id 列出来。
+  实测交替两个真实 id 连发 24 次 `/ask` → 24 次全部 `done`、起满 24 个子代理、0 次限流。
+  现在 `candidates` 只给 `{ count, archivedCount }`（Client 只消费 `liveAgents` 这个计数），
+  轮换源消失。
+- **S3 · 无会话 run 的取消没有归属校验（已复现）**：`cancel()` 的归属判定被
+  `typeof owner === 'string'` 守着，`owner === null` 时整段跳过——而手机网页版/网页岛
+  正是这条路径。现在无会话 run 在 `start` 帧拿到一次性 `ownerToken`，
+  `/cancel` 必须回传；Client 在内存里记住它（不进 localStorage），
+  不带或带错与"未知 id"同样返回 `false`。
+- **S4 · SMTP 的 DNS TOCTOU**：发送前解析过一次、判定过一次，`tls/net.connect`
+  又按**名字**再解析一次，答案翻转即可绕过。现在判定结果里的地址就是连接地址
+  （`connectHost`），`servername` 仍用原名以保证证书校验。
+- **S6 · 无 `confirm` 的 WebView 上"清空全部"等于没有确认**：`if (typeof window.confirm === 'function' && …)`
+  在函数不存在时直接放行——爆炸半径最大的一条路径反而没有确认。现在与单行删除
+  共用同一个确认层（`pendingHistoryClear`），不再依赖宿主提供 `confirm`。
+- **S7 · 默认收件人是维护者个人邮箱**：`b64:` 只是混淆（解码函数就在同一个包里）。
+  默认改为空（"反馈邮件未配置"是合法状态，面板本来就有这条分支与"复制内容"出口），
+  需要信箱的部署用 `DSH_SIDECARD_FEEDBACK_TO` 或自己填。
+- **S8 · 无会话请求借用"别人"的会话**：宿主有多个活动会话而请求没点名时，
+  原本按列表顺序取第一个——子代理挂到无关会话、继承**那个会话**的工具集。
+  现在只在**恰好一个活动候选**时才借（归档会话本来就无法承载 run），
+  否则以 `no-session-multi-parent` 拒绝并说明原因（该码已补 Client 文案）。
+
+### 验收与门禁
+
+- **F2 · "新端点零断言"从教训变成门禁**：`git show v2.3.2:test/smoke-test.mjs` 里
+  `/diag` 出现 **0** 次——2.3.2 的 P0 就是这么发出去的。现在 `verify` 断言
+  `API_METHODS` 里**每个**方法在 smoke 至少出现一次。该门禁立刻抓到第三个盲区：
+  `/feedback` 在路由层没有任何断言，已补（未配置收件人 → 503 `feedback-unconfigured`）。
+- **F3 · `route: 'per-method'` 从未被观测**：假宿主的 `callRoute` 取 `routes[0]`，
+  退化形态下那是 `/ping`，拼出的 URL 永远打不到 `/diag`。harness 现在支持
+  `refuseRegistrationKinds`，用例覆盖"prefix 被拒 → 9 条 exact + `/diag` 仍 200 且自报 per-method"，
+  以及"两种形态都拒 → 零路由 + 记 error + 不打 host ready"。
+- **F4 / A6 · 一条断言在证明生产不可达的路径**：`smoke-test.mjs` 曾断言
+  `Origin: dsh-app://app` 的写请求 **200**「legacy direct path」——在"永远放行"的桩上成立，
+  而宿主 `api-request-trust` 只认 http/https，`delegated()` 永远为 false。
+  代码与断言一起改：该 Origin 现在**无条件 403** `desktop-origin`（桌面页走文档相对路径，
+  主进程会删掉 Origin），断言同步为 403。
+- **F8 · 唯一的状态升级路径缺 v1 用例**：`migrateConfigLayer` 只测了 `from=0` 与 `from=99`，
+  跳过了每个 2.3.1 文件真正带的版本。已补 v1 直通 + 不产生告警两条。
+- **A4 · `/diag.config.fileSchema` 是启动快照**：保存设置后仍报旧值，直到进程重启——
+  2.3.3 修了假阳性却留下反向假阴性，而这个字段存在的唯一问题就是"文件迁移了没"。
+  现在每次成功写入都会重绑。
+- **A5 · 契约文档行号锚点腐烂 5 处，且门禁恰好跳过该写法**：`NODE-HOST-CONTRACT.md` 的
+  `[源码] index.js:NNN` 裸锚点不在 `verify` 的检查形态内。新增 `tools/fix-anchors.mjs`
+  （定义优先重算，`--defs` 可强制重指，`--check` 可做门禁），并把本轮改动造成的
+  12 处漂移与 5 处腐烂一起修正。
+- **A7 · `engines.dsh` 在标准 semver 下不覆盖实际宿主**：`>=0.2.1-rc.5 <0.3.0-0`
+  在默认规则下对 `0.2.2-rc.3`/`rc.5` 判 false（本机桌面端与网页端正是 0.2.2-rc.5），
+  只有宿主自己带 `includePrerelease: true` 才放过。range 增加
+  `|| >=0.2.2-0 <0.3.0-0`——预发布下界正是让预发布版本在默认规则下合格的条件。
+  实测 semver 7.8.6：两种 flag 下 0.2.1-rc.5 / 0.2.2-rc.3 / rc.5 / 0.2.2 全 true，
+  0.3.0-0 与 0.3.0-rc.1 全 false。
+- **F9 · `engines` 全区间没有运行时证据**：CI 新增 `compat` 作业，
+  对 `0.2.1-rc.5` / `0.2.2-rc.3` / `0.2.2-rc.5` 各跑一次
+  `tools/compat-probe.mjs`（发布产物探针，与 README §7 同源）。
+  这是**契约面证据，不是端到端**。
+- **A10 · 过期注释**：`ping is the ONLY verb that skips the gate` 与实际不符（`diag` 也是），
+  已更正并写明 diag 额外受回环限制。
+- **F10 / S5 · 运维边界成文**：新增 `docs/OPERATIONS.md`，记录
+  ① 回滚到 ≤2.3.2 会**永久删除**私网 `feedbackSmtpHost`（回滚前先导出配置）；
+  ② `schemaVersion` 在旧版是未知键（告警 + 备份，不丢数据）；
+  ③ SMTP 密码明文落盘，**Windows 上 `mode: 0o600` 是空操作**，实际保护等于
+  `%USERPROFILE%\.dsh` 的继承 ACL；
+  ④ 历史记录 per-origin、`dsh-app://` 直连不受支持；
+  ⑤ 必须人工过的四项端到端验收。
+
+### 测试
+
+- `npm test` 全绿：**verify 85 / contract 1598 / float-placement 160 / wire-geometry 15 /
+  smoke 418**（合计 2276 条 + locale zh/en 各 56 键同步）。
+- 新增用例：`/diag` 回环限制（LAN 403 / 回环 200）与 `routesRegistered`；`candidates` 只给计数；
+  无会话 cancel 的 token 三分支（无 token / 错 token / 对 token）；
+  per-method 退化与"零路由"两种注册形态；`/feedback` 路由；`migrateConfigLayer` v1 直通；
+  历史删除与清空全部的破坏性调用点唯一性；portal 目标不变量；`API_METHODS` 覆盖门禁；
+  多活动会话下的 `/ask` 拒绝（`no-session-multi-parent`）与"点名即作答"。
+- **已复现的三条安全项**由评审侧实际跑出（LAN `/diag` 200、两会话轮换 24 次全过、
+  无会话 cancel 成功），修复后同样以用例锁定。
+- **未验证（如实标注）**：Electron 实机与 `dsh-app://` 真外壳；真实
+  `dsh-host-webserver`（harness 是替身）；macOS/Linux；`window.confirm` 缺失的真实 WebView；
+  Windows ACL 实测；恶意 DNS 竞态实验；portal 分支的**渲染级**断言（本轮补齐了 harness
+  能力与结构门禁，没有写"渲染层真的挂到 body 上"的用例）。
+
 ## 2.3.3
 
 **主题：修 2.3.2 的发布事故——`/diag` 上线即坏，外加三处被审计挖出的残留。**

@@ -124,13 +124,19 @@ export function createReporter(name) {
 
 /**
  * Build a fake host context.
- * @param {{services?: Record<string, unknown>, trustedHosts?: string[]}} [options]
+ * @param {{services?: Record<string, unknown>, trustedHosts?: string[],
+ *   refuseRegistrationKinds?: Iterable<string>}} [options]
+ *   `refuseRegistrationKinds` lists route kinds whose `register` call throws —
+ *   the host refusing a shape (`prefix`) or everything (`prefix` and `exact`).
+ *   Without it the double always accepted, so neither the per-method fallback
+ *   nor the "loaded but serving nothing" state could be exercised (2.3.4).
  */
 export function makeHostCtx(options = {}) {
   const services = { ...(options.services ?? {}) }
   if (options.trustedHosts !== undefined) {
     services.webRuntime = { trustedHosts: options.trustedHosts }
   }
+  const refusedKinds = new Set(options.refuseRegistrationKinds ?? [])
   const routes = []
   const listeners = new Map()
   const log = []
@@ -142,6 +148,9 @@ export function makeHostCtx(options = {}) {
     },
     webServer: {
       register(route) {
+        if (refusedKinds.has(route?.kind)) {
+          throw new Error(`route kind "${route?.kind}" is not supported by this composition`)
+        }
         routes.push(route)
         return () => {
           const at = routes.indexOf(route)
@@ -828,8 +837,29 @@ export function loadClientModule(options = {}) {
     throw new Error(`client.js registered ${registrations.length} modules; expected exactly 1`)
   }
   const shim = createReactShim()
+  /**
+   * Every `createPortal(element, container)` the client performed (2.3.4).
+   *
+   * The 2.3.2 geometry fix lives in the portal branch (`client.js` moves the
+   * fixed layer to `document.body` when it was mounted in a composer slot), and
+   * the suite could not reach it at all: `require('react-dom')` threw, so
+   * `createPortal` was null and every render took the in-slot path. A host that
+   * DOES seed react-dom — the real web bundle does — therefore ran a branch no
+   * test had ever executed. Opt in with `withReactDom: true`; the default stays
+   * the pre-2.3.2 shape so existing assertions keep their meaning.
+   */
+  const portals = []
   const module = registrations[0].factory(specifier => {
     if (specifier === 'react') return shim.React
+    if (specifier === 'react-dom') {
+      if (options.withReactDom !== true) throw new Error('react-dom is not seeded in this composition')
+      return {
+        createPortal(element, container) {
+          portals.push({ element, container })
+          return element
+        },
+      }
+    }
     throw new Error(`client.js required an unexpected module: ${specifier}`)
   })
   return {
@@ -839,6 +869,8 @@ export function loadClientModule(options = {}) {
     document,
     window,
     listeners,
+    /** Portal calls the client made, in order (empty without `withReactDom`). */
+    portals,
     /** window-level listeners, by event name. */
     windowListeners,
     /** Dispatch one `window` event the client subscribed to. */
