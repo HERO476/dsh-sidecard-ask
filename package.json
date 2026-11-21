@@ -24,7 +24,8 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "NODE-HOST-CONTRACT.md"
+    "NODE-HOST-CONTRACT.md",
+    "docs/OPERATIONS.md"
   ],
   "engines": {
     "node": ">=20",
