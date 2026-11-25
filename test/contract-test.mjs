@@ -220,7 +220,11 @@ console.log('\nhost error localization')
     // Host's Chinese line in an English UI.
     'smtp-starttls-missing',
     // /feedback: the four codes the Client can phrase itself.
-    'feedback-invalid', 'feedback-unconfigured', 'feedback-too-fast', 'feedback-too-many']
+    'feedback-invalid', 'feedback-unconfigured', 'feedback-too-fast', 'feedback-too-many',
+    // 2.3.5: the side agent finished with no delta from ANY source (no frames, no
+    // durable chunks, no result text). The Client names the cause and offers the
+    // main-conversation fallback, so an English UI never shows the Host line.
+    'no-delta-source']
   const HOST_DYNAMIC_CODES = ['blocked-step', 'engine-error', 'internal',
     // The relay's own reason only exists inside the Host message (and stays
     // there); the low-level smtp-* codes back that same message.

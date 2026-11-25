@@ -67,4 +67,4 @@ jobs:
         with:
           node-version: '22'
       - name: probe the published artifact
-        run: node tools/compat-probe.mjs ${{ matrix.dsh }}
+        run: node tools/compat-probe.mjs ${{ matrix.dsh }} --require

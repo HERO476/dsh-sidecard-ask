@@ -209,11 +209,17 @@ export function makeHostCtx(options = {}) {
  *   `IncomingMessage` behavior ("close" fires when the request is COMPLETED),
  *   which is exactly what a disconnect listener must not mistake for a hang-up.
  */
-export function makeReq({ method = 'POST', url = '/', headers = {}, body = null, closeAfterBody = false } = {}) {
+export function makeReq({ method = 'POST', url = '/', headers = {}, body = null, closeAfterBody = false,
+  peerAddress = '127.0.0.1' } = {}) {
   const handlers = new Map()
   const req = {
     method,
     url,
+    // The socket peer is what the kernel saw; `/diag` now judges THAT rather
+    // than the forgeable Host header (2.3.5). Defaulting to loopback keeps every
+    // existing scenario meaning "a local caller"; a test that wants a LAN caller
+    // passes `peerAddress: '10.0.0.5'`.
+    socket: { remoteAddress: peerAddress },
     // A real browser page always names itself on a state-changing request, and
     // the fence now requires that for unsafe verbs (Origin: absent is a script
     // or another app on the machine, not a page). Defaulting to a same-origin
@@ -338,6 +344,9 @@ export async function callRoute(harness, path, options = {}) {
     headers: { 'x-sidecard-ask': '1', ...(options.headers ?? {}) },
     body: options.body ?? null,
     closeAfterBody: options.closeAfterBody ?? false,
+    // The peer address decides `/diag` (2.3.5); a test simulating a LAN caller
+    // passes `peerAddress`.
+    ...(options.peerAddress === undefined ? {} : { peerAddress: options.peerAddress }),
   })
   const res = makeRes()
   await route.handler(req, res)

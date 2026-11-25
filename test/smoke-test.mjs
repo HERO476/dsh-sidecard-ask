@@ -23,6 +23,17 @@ process.env.DSH_HOME = HOME
 // Pin it away; the profile-scoped path has its own test below.
 const INHERITED_PROFILE = process.env.DSH_PROFILE
 delete process.env.DSH_PROFILE
+// 2.3.5 (reality check F1 / security review S5): this suite owns its environment.
+//
+// `hasPassword` is `source === 'env' ? true : stored`, and the SMTP variables are
+// SHARED with a sibling plugin — `DSH_CRB_SMTP_URL` belongs to
+// dsh-conversation-recycle-bin. A machine that merely has that plugin configured
+// therefore turned this suite red: the single failure recorded on 2026-11-24 was
+// exactly this, and it made the gate depend on who ran it. The env semantics get
+// an explicit case further down; nothing here inherits them.
+for (const name of Object.keys(process.env)) {
+  if (/^DSH_(?:SIDECARD|CRB)_(?:SMTP|FEEDBACK)/.test(name)) delete process.env[name]
+}
 const CONFIG_FILE = join(HOME, 'sidecard-ask', 'config.json')
 
 const report = createReporter('smoke')
@@ -1557,10 +1568,104 @@ console.log('\n2.1.9 hardening')
     feedbackSmtpUser: 'u1@one.test', feedbackSmtpPass: 'secret-one',
   } })
   const withPass = (await callRoute(h.harness, '/state', { method: 'GET' })).json()
-  report.equal(withPass.value.capabilities.feedback.smtp.hasPassword, true, 'a saved SMTP password is reported as stored')
+  report.equal(withPass.value.capabilities.feedback.smtp.storedPassword, true, 'a saved SMTP password is reported as stored')
   await callRoute(h.harness, '/config', { body: { feedbackSmtpHost: 'smtp.two.test' } })
   const afterMove = (await callRoute(h.harness, '/state', { method: 'GET' })).json()
-  report.equal(afterMove.value.capabilities.feedback.smtp.hasPassword, false, 'pointing the relay elsewhere drops the stored password')
+  // 2.3.5: the assertion is about the CONFIG LAYER, so it reads the field that
+  // means that. `hasPassword` is `source === 'env' ? true : stored` — under an
+  // inherited `DSH_CRB_SMTP_URL` it stays true no matter what the config holds,
+  // which is what made this line fail on one machine and pass on another.
+  report.equal(afterMove.value.capabilities.feedback.smtp.storedPassword, false, 'pointing the relay elsewhere drops the stored password')
+  // The move also invalidates the endpoint: without a password the config layer
+  // cannot resolve, so `source` is empty and the panel offers "copy the text".
+  report.equal(afterMove.value.capabilities.feedback.configured, false, 'the invalidated relay is no longer configured')
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 2.3.5 · `/diag` judges the SOCKET PEER, not the Host header
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\n/diag peer gating')
+{
+  // security review S1: 2.3.4 decided "is this caller local" from the Host header,
+  // which the caller types. The LAN case reproduced it. Now the peer decides, and
+  // the Host claim cannot override it.
+  const h = await boot()
+  const forged = await callRoute(h.harness, '/diag', {
+    method: 'GET',
+    peerAddress: '10.0.0.5',
+    headers: { host: '127.0.0.1:8080' },
+  })
+  report.equal(forged.status, 403, 'a LAN peer cannot reach /diag by claiming a loopback Host')
+  const honestLan = await callRoute(h.harness, '/diag', {
+    method: 'GET',
+    peerAddress: '10.0.0.5',
+    headers: { host: '10.0.0.5:8080' },
+  })
+  report.equal(honestLan.status, 403, 'a LAN peer with an honest LAN Host is refused too')
+  const local = await callRoute(h.harness, '/diag', { method: 'GET' })
+  report.equal(local.status, 200, 'a loopback peer still gets /diag')
+  const mapped = await callRoute(h.harness, '/diag', { method: 'GET', peerAddress: '::ffff:127.0.0.1' })
+  report.equal(mapped.status, 200, 'an IPv4-mapped loopback peer counts as loopback')
+  const v6 = await callRoute(h.harness, '/diag', { method: 'GET', peerAddress: '::1' })
+  report.equal(v6.status, 200, 'an IPv6 loopback peer counts as loopback')
+  report.equal(
+    h.host.isLoopbackHostname('[::ffff:7f00:1]'),
+    true,
+    'the hex spelling of a mapped loopback hostname is recognised',
+  )
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 2.3.5 · SMTP environment semantics (the 2026-11-24 red gate)
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nSMTP environment semantics')
+{
+  // The env layer wins over the config layer BY DESIGN. The two fields are not a
+  // contradiction once both are on the wire: `hasPassword` answers "is a
+  // credential available", `storedPassword` answers "does the config file hold
+  // one". This case pins that on purpose instead of inheriting an environment.
+  process.env.DSH_CRB_SMTP_URL = 'smtps://u%40example.test:p@127.0.0.1:465'
+  try {
+    const envBoot = await boot()
+    const state = (await callRoute(envBoot.harness, '/state', { method: 'GET' })).json()
+    const smtp = state.value.capabilities.feedback.smtp
+    report.equal(smtp.source, 'env', 'the environment layer wins over the config layer')
+    report.equal(smtp.hasPassword, true, 'env credentials count as "a credential is available"')
+    report.equal(smtp.storedPassword, false, 'the config layer still reports that it stores none')
+  } finally {
+    delete process.env.DSH_CRB_SMTP_URL
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 2.3.5 · a child run is not a conversation
+// ────────────────────────────────────────────────────────────────────────────
+
+console.log('\nparent candidates')
+{
+  // architecture review P1: `agents.list()` returns every live agent, children
+  // included, so one in-flight side answer looked like a second conversation and
+  // refused the next unnamed ask outright.
+  const rootA = { id: 'root-a', session: { header: { id: 'root-a' } } }
+  const child = { id: 'child-run', session: { header: { id: 'child-run', parentSession: 'root-a' } } }
+  const withChild = await boot({
+    services: {
+      agents: {
+        get: () => undefined,
+        roots: () => [rootA],
+        list: () => [rootA, child],
+      },
+    },
+  })
+  const state = (await callRoute(withChild.harness, '/state', { method: 'GET' })).json()
+  report.equal(state.value.capabilities.parent.candidates.count, 1, 'a child run is not counted as a conversation')
+  report.equal(state.value.capabilities.liveAgents, 1, 'liveAgents uses the same count as candidates')
+  const ask = await callRoute(withChild.harness, '/ask', {
+    body: { id: 'ask-child-tolerant', question: 'q', selection: 'text' },
+  })
+  report.equal(ask.events().at(-1).event, 'done', 'a live child no longer makes an unnamed ask ambiguous')
 }
 
 // Inheriting the session tool set must be a deliberate act, not a one-field
@@ -1707,11 +1812,16 @@ await withHome(async () => {
   // "unreachable from off-box" is the only thing that makes that safe. Same
   // host, same gate, same LAN authority — the endpoint must refuse, while
   // `/state` (which has a credential here) still answers.
+  // 2.3.5: the predicate moved from the Host claim to the socket peer, so this
+  // case flips meaning. A LOOPBACK peer inspecting its own LAN-bound host is
+  // exactly the local operator ("curl 192.168.1.5:4321 from this machine") and is
+  // now allowed; what must still be refused is a LAN PEER — covered by the
+  // `/diag peer gating` block below.
   const diagLan = await callRoute(gated.harness, '/diag', {
     method: 'GET',
     headers: { host: '192.168.1.5:4321', origin: 'http://192.168.1.5:4321' },
   })
-  report.equal(diagLan.status, 403, '/diag refuses a LAN authority even with a gate mounted')
+  report.equal(diagLan.status, 200, 'a loopback peer may inspect its own LAN-bound host')
   const diagLoopback = await callRoute(gated.harness, '/diag', { method: 'GET' })
   report.equal(diagLoopback.status, 200, '/diag still answers on loopback')
 })

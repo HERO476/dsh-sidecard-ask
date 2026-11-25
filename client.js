@@ -162,7 +162,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.3.4'
+    const CLIENT_VERSION = '2.3.5'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -938,6 +938,7 @@ window.__ModuleLoader__.load({
         errorStarttlsMissingBody: 'SMTP 服务器没有宣称支持 STARTTLS，为避免凭证明文外发，本次未发送；若这是本地明文中继，请在配置文件里写 feedbackSmtpStarttls: false，或在 DSH_SIDECARD_SMTP_URL 的地址后加 ?starttls=0',
         errorFeedbackRelayRefused: '反馈邮件的目标中继指向内网或保留地址，已拒绝发送；请改用公网中继或本机回环地址',
         errorNoSessionMultiParent: '没指定会话，而宿主当前有多个活动会话：请从具体会话里追问，否则无法确定子代理该继承哪套工具、答案该归属哪个对话',
+        errorNoDeltaSource: '子代理跑完了，但这个宿主既没有推送流式帧、结果里也没有正文：provider 可能在进程外（帧桥接不到），或宿主没有发布 agent/assistant-stream。请改用主对话作答。',
         errorBadResponseBody: '宿主返回了无法解析的响应',
         errorStreamBrokenBody: '流式连接中断',
         errorStreamEndedBody: '流式连接意外结束',
@@ -1235,6 +1236,7 @@ window.__ModuleLoader__.load({
         errorStarttlsMissingBody: 'The SMTP server never advertised STARTTLS, so nothing was sent — that keeps the credential off a cleartext socket. For a local plaintext relay, set feedbackSmtpStarttls: false in the config file, or append ?starttls=0 to the DSH_SIDECARD_SMTP_URL address.',
         errorFeedbackRelayRefused: 'The feedback relay resolves into a private or reserved address, so nothing was sent. Use a public relay, or a loopback one.',
         errorNoSessionMultiParent: 'No session was named and this host has several live conversations — ask from a specific session, or the side answer cannot inherit a defensible tool set and has nowhere to belong.',
+        errorNoDeltaSource: 'The side agent finished but this host pushed no stream frames and the result carried no text — the provider may be out-of-process, or agent/assistant-stream is not published here. Answer from the main conversation instead.',
         errorBadResponseBody: 'The host returned an unreadable response',
         errorStreamBrokenBody: 'The stream connection broke',
         errorStreamEndedBody: 'The stream ended without a terminal event',
@@ -1555,6 +1557,9 @@ window.__ModuleLoader__.load({
       // have to show the Host's Chinese line (architecture review A3/A10).
       'feedback-relay-refused': { key: 'errorFeedbackRelayRefused' },
       'no-session-multi-parent': { key: 'errorNoSessionMultiParent' },
+      // 2.3.5: frames are the only delta source on 0.2.2-rc.5; when neither they
+      // nor the result text arrive, the reason must be namable Client-side.
+      'no-delta-source': { key: 'errorNoDeltaSource' },
     }
 
     /**
@@ -8065,6 +8070,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             onDelta: data => bufferStreamDelta(cardId, String(data?.text ?? '')),
             onReasoning: data => bufferStreamReasoning(cardId, String(data?.text ?? '')),
             onDone: (data) => {
+              // 2.3.5 (security review follow-up): the token belongs to THIS run
+              // and the run is over whatever the local verdict says. Releasing it
+              // after the early return below leaked one entry per cancelled
+              // answer — a module-level Map that only ever grew.
+              runOwnerTokens.delete(cardId)
               // A locally cancelled stream can still see its terminal frame
               // (a harness stream ignores the abort signal; a real host may
               // race the abort): the card's local "stopped" verdict wins.
@@ -8080,7 +8090,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 elapsedMs: Date.now() - startedAt,
               })
               controllers.delete(cardId)
-              runOwnerTokens.delete(cardId)
               syncPersisted()
               // 2.1.9：答完就让答案出现在卡片里（胶囊态不再只显示一行状态）。
               revealFinishedCard(cardId)
@@ -8089,11 +8098,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               if (finished !== undefined) notifyCardFinish(finished)
             },
             onError: (error) => {
+              // 2.3.5: same ordering as `onDone` — see the note there.
+              runOwnerTokens.delete(cardId)
               if (controller.signal.aborted) return
               flushStreamBuffers()
               patchCard(cardId, { status: 'error', error, elapsedMs: Date.now() - startedAt })
               controllers.delete(cardId)
-              runOwnerTokens.delete(cardId)
               // A terminal error is still a terminal state: whatever the user
               // was already shown has to survive a reload. Only `onDone` used
               // to persist, so a dropped connection — routine when Android

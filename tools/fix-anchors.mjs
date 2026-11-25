@@ -88,8 +88,11 @@ function declarationLines(file, symbol, near) {
   const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const last = escaped.includes('.') ? escaped.split('.').pop() : escaped
   const patterns = [
-    new RegExp(`^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s+${last}\\b`),
-    new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${last}\\b`),
+    // A JSDoc close tag can share the line with the declaration
+    // (`*/export function fenceVerdict(...)`), which is how several helpers in
+    // index.js are written — without this prefix those citations never resolve.
+    new RegExp(`^\\s*(?:\\*/\\s*)?(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s+${last}\\b`),
+    new RegExp(`^\\s*(?:\\*/\\s*)?(?:export\\s+)?(?:const|let|var)\\s+${last}\\b`),
     new RegExp(`^\\s*(?:export\\s+)?(?:class)\\s+${last}\\b`),
   ]
   const hits = []

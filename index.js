@@ -33,7 +33,7 @@
  */
 
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import net from 'node:net'
 import { homedir } from 'node:os'
@@ -47,7 +47,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.3.4'
+export const PLUGIN_VERSION = '2.3.5'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -1570,28 +1570,74 @@ export function readOnlyToolFilter(ctx) {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Whether a hostname names the local loopback authority. */
+ * Whether a hostname names the local loopback authority.
+ *
+ * 2.3.5: IPv6 spellings are normalised here as well — `::1` and every
+ * IPv4-mapped form of a loopback address (`::ffff:127.0.0.1`, `::ffff:7f00:1`).
+ * A dual-stack host that names its own listener `[::ffff:127.0.0.1]` used to be
+ * reported as non-loopback, which made `/diag` answer 403 to its own machine.
+ * @param {unknown} hostname - a hostname as it appears in a Host header.
+ * @returns {boolean} true when it names loopback.
+ */
 export function isLoopbackHostname(hostname) {
-  if (hostname === 'localhost' || hostname === '[::1]') return true
-  const parts = hostname.split('.')
+  const raw = typeof hostname === 'string' ? hostname.trim().toLowerCase() : ''
+  if (raw === '') return false
+  if (raw === 'localhost') return true
+  const bare = raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw
+  if (bare.includes(':')) return isLoopbackAddress(bare)
+  const parts = bare.split('.')
   return parts.length === 4
     && parts[0] === '127'
     && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
 }
 
 /**
- * Whether a request's own Host header names loopback (2.3.4, security review S1).
+ * Whether a socket peer address is loopback (2.3.5, security review S1 follow-up).
  *
- * `/diag` answers without a browser session on purpose, so "who is asking" has to
- * be decided from the request alone. The Host header is the authority the caller
- * claims and the one the fence already trusts for loopback: a LAN-bound host that
- * actually receives `Host: 10.0.0.5:8080` fails here, while a local visitor
- * (`127.0.0.1`, `localhost`, `[::1]`) passes. An absent or unparsable Host is
- * refused — "cannot tell" must not mean "allowed" for a session-free endpoint.
- * @param {{headers?: Record<string, string|string[]|undefined>}} req - node request.
- * @returns {boolean} true when the request targets the loopback authority.
+ * This is the UN-FORGEABLE half of "is the caller local": `remoteAddress` is what
+ * the kernel saw, while the Host header is whatever the client typed. Every
+ * IPv4-mapped spelling normalises to the IPv4 octets and re-enters the single
+ * range decision in `isLoopbackHostname`.
+ * @param {unknown} address - `socket.remoteAddress` (or a Host hostname).
+ * @returns {boolean} true when it is a loopback address.
+ */
+export function isLoopbackAddress(address) {
+  const raw = typeof address === 'string' ? address.trim().toLowerCase() : ''
+  if (raw === '') return false
+  const bare = raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw
+  if (bare === '::1') return true
+  // `0:0:0:0:0:0:0:1` is the same address written in full.
+  if (/^(?:0{1,4}:){7}0{0,3}1$/.test(bare)) return true
+  const mappedDotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(bare)
+  if (mappedDotted !== null) return isLoopbackHostname(mappedDotted[1])
+  const mappedHex = /^(?:0{1,4}:){5}ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(bare)
+    ?? /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(bare)
+  if (mappedHex !== null) {
+    const hi = Number.parseInt(mappedHex[1], 16)
+    const lo = Number.parseInt(mappedHex[2], 16)
+    return isLoopbackHostname(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`)
+  }
+  if (bare.includes(':')) return false
+  return isLoopbackHostname(bare)
+}
+
+/**
+ * Whether a request may use the session-free `/diag` endpoint.
+ *
+ * 2.3.4 decided this from the `Host` header alone, and the Host header is
+ * whatever the caller typed — a LAN client could send `Host: 127.0.0.1:<port>`
+ * and read the diagnostic surface (security review S1 reproduced it on a real
+ * instance: the host's HTTP layer does not validate Host at all). 2.3.5 judges
+ * the SOCKET PEER, which the kernel supplies, and only falls back to the Host
+ * claim when there is no socket face at all (unit-test objects; a real
+ * `IncomingMessage` always has one).
+ * @param {{socket?: {remoteAddress?: string}, connection?: {remoteAddress?: string},
+ *   headers?: Record<string, string|string[]|undefined>}} req - node request.
+ * @returns {boolean} true when the request came from this machine.
  */
 export function isLoopbackRequest(req) {
+  const peer = req?.socket?.remoteAddress ?? req?.connection?.remoteAddress
+  if (typeof peer === 'string' && peer !== '') return isLoopbackAddress(peer)
   const raw = req?.headers?.host
   const host = typeof raw === 'string' ? raw.trim() : ''
   if (host === '') return false
@@ -2277,6 +2323,27 @@ function createSideEngine(ctx, configOf) {
   }
 
   /**
+   * Whether an agent is a ROOT conversation rather than a child run (2.3.5).
+   *
+   * `agents.list()` on 0.2.2-rc.5 returns EVERY live agent — the side answers
+   * this plugin starts are in the same registry (the host's own
+   * `archive-admission` reads `agents.list()` to find running descendants). That
+   * made "how many conversations are live" answer "how many agents exist", so a
+   * single in-flight side answer looked like a second conversation.
+   *
+   * A child carries `session.header.parentSession`; a root does not. An agent
+   * whose header face is missing cannot be proven to be a child, and treating it
+   * as a root is the fail-open direction that keeps single-session hosts working.
+   * @param {object} agent - one registry entry.
+   * @returns {boolean} true for a conversation root.
+   */
+  function isRootAgent(agent) {
+    const header = agent?.session?.header
+    if (header === null || typeof header !== 'object') return true
+    return header.parentSession === undefined || header.parentSession === null
+  }
+
+  /**
    * The live parent Agent a child can be published under.
    *
    * Order: the asking session's own agent, then the first live agent whose
@@ -2332,6 +2399,12 @@ function createSideEngine(ctx, configOf) {
       const id = agentSessionId(agent)
       if (id === undefined || seen.has(id)) continue
       seen.add(id)
+      // 2.3.5 (architecture review P1): a CHILD run is not a conversation. It
+      // cannot host another child anyway (the archived-session gate walks the
+      // whole lineage), and counting it made "one conversation + one side
+      // answer" indistinguishable from "two conversations" — which refused the
+      // phone/Web-View shape outright the moment a side answer was in flight.
+      if (!isRootAgent(agent)) continue
       const isArchived = archived.has(id)
       candidateCount += 1
       if (isArchived) archivedCount += 1
@@ -2461,15 +2534,7 @@ function createSideEngine(ctx, configOf) {
     return {
       sideEngine: service !== undefined && providers.length > 0,
       sideProviders: providers,
-      liveAgents: (() => {
-        const agents = ctx.get('agents')
-        if (agents === undefined || typeof agents.list !== 'function') return 0
-        try {
-          return agents.list().length
-        } catch {
-          return 0
-        }
-      })(),
+      liveAgents: parent.candidates.count,
       activeRuns: runs.size,
       readonly: readonlySurface(),
       // The parent the next side answer would be published under, and whether
@@ -2881,6 +2946,24 @@ function createSideEngine(ctx, configOf) {
         })
         return
       }
+      // 2.3.5 (architecture review): on 0.2.2-rc.5 `durableChunks` is a DEAD
+      // fallback — `assistant/chunk` survives only in the session-format
+      // migration codecs, the runtime never publishes it — so the frame bridge is
+      // the only delta source. When neither source ever fired AND the result
+      // carries no prose, the card showed an empty answer with no reason at all.
+      // Name the failure instead of pretending a completed turn produced nothing.
+      if (framesSeen === false && chunksSeen === false && text.trim() === '' && stopReason === 'completed') {
+        sink.send('error', {
+          id,
+          code: 'no-delta-source',
+          message: '子代理跑完了，但这个宿主既没有推送流式帧、结果里也没有正文：provider 可能在进程外（帧桥接不到），或宿主没有发布 agent/assistant-stream。请改用主对话作答。',
+          retryable: true,
+          fallback: 'main',
+          stopReason,
+          parentId: parent.id,
+        })
+        return
+      }
       sink.send('done', {
         id,
         text,
@@ -2923,6 +3006,20 @@ function createSideEngine(ctx, configOf) {
   }
 
   /**
+   * Constant-time comparison for the one-shot cancel token (2.3.5).
+   *
+   * A length-independent `===` on a 128-bit secret is not practically attackable
+   * over HTTP, but the comparison is free to do correctly, and short-circuiting
+   * before the length check is exactly the shape a timing argument would target.
+   */
+  function sameToken(a, b) {
+    const left = Buffer.from(String(a), 'utf8')
+    const right = Buffer.from(String(b), 'utf8')
+    if (left.length !== right.length) return false
+    return timingSafeEqual(left, right)
+  }
+
+  /**
    * Abort one in-flight run.
    *
    * `runs` is process-global: every session shares it. When both sides know the
@@ -2952,7 +3049,7 @@ function createSideEngine(ctx, configOf) {
       // guarded by a string test. Every sessionless run is now owned by its
       // token: a caller that cannot present it is answered `false`, exactly like
       // an unknown id, so the id's existence is not confirmed either.
-      if (typeof ownerToken !== 'string' || ownerToken === '' || ownerToken !== record.ownerToken) return false
+      if (typeof ownerToken !== 'string' || ownerToken === '' || !sameToken(ownerToken, record.ownerToken)) return false
     }
     record.abort()
     return true
@@ -3168,6 +3265,16 @@ export function apply(ctx, patchConfig) {
    * every write below.
    */
   let persisted = readPersistedConfig(ctx.logger)
+  /**
+   * What the file said WHEN THIS PLUGIN LOADED (2.3.5, architecture review).
+   *
+   * `persisted` is re-bound on every successful save so `/diag.config.fileSchema`
+   * describes the file NOW. `/state.provenance.persistedAtBoot` answers a
+   * different question — "did this activation start from a saved layer?" — and
+   * one binding cannot serve both: after the first save it turned `false` into
+   * `true` under a name that says "at boot".
+   */
+  const persistedBoot = { ...persisted }
   // 2.3.2: run the persisted layer through the migration seam before anything
   // reads it. `persisted.schemaVersion` is 0 for a file written before the stamp
   // existed (or for the shared legacy file), which is exactly the v1 shape.
@@ -3432,7 +3539,7 @@ export function apply(ctx, patchConfig) {
       provenance: {
         // Computed live: a save in this process must be reflected immediately.
         persisted: Object.keys(userLayer).length > 0,
-        persistedAtBoot: persisted.present && Object.keys(sanitizeLayer(persisted.data)).length > 0,
+        persistedAtBoot: persistedBoot.present && Object.keys(sanitizeLayer(persistedBoot.data)).length > 0,
         persistedPath: persisted.path,
         persistedError: persisted.error,
         // Set only on the first boot after a profile-scoped file was

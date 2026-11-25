@@ -144,6 +144,12 @@ const PROBES = [
     markers: {
       subagentsService: 'subagents',
       startMethod: 'start(',
+      // 2.3.5: the two methods that actually decide whether a side answer can be
+      // started at all. `list(` was RETIRED in 0.2.2-rc.3 and the plugin probes
+      // for it, so a matrix that only tracked `start(` blessed hosts it could
+      // not drive — the exact 2.3.0 P0, invisible to this table.
+      getProvider: 'getProvider',
+      startActivation: 'startActivation',
       localAgent: 'localAgent',
       toolFilter: 'toolFilter',
       persona: 'persona',
@@ -302,7 +308,7 @@ const CAPABILITIES = [
   ['archiveGate', '@deepseek-ai/dsh-api-session-controller', ['archivedSessionIds', 'preStepGate']],
   ['streamFrames', '@deepseek-ai/dsh-agent-loop', ['assistantStream']],
   ['durableChunks', '@deepseek-ai/dsh-session', ['durableChunk']],
-  ['sideEngine', '@deepseek-ai/dsh-subagent', ['subagentsService', 'startMethod']],
+  ['sideEngine', '@deepseek-ai/dsh-subagent', ['subagentsService', 'startMethod', 'getProvider', 'startActivation']],
   ['liveChild', '@deepseek-ai/dsh-subagent', ['localAgent']],
   ['providerCaps', '@deepseek-ai/dsh-subagent', ['toolFilter', 'persona']],
   ['toolRegistry', '@deepseek-ai/dsh-tools', ['schemas', 'restrict']],
@@ -329,4 +335,33 @@ for (const [label, pkg, keys] of CAPABILITIES) {
 if (jsonPath !== undefined) {
   writeFileSync(jsonPath, JSON.stringify({ versions, matrix, capabilities: caps }, null, 2))
   console.log(`\nraw results → ${jsonPath}`)
+}
+
+/**
+ * The gate (2.3.5).
+ *
+ * Before this the script could never fail: it printed a matrix and exited 0 no
+ * matter what it found, so the CI `compat` job was green by construction and a
+ * `❌` in the table meant nothing. The gate is opt-in (`--require`) because the
+ * default run deliberately probes the whole 0.1.x → 0.2.x history, where old
+ * builds legitimately lack `startActivation`; CI passes exactly the versions
+ * `engines.dsh` admits and asks for the gate.
+ *
+ * Only capabilities the plugin cannot degrade without are required. `liveChild`
+ * and `durableChunks` are ❌ on 0.2.2-rc.5 by design — the plugin falls back from
+ * both — so requiring them would fail the job on a host that works.
+ */
+const REQUIRED_CAPABILITIES = ['clientBundle', 'overlaySlot', 'composerSlot', 'streamFrames', 'sideEngine', 'pluginRoutes']
+if (process.argv.includes('--require')) {
+  const missing = []
+  for (const label of REQUIRED_CAPABILITIES) {
+    const bad = versions.filter(version => caps[label]?.[version] !== true)
+    if (bad.length > 0) missing.push(`${label} — missing on ${bad.join(', ')}`)
+  }
+  if (missing.length > 0) {
+    console.error('\ncompat-probe: REQUIRED capability missing — this host cannot run the plugin:')
+    for (const line of missing) console.error(`  ✖ ${line}`)
+    process.exit(1)
+  }
+  console.log(`\ncompat-probe: ${REQUIRED_CAPABILITIES.length} required capabilities present on all ${versions.length} probed version(s)`)
 }

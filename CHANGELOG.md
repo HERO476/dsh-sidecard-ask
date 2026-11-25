@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.3.5
+
+**主题：修 2.3.4 自己引入的两条 P1——一个把可用路径改成了硬拒绝，一个把安全边界建在客户端可伪造的头上。**
+
+2.3.4 发布后的一轮三线复评（架构 / 安全 / 验收边界）确认：那批修复中 `ownerToken`、`candidates` 去 id、`readonlyGuard` 合一的落地是干净的（安全侧逐条核到生成/传递/回收/不泄露，含真机 curl），但有两处**新的**缺陷必须修，另有一条 CI 门禁是假的。
+
+### P1
+
+- **子代理曾被当成"另一个会话"（可用性）**：2.3.4 的 `no-session-multi-parent` 用 `liveCount > 1` 判定，而 `liveCount` 来自 `agents.roots() + agents.list()`——0.2.2-rc.5 的 `AgentRegistry` **没有 `roots()`**，`list()` 返回**全部活 agent，含子代理**（宿主自己的 `archive-admission` 就是靠它找 running descendants）。于是"一个会话 + 一个正在跑的侧边作答"被读成"两个会话"，任何不带 `sessionId` 的追问（手机网页版、网页岛、客户端还没采到会话 id 时）**在第一次作答之后全部被拒**，文案还告诉用户"去别的会话问"。
+  现在只把**根对话**计入候选：`session.header.parentSession` 为空的才是会话（缺失该字段时按根处理，是保持单会话宿主可用的方向）；`liveAgents` 改用同一个计数，两个字段不再互相矛盾。
+- **`/diag` 的回环边界建在 `Host` 头上（安全）**：2.3.4 用 `req.headers.host` 判断"是不是本机"，而 Host 是调用方自己写的。安全评审在真机上复现了前提——宿主 HTTP 层**不校验 Host**（`Host: 127.0.0.1:9999` 打真实端口仍 200）；两者合起来，宿主一旦绑 LAN，同网段任何机器加一个头就能读到诊断面。
+  现在判定改用**socket 对端地址**（`socket.remoteAddress`，内核给的事实），Host 只在没有 socket 面时（单元测试对象）作为兜底；顺带把 `::1` 与 IPv4-mapped 的两种拼写（`::ffff:127.0.0.1`、`::ffff:7f00:1`）都归一化成回环——双栈宿主此前会把自己的监听地址判成"非本机"。
+  语义也随之明确：**本机**（peer 回环）访问自己的 LAN 绑定地址仍 200（桌面主进程的转发就是这种），**LAN peer** 即使伪造回环 Host 也 403。
+
+### 门禁与可观测性
+
+- **CI 的 `compat` 作业此前永远是绿的**：`tools/compat-probe.mjs` 全文没有 `process.exit`，所以它打印一张带 `❌` 的矩阵然后退出 0。实跑 `node tools/compat-probe.mjs 0.2.2-rc.5` 就有两条 `❌`（`durableChunks`、`liveChild`），而作业照样通过。现在加 `--require` 门禁：六项**插件离不开**的能力（clientBundle/overlaySlot/composerSlot/streamFrames/sideEngine/pluginRoutes）任一缺失即 exit 1；而 `liveChild`、`durableChunks` 明确**不算必需**——插件对这两个都有降级，要求它们会让能跑的宿主变红。同时 marker 表补上 `getProvider` 与 `startActivation`：此前只跟踪 `start(`，恰好漏掉 2.3.0 修的那个 P0（`list()` 被删后必须转向 `startActivation`）。
+- **11-24 那条"间歇性失败"的根因是测试不 hermetic**：`hasPassword` 的定义是 `source === 'env' ? true : stored`，而 SMTP 环境变量与兄弟插件共享（`DSH_CRB_SMTP_URL` 属于 dsh-conversation-recycle-bin）。一台**只是装了那个插件**的机器就会让这条断言常红，于是门禁的结论取决于谁在跑。
+  现在 smoke 启动时显式清掉 `DSH_SIDECARD_*` / `DSH_CRB_*` 的 SMTP/FEEDBACK 变量，断言改读语义准确的 `storedPassword`（`index.js` 早已提供该字段），并**新增一条显式用例**锁住 env 语义：env 在场时 `source==='env'`、`hasPassword===true`、而 `storedPassword===false`——这两个字段不是矛盾，是回答两个不同的问题。
+- **`no-delta-source` 终态**：0.2.2-rc.5 上 `durableChunks` 是死回退（`assistant/chunk` 只活在前两个 session-format 迁移 codec 里，运行时不发），帧桥是唯一的 delta 来源。此前若帧通道也没起来（进程外 provider），卡片会显示一个**没有任何理由的空答案**；现在命名该失败并给 `fallback: 'main'`，中英文案齐备。
+- **`ownerToken` 在取消路径上不再泄漏**：`client.js` 的 `onDone`/`onError` 在处理前半段就有 `if (controller.signal.aborted) return`，而 `runOwnerTokens.delete` 写在早退之后——用户本地点"停止"时，那条 32 字符 token 会永久留在模块级 Map 里。现在释放提到早退之前。
+- **`ownerToken` 比较改常量时间**（`timingSafeEqual`）；128-bit 随机值配 HTTP 抖动本来就不可利用，但正确比较的代价是零。
+- **`/state.provenance.persistedAtBoot` 有了自己的快照**：`persisted` 在每次保存后重绑（让 `/diag.config.fileSchema` 描述当下的文件），但那个字段问的是"**这次加载**是否从已保存的层启动"，共用一个绑定会让它在下一次保存后从 `false` 变 `true`。现在两者分开，各答各的问题。
+
+### 文档
+
+- `docs/OPERATIONS.md` 重写 `/diag` 一节：版本对照表补 2.3.5 行、2.3.4 行改成如实描述（"只对诚实客户端成立"），并新增「三种部署形态下的真实行为」——本机直连 / LAN 绑定 + 本机访问（含桌面外壳转发）/ LAN peer。写明两个排障陷阱：反代下 403 的 reason 通常是围栏的 `untrusted-host`（改 `trustedHosts` 无用，健康检查用 `/ping`）；2.3.4 及更早不要把 `/diag` 当成访问控制。
+- `tools/fix-anchors.mjs` 的声明识别支持 `*/export function …` 同行写法（`index.js` 里有多个辅助函数是这种形态，此前它们的锚点永远无法自动重算）。
+
+### 测试
+
+- `npm test` 全绿：**verify 86 / contract 1603 / float-placement 160 / wire-geometry 15 / smoke 431**（合计 2295 条 + locale zh/en 各 56 键同步）。
+- 新增/更新用例：`/diag` 的四个 peer 变体（LAN peer + 伪造回环 Host → 403、LAN peer + 诚实 LAN Host → 403、回环 peer → 200、IPv4-mapped 与 `::1` 回环 → 200）与 `isLoopbackHostname('[::ffff:7f00:1]')`；SMTP env 语义三分支；"子代理不算会话"（`candidates.count===1`、`liveAgents===1`、无名 `/ask` 仍 `done`）；`storedPassword` 取代 `hasPassword` 的两条断言 + "移址后 `configured===false`"。
+- 既有断言按新判据更新两处：LAN 绑定下**回环 peer** 访问 `/diag` 由 403 改为 200（这是 2.3.5 的预期），以及移址后不再断言 `source==='config'`（密码作废导致整个层不可用，`configured` 才是那个问题的答案）。
+- **门禁自测**：`node tools/compat-probe.mjs 0.2.2-rc.5 --require` → 打印 `6 required capabilities present` 且 exit 0；`liveChild ❌` 按设计不拦。
+- **未验证（如实标注）**：桌面窗口内点击与真实 `/diag` 响应体、真机"多 agent"现场、真 LAN 绑定实例下的跨机 curl、`0.2.1-rc.5` 实机、`2026.1123.0` 的实际文件（只有 manifest）、macOS/Linux、无障碍与性能。
+
+### 一处澄清（登记，非缺陷）
+
+npm 上存在同名的 `@deepseek-ai/dsh-desktop-runtime@2026.1123.0`（日期式版本线），与本机桌面外壳自带的 `0.2.2-rc.5` **不是同一个东西**：asar 实读确认 `@deepseek-ai/dsh` 仍是 `0.2.2-rc.5`，`2026.1123.0` 的 350 个 `dsh*` 依赖也全部钉在 `0.2.2-rc.5`，本机并未安装它。`engines.dsh` 的判定对象未变。若将来宿主改用 `dsh-product-version` 之类的日期式版本做 engines 判定，现有区间对它为 `false`，届时需要追加 `|| >=2026.0.0 <2027.0.0`——这是前瞻风险，不是当前故障。
+
 ## 2.3.4
 
 **主题：把 2.3.1→2.3.3 这轮的"实现与自我声明分叉"逐条对齐——以及让"新端点必须被测试"从教训变成门禁。**

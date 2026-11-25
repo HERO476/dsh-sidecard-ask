@@ -34,11 +34,25 @@ Get-Content "$env:USERPROFILE\.dsh\sidecard-ask\config.<profile>.json"
 | 目标版本 | `GET /sidecard-ask/api/diag` |
 |---|---|
 | 2.3.3 | 200；字段 `at,authGate,config,fenceDelegation,readonly,route,version` |
-| 2.3.4 | 200；新增 `routesRegistered`，且**只对本机回环开放**（LAN 直连 403） |
+| 2.3.5 | 200；按**socket 对端地址**判定：LAN peer 即使伪造 `Host: 127.0.0.1:<端口>` 也 403；本机访问自己的 LAN 绑定地址仍 200 |
+| 2.3.4 | 200；新增 `routesRegistered`，但回环判定只看 **`Host` 头**——只对诚实客户端成立，LAN 机器加一行伪造 Host 即可读到（安全评审已复现；宿主 HTTP 层本身不校验 Host） |
 | 2.3.2 | **恒定裸 400**（空 body、无 content-type）——这是那一版的发布事故 |
 | ≤ 2.3.1 | 404（端点不存在） |
 
 回滚到 2.3.2 之前，确认没有监控/脚本依赖 `/diag` 的 200。
+
+### 1.4 三种部署形态下 `/diag` 的真实行为（2.3.5）
+
+| 形态 | `/ping` | `/diag` |
+|---|---|---|
+| 本机直连（默认回环绑定） | 200 | 200 |
+| 宿主绑 LAN 地址，**本机**访问（含桌面外壳的转发） | 200 | 200 —— 桌面主进程在同机发起转发，peer 是回环 |
+| 宿主绑 LAN 地址，**同网段另一台机器**访问 | 200（围栏按 `bindAuthority` 信任） | **403** |
+
+两个排障陷阱：
+
+- 反代或 `trustedHosts` 部署下，`/diag` 的 403 通常由**信任围栏**先给出（`reason: "untrusted-host"`），不是回环拒绝。看到它不要去改 `trustedHosts`——改完仍会被回环判定拦下。**健康检查请用 `/ping`**，它免会话且不做回环限制。
+- 2.3.4 按 `Host` 判定的写法下，"LAN peer 伪造回环 Host"是可绕过的；2.3.5 改成判 socket 对端地址后不再成立。如果你还在 2.3.4 及更早，把 `/diag` 当成"只对本机可信客户端开放"来理解，不要当成访问控制。
 
 ---
 
