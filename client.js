@@ -162,7 +162,7 @@ window.__ModuleLoader__.load({
      * the Host and the module's `api.version` both read it, so a report can
      * never claim a generation the browser is not actually running.
      */
-    const CLIENT_VERSION = '2.3.5'
+    const CLIENT_VERSION = '3.0.0'
 
     /**
      * Tab kind served by the DSH native right rail (also its implementation id).
@@ -250,16 +250,6 @@ window.__ModuleLoader__.load({
       // carries the read-only tool set, because a preset is the only
       // tool-narrowing channel 0.2.1 honors (see the settings row help text).
       sideAgentPreset: '',
-      floatMode: 'capsule',
-      // 2.1.9：答完自动把浮层从胶囊展开成卡片。胶囊只渲染一行状态，答案要
-      // 点一下 › 才看得到；用户明确要求「提问完成之后直接在侧边卡片显示回答内容」。
-      // 置 false 可恢复旧行为（始终停在胶囊）。
-      autoExpandOnDone: true,
-      floatMaxWidth: 340,
-      // Docked presentation (1.8.3): when the right rail is on screen, the
-      // answer paints inside the rail's rectangle instead of floating as a
-      // 340px card over it. See §1b `railDock`.
-      dockRail: true,
       // Mirrors the Host's DEFAULT_CONFIG.quickActions (contract-asserted):
       // `builtin:*` entries are resolved through QUICK_ACTION_BUILTINS, while
       // custom entries (no builtin prefix) carry their own label/question.
@@ -452,12 +442,12 @@ window.__ModuleLoader__.load({
      * @param {object} input - `frameWidth`, `laneRight`, `railLeft`, `maxWidth`.
      * @returns {{width: number, avail: number, capped: boolean, bleeds: boolean}}
      */
-    function floatPlacement({ frameWidth, laneRight, railLeft = null, maxWidth = CLIENT_DEFAULTS.floatMaxWidth }) {
+    function floatPlacement({ frameWidth, laneRight, railLeft = null, maxWidth = 340 }) {
       const frame = Number.isFinite(frameWidth) ? frameWidth : 0
       const lane = Number.isFinite(laneRight) ? laneRight : 0
       const cap = Math.min(
         FLOAT_MAX_WIDTH_LIMIT,
-        Math.max(FLOAT_MIN_WIDTH, Number.isFinite(maxWidth) ? maxWidth : CLIENT_DEFAULTS.floatMaxWidth),
+        Math.max(FLOAT_MIN_WIDTH, Number.isFinite(maxWidth) ? maxWidth : 340),
       )
       let avail = frame - FLOAT_GAP_RIGHT - lane
       if (Number.isFinite(railLeft)) avail = Math.min(avail, frame - railLeft - FLOAT_GAP_SIDEBAR)
@@ -881,7 +871,6 @@ window.__ModuleLoader__.load({
         answerEmpty: '（没有内容）',
         cardClosed: '该卡片已关闭',
         closeThisTab: '关闭此页',
-        cardMovedToFlow: '该卡片已移至浮层显示',
         cardDelete: '删除这条追问对话',
         cardDeleteTitle: '删除这条追问对话？',
         cardDeleteBody: '会同时从浮层和追问历史里移除，且不可撤销。',
@@ -942,7 +931,6 @@ window.__ModuleLoader__.load({
         errorBadResponseBody: '宿主返回了无法解析的响应',
         errorStreamBrokenBody: '流式连接中断',
         errorStreamEndedBody: '流式连接意外结束',
-        surfaceFlow: '浮层卡片',
         surfaceNative: '右侧栏卡片',
         surfaceBetter: '侧边卡片插件',
         surfaceFellBack: '请求的侧边面不可用，已回退到{name}',
@@ -956,24 +944,9 @@ window.__ModuleLoader__.load({
         setCarrier: '默认作答位置',
         setSurface: '侧边卡片承载面',
         setSurfaceAuto: '自动选择（插件 → 内置卡片）',
-        setSurfaceFlow: '内置浮层卡片',
         surfaceNativeForce: '右侧栏卡片（强制，不参与自动）',
         setMaxChars: '最大字符数',
         setMaxCharsHint: '超过部分截断并在提问中标注',
-        setFloatMode: '浮层默认形态',
-        setFloatModeCapsule: '胶囊（不遮挡对话，可随时展开）',
-        setFloatModeFull: '直接展开成卡片',
-        setFloatModeHint: '浮层贴右侧边缘，只在空间不足时才可能压到对话区',
-        setAutoExpandOnDone: '答完自动展开卡片',
-        setAutoExpandOnDoneHint: '开启后，回答一结束就展开成卡片显示正文；关闭后保持一行胶囊，点一下才展开',
-        setFloatMaxWidth: '浮层宽度上限（px）',
-        setFloatMaxWidthHint: '空间不足时自动收窄，不会硬顶',
-        setDockRail: '右侧栏打开时占满它',
-        setDockRailHint: '答案直接铺满右侧栏（读得像栏内的一页），收起为胶囊或关闭即恢复原状；右侧栏不在时不生效',
-        floatExpand: '展开侧边卡片',
-        floatCollapse: '收起为胶囊（不遮挡对话）',
-        floatStreaming: '正在作答…',
-        floatDone: '已完成 {n} 条',
         setShortcut: '快捷键',
         setZones: '捕获区域',
         setZonesAuto: '全部区域',
@@ -1184,7 +1157,6 @@ window.__ModuleLoader__.load({
         answerEmpty: '(empty)',
         cardClosed: 'This card was closed',
         closeThisTab: 'Close this tab',
-        cardMovedToFlow: 'This card moved to the floating stack',
         cardDelete: 'Delete this follow-up conversation',
         cardDeleteTitle: 'Delete this follow-up conversation?',
         cardDeleteBody: 'It will be removed from both the floating layer and the follow-up history. This cannot be undone.',
@@ -1240,7 +1212,6 @@ window.__ModuleLoader__.load({
         errorBadResponseBody: 'The host returned an unreadable response',
         errorStreamBrokenBody: 'The stream connection broke',
         errorStreamEndedBody: 'The stream ended without a terminal event',
-        surfaceFlow: 'Floating card',
         surfaceNative: 'Right rail',
         surfaceBetter: 'Sidebar plugin',
         surfaceFellBack: 'The requested surface is unavailable; fell back to {name}',
@@ -1254,24 +1225,9 @@ window.__ModuleLoader__.load({
         setCarrier: 'Default answer carrier',
         setSurface: 'Side-card surface',
         setSurfaceAuto: 'Automatic (plugin, then built-in)',
-        setSurfaceFlow: 'Built-in floating card',
         surfaceNativeForce: 'Right rail (forced, excluded from automatic)',
         setMaxChars: 'Max characters',
         setMaxCharsHint: 'Longer selections are truncated and marked in the question',
-        setFloatMode: 'Floating layer default',
-        setFloatModeCapsule: 'Capsule (never covers the conversation)',
-        setFloatModeFull: 'Expanded card stack',
-        setFloatModeHint: 'The layer is anchored to the right edge and only overlaps on very narrow frames',
-        setAutoExpandOnDone: 'Expand the card when the answer finishes',
-        setAutoExpandOnDoneHint: 'On: the answer appears in the card the moment it settles. Off: the one-line capsule stays until you click it',
-        setFloatMaxWidth: 'Floating layer max width (px)',
-        setFloatMaxWidthHint: 'Narrows automatically when there is not enough room',
-        setDockRail: 'Fill the right rail while it is open',
-        setDockRailHint: 'The answer fills the right rail (it reads as one of its pages) and comes back to normal when collapsed to the capsule or closed; ignored while no rail is on screen',
-        floatExpand: 'Expand the side cards',
-        floatCollapse: 'Collapse to a capsule (stops covering the conversation)',
-        floatStreaming: 'Answering…',
-        floatDone: '{n} done',
         setShortcut: 'Shortcut',
         setZones: 'Capture regions',
         setZonesAuto: 'Every region',
@@ -1758,13 +1714,8 @@ window.__ModuleLoader__.load({
         capabilities: null,
         provenance: null,
         hostReachable: null,
-        surface: 'flow',
+        surface: null,
         surfaceNote: null,
-        /**
-         * In-session override of `config.floatMode`, set by the card header's
-         * collapse button. `null` = follow the configured default.
-         */
-        floatMode: null,
         sessionId: null,
         trigger: null,
         popover: null,
@@ -2042,35 +1993,6 @@ window.__ModuleLoader__.load({
         return [...root.querySelectorAll('.dsa-layer:not([data-dsa-owner])')]
           .filter(node => node.querySelector?.('.dsa-trigger, .dsa-pop') !== null)
       } catch { return [] }
-    }
-
-    /**
-     * In-session override of the configured floating-layer shape. Deliberately
-     * NOT persisted: the settings page owns the durable default, and a reload
-     * should return to it (a pill hidden by accident must not stay hidden
-     * across sessions).
-     * @param {string} mode - `capsule` | `full`.
-     */
-    function setFloatMode(mode) {
-      if (mode !== 'capsule' && mode !== 'full') return
-      store.set({ floatMode: mode })
-    }
-
-    /**
-     * Bring a finished card on screen.
-     *
-     * The floating layer defaults to the `capsule` pill (one line of status), so
-     * an answer that finishes while collapsed never shows its text. Only a card
-     * carried by the flow layer needs this: a card in the right rail already has
-     * its own page, and an already-expanded card is left alone.
-     * @param {string} id - the card that just finished.
-     */
-    function revealFinishedCard(id) {
-      if (store.state.config.autoExpandOnDone === false) return
-      const card = store.state.cards.find(item => item.id === id)
-      if (card === undefined || card.surface !== 'flow') return
-      setFloatMode('full')
-      patchCard(id, { open: true })
     }
 
     /** Replace one card by id (immutably; a no-op when it is gone). */
@@ -2851,11 +2773,11 @@ window.__ModuleLoader__.load({
               ? other.sessionId
               : store.state.sessionId
             if (ownerKeyOf(otherSession) !== openKey) continue
-            // `open: true` is load-bearing: the floating layer only mounts a
-            // card whose `surface === 'flow'` AND `open` is true, so migrating
-            // a card back to the flow while leaving it folded hid it on BOTH
-            // surfaces — not in the rail, not on screen, still streaming.
-            patchCard(other.id, { surface: 'flow', open: true })
+            // No floating layer exists to migrate the displaced card onto any
+            // more, so it is closed rather than moved: it stays in the store and
+            // in durable history, it just stops claiming a surface that cannot
+            // paint it.
+            patchCard(other.id, { surface: null, open: false })
           }
           this.cardId = card.id
           this.owners.set(openKey, card.id)
@@ -2988,9 +2910,9 @@ window.__ModuleLoader__.load({
           if (!this.available() || typeof this.service.openTab !== 'function') return false
           // 0.28.x 把 better 的每个描述符镜像成原生右栏类型，而该类型没有
           // `multiple`：同一 kind 在一个会话里只有一个 page 地址。再开一张卡
-          // 会把这个地址导航到新卡，上一张既不在栏里也没有回到浮层 —— 和
-          // native 适配器 2.1.5 R1 修的是同一个缺陷。这里同样先把同会话的
-          // 其它 better 卡片迁回浮层。
+          // 会把这个地址导航到新卡，上一张既不在栏里也没有归宿 —— 和 native
+          // 适配器 2.1.5 R1 修的是同一个缺陷。浮层已经不存在，所以同会话的
+          // 其它 better 卡片改为关闭（数据仍留在 store 与历史里）。
           const targetSession = card.sessionId ?? store.state.sessionId ?? null
           for (const other of store.state.cards) {
             if (other.id === card.id || other.surface !== 'better-sidebar') continue
@@ -2998,7 +2920,7 @@ window.__ModuleLoader__.load({
               ? other.sessionId
               : null
             if (targetSession !== null && otherSession !== null && otherSession !== targetSession) continue
-            patchCard(other.id, { surface: 'flow', open: true })
+            patchCard(other.id, { surface: null, open: false })
           }
           const tabId = `${CARD_KIND_BETTER}:${card.id}`
           // `meta` is the transport for the card id (feature `tabMeta`), and
@@ -3047,13 +2969,6 @@ window.__ModuleLoader__.load({
           if (this.owners.get(ownerKeyOf(sessionId)) === card.id) this.owners.delete(ownerKeyOf(sessionId))
           return true
         },
-      },
-      flow: {
-        kind: 'flow',
-        label: () => t('surfaceFlow'),
-        available() { return true },
-        open() { return true },
-        close() { return true },
       },
     }
 
@@ -3193,39 +3108,34 @@ window.__ModuleLoader__.load({
     const everMountedCards = new Set()
 
     /**
-     * Pick the surface for a new card.
+     * Pick the right rail that will host a new card.
+     *
+     * There is no floating layer to fall back on (flow was removed), so this
+     * never invents a home: with no rail installed it returns
+     * `{ adapter: null, fellBack: true }` and the caller sends the ask to the
+     * main conversation instead of creating a card nothing can paint.
      * @param {string} wanted - `auto` | adapter kind.
-     * @returns {{adapter: object, fellBack: boolean}}
+     * @returns {{adapter: object|null, fellBack: boolean}}
      */
     function pickSurface(wanted) {
-      // `auto` deliberately skips the shipped right rail. A card re-hosted as a
-      // rail tab is a tab the plugin does not own: it outlives the card (the
-      // rail keeps an empty tab reading "this card was closed"), it competes
-      // with the user's own rail tabs, and where it lands depends on a
-      // service-surface detail we do not control. The order asked for is: the
-      // side-card plugin first, the built-in card second. The rail stays
-      // reachable, but only by an explicit `native-rightbar` choice.
-      const autoOrder = [surfaces.better, surfaces.flow]
-      const all = [surfaces.native, surfaces.better, surfaces.flow]
+      // `auto` prefers the side-card plugin's rail over the shipped one. A card
+      // re-hosted as a built-in rail tab is a tab the plugin does not own: it
+      // outlives the card, competes with the user's own rail tabs, and where it
+      // lands depends on a service-surface detail we do not control. The
+      // built-in rail stays reachable, but only by an explicit choice.
+      const autoOrder = [surfaces.better, surfaces.native]
+      const all = [surfaces.native, surfaces.better]
       if (wanted === 'auto' || wanted === undefined) {
-        // A phone has no rail page body to host a tab: choosing better-sidebar
-        // there means opening a tab, waiting out the ~600ms render proof and
-        // then falling back to `flow` anyway — a visible flash for nothing.
-        // A narrow frame goes straight to the card.
-        const narrow = (() => {
-          try {
-            const width = Number.isFinite(window?.innerWidth) ? window.innerWidth : 0
-            return width > 0 && width < NARROW_FRAME_WIDTH
-          } catch { return false }
-        })()
-        for (const adapter of (narrow ? [surfaces.flow] : autoOrder)) {
-          if (adapter.available()) return { adapter, fellBack: false }
+        for (const adapter of autoOrder) {
+          if (adapter !== null && adapter !== undefined && adapter.available()) {
+            return { adapter, fellBack: false }
+          }
         }
-        return { adapter: surfaces.flow, fellBack: false }
+        return { adapter: null, fellBack: true }
       }
       const match = all.find(adapter => adapter.kind === wanted || adapter === surfaces[wanted])
-      if (match === undefined) return { adapter: surfaces.flow, fellBack: true }
-      if (!match.available()) return { adapter: surfaces.flow, fellBack: true }
+      if (match === undefined) return { adapter: null, fellBack: true }
+      if (!match.available()) return { adapter: null, fellBack: true }
       return { adapter: match, fellBack: false }
     }
 
@@ -5294,16 +5204,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           reasoning: String(versions[viewingVersion].reasoning ?? ''),
         }
       const parsedFollowUps = parseFollowUps(card.text)
-      // Icon-only, so the header row keeps one line: the full labels
-      // ("收起为胶囊（不遮挡对话）") are 12+ characters each and would wrap the
-      // title bar. The words stay on `title`/`aria-label`.
-      const floatControl = (mode, labelKey, glyph) => h('button', {
-        type: 'button',
-        className: 'dsa-btn dsa-btn-icon',
-        title: t(labelKey),
-        'aria-label': t(labelKey),
-        onClick: () => onFloatMode(mode),
-      }, glyph)
       // #10: the card is keyboard-focusable; R retries a failed/stopped run,
       // C copies the answer, Esc releases focus. Plain keys are accepted only
       // without modifiers and never while composing or inside an editor.
@@ -5365,20 +5265,15 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           h('span', { className: 'dsa-badge' }, zoneLabel(card)),
           surfaceLabel !== null ? h('span', { className: 'dsa-badge' }, surfaceLabel) : null,
           card.truncated ? h('span', { className: 'dsa-badge dsa-badge-warn' }, t('truncatedBadge', { n: card.droppedChars })) : null,
-          typeof onFloatMode === 'function' || typeof onDelete === 'function'
+          typeof onDelete === 'function'
             ? h('span', { className: 'dsa-row', style: { marginLeft: 'auto' } },
-              typeof onFloatMode === 'function'
-                ? floatControl('capsule', 'floatCollapse', '⇥')
-                : null,
-              typeof onDelete === 'function'
-                ? h('button', {
-                  type: 'button',
-                  className: 'dsa-btn dsa-btn-icon',
-                  title: t('cardDelete'),
-                  'aria-label': t('cardDelete'),
-                  onClick: () => requestDelete(),
-                }, '×')
-                : null)
+              h('button', {
+                type: 'button',
+                className: 'dsa-btn dsa-btn-icon',
+                title: t('cardDelete'),
+                'aria-label': t('cardDelete'),
+                onClick: () => requestDelete(),
+              }, '×'))
             : null),
         // 2.1.13 a11y: one clipped live region per card (see `.dsa-sr-only`).
         // It carries the coarse STATE, never the answer text: a live region
@@ -5575,300 +5470,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
      */
     const MemoAnswerCard = typeof React.memo === 'function' ? React.memo(AnswerCard) : AnswerCard
 
-    /**
-     * The flow surface, i.e. the floating layer (A).
-     *
-     * Two shapes, both sharing one right-anchored container:
-     *   - `capsule`: a single ~34px pill (status + truncated question). The
-     *     default, because a one-line pill cannot bury the conversation.
-     *   - `full`: the classic card stack, collapsed on demand.
-     *
-     * The former `off` shape (hide the layer behind a small launcher) is gone
-     * as of 2.0.0: the card header's × deletes that follow-up conversation
-     * instead, and "hide everything" was never a state this layer needed.
-     *
-     * The width comes from {@link floatPlacement}, so the layer stops growing
-     * left as soon as it would cross the conversation column's right boundary.
-     */
-    function FloatingLayer({ cards, actions }) {
-      const containerRef = React.useRef(null)
-      const dockRef = React.useRef(null)
-      const state = useStoreState()
-      const handlersFor = useCardHandlers(actions)
-      const [dock, setDock] = React.useState(null)
-      const visible = cards.filter(card => card.surface === 'flow' && card.open)
-      const total = visible.length
-      const mode = state.floatMode ?? state.config.floatMode ?? CLIENT_DEFAULTS.floatMode
-      const maxWidth = state.config.floatMaxWidth ?? CLIENT_DEFAULTS.floatMaxWidth
-      const dockWanted = state.config.dockRail !== false
-
-      // Measure the conversation column + right rail, then pin the layer's
-      // width to what is left. Recomputed on frame resize and on rail toggles
-      // (ResizeObserver), not once at mount. Every probe is optional: the test
-      // harness's synthetic DOM has no `querySelectorAll`, and an older WebView
-      // may have no `ResizeObserver` — neither may break the layer.
-      React.useEffect(() => {
-        const node = containerRef.current
-        if (node === null || node === undefined) return undefined
-        // Slot subtrees only: `.rightbar` and `[data-dsh-panel-host]` were
-        // dropped in 2.1.2 — no supported build renders either marker, so they
-        // were two dead branches in a selector that runs on every resize.
-        // 2.1.3: the composer card joins the list so a multi-line draft (which
-        // grows the box upward) re-measures the layer's vertical clearance
-        // instead of letting the pill sink back onto the input.
-        const selector = '[data-slot^="conversation"], [data-slot^="sidebar.right"], [data-composer-card]'
-        const observed = new Set()
-        const all = () => {
-          try {
-            return typeof document.querySelectorAll === 'function'
-              ? [...document.querySelectorAll(selector)]
-              : []
-          } catch { return [] }
-        }
-        const one = (query) => {
-          try { return typeof document.querySelector === 'function' ? document.querySelector(query) : null } catch { return null }
-        }
-        let frame = 0
-        // Decided once per mount: the primary pointer type does not change with
-        // rotation, and a matchMedia call per animation frame would be waste.
-        const coarsePointer = pointerIsCoarse(window)
-        let observer = null
-        let mutation = null
-        let observedRail = null
-        const timers = []
-        const apply = () => {
-          if (typeof node.style?.setProperty !== 'function') return
-          const lane = one('[data-slot^="conversation"]')
-          const rootWidth = document.documentElement?.clientWidth ?? window.innerWidth
-          const layoutHeight = document.documentElement?.clientHeight ?? window.innerHeight
-          // The keyboard does not shrink the LAYOUT viewport on Android (edge-
-          // to-edge), so a fixed-position layer stays where it was and ends up
-          // underneath the keyboard. The visual viewport does shrink: measure
-          // both and lift by the difference. With no `visualViewport` this is 0
-          // and every desktop position is byte-identical to before.
-          const viewport = window.visualViewport ?? null
-          const viewportOffsetTop = Number.isFinite(viewport?.offsetTop) ? viewport.offsetTop : 0
-          const visualHeight = Number.isFinite(viewport?.height) ? viewport.height : null
-          // The positioning basis for `position: fixed` is the LAYOUT viewport,
-          // so the geometry below must use the layout height and then lift by
-          // the keyboard inset. Using the visual height here AND adding the
-          // inset double-counts the keyboard: measured on a 390x844 frame with
-          // a 300px composer and a 340px keyboard, that produced bottom = 552
-          // in a 504px viewport — the layer is pushed off-screen.
-          const rootHeight = layoutHeight
-          const keyboard = keyboardInset({ layoutHeight, viewportHeight: visualHeight, viewportOffsetTop })
-          // A dsh-Go web island advertises its native chrome as CSS variables.
-          // Reading them through getComputedStyle is the only way to see them,
-          // and a host without them (every plain browser) reads 0.
-          const rootStyle = (() => {
-            try { return window.getComputedStyle(document.documentElement) } catch { return null }
-          })()
-          const island = islandInsets(name => (rootStyle === null ? 0 : rootStyle.getPropertyValue(name)))
-          const measure = target => {
-            if (target === null || target === undefined) return null
-            try {
-              const rect = typeof target.getBoundingClientRect === 'function'
-                ? target.getBoundingClientRect()
-                : null
-              return rect === null ? null : rect
-            } catch { return null }
-          }
-          const laneRect = measure(lane)
-          const ownCards = new Set(store.state.cards.filter(item => item.surface === 'flow').map(item => item.id))
-          const rail = findRail(document, ownCards)
-          const railBox = rail === null || rail.box === null ? null : rail.box
-          const railOccupied = rail !== null && rail.occupied === true && railBox === null
-          const laneRight = laneRect === null ? rootWidth : laneRect.right
-          const railLeft = railBox === null ? null : railBox.left
-          // 2.1.3: the composer occupies the bottom of the conversation column,
-          // so the layer's old fixed `bottom:16px` landed straight on top of the
-          // input box. Measure the composer card (the box the user types in) and
-          // lift the layer clear of it; `floatBottom` owns the guards.
-          const composerEl = one('[data-slot^="conversation"] [data-composer-card]')
-            ?? one('[data-composer-card]')
-          const composerRect = measure(composerEl)
-          // The composer clearance, the IME band and the island inset all pull
-          // on the same edge, and they are NOT additive — `layerBottomOffset`
-          // owns the anchor choice and the clamp. (Adding them counted the
-          // keyboard twice whenever the composer moved up with it.)
-          const gapBottom = layerBottomOffset({
-            layoutHeight: rootHeight,
-            keyboard,
-            // `composerRect` is in layout coordinates, the same basis `rootHeight`
-            // uses — subtracting the visual offset would mix two systems.
-            composerTop: composerRect === null ? null : composerRect.top,
-            islandBottom: island.bottom,
-          })
-          node.style.setProperty('--dsa-gap-bottom', `${gapBottom}px`)
-          const surface = floatSurfacePolicy({ frameWidth: rootWidth, railLeft, coarse: coarsePointer })
-          const placement = floatPlacement({ frameWidth: rootWidth, laneRight, railLeft, maxWidth })
-          // On a phone the strip budget is unusable; the sheet takes the frame.
-          const layerWidth = surface.mode === 'sheet' ? surface.width : placement.width
-          node.style.setProperty('--dsa-float-w', `${layerWidth}px`)
-          node.style.setProperty('--dsa-gap-right', `${surface.gapRight}px`)
-          node.style.setProperty('--dsa-capsule-max', `${CAPSULE_MAX_WIDTH}px`)
-          // Readable placement, so a user report can say WHERE the layer sat.
-          node.dataset.layerWidth = String(layerWidth)
-          node.dataset.layerBottom = String(gapBottom)
-          node.dataset.dsaSurface = surface.mode
-          node.dataset.keyboardInset = String(keyboard)
-          node.dataset.islandBottom = String(island.bottom)
-
-          // Docked presentation: the card fills the rail page's body instead of
-          // floating over it. Only measured in `full` mode — a capsule/launcher
-          // is deliberately small and must never take the rail over.
-          const next = railBox === null || mode !== 'full'
-            ? null
-            : railDock({
-              railLeft: railBox.left,
-              railTop: railBox.top,
-              railWidth: railBox.width,
-              railHeight: railBox.height,
-              frameWidth: rootWidth,
-              frameHeight: rootHeight,
-              enabled: dockWanted,
-            })
-          const prev = dockRef.current
-          const same = prev === next || (prev !== null && next !== null
-            && prev.left === next.left && prev.top === next.top
-            && prev.width === next.width && prev.height === next.height
-            && prev.clipped === next.clipped)
-          if (!same) {
-            dockRef.current = next
-            setDock(next)
-          }
-          // Why the layer is (not) docked, readable from DevTools. A rail that
-          // exists but is too narrow reads as `rail-too-small`, which is a
-          // different story from `no-rail` and is what a bug report needs.
-          node.dataset.dsaDock = next !== null
-            ? 'dock'
-            : (mode !== 'full'
-              ? 'mode'
-              : (dockWanted
-                ? (railBox !== null ? 'rail-too-small' : (railOccupied ? 'occupied' : 'no-rail'))
-                : 'off'))
-          // The rail can appear AFTER this effect ran (opening it mounts new
-          // nodes), and it can be re-created later: keep the observer pointed at
-          // whichever node is currently accepted.
-          if (observer !== null && rail !== null && rail.node !== observedRail) {
-            observedRail = rail.node
-            try { observer.observe(rail.node) } catch { /* not observable */ }
-          }
-        }
-        const schedule = () => {
-          if (typeof window.requestAnimationFrame !== 'function') { apply(); return }
-          if (frame !== 0) return
-          frame = window.requestAnimationFrame(() => {
-            frame = 0
-            apply()
-          })
-        }
-        apply()
-        if (typeof window.ResizeObserver === 'function') {
-          observer = new window.ResizeObserver(schedule)
-          for (const target of all()) {
-            try { observer.observe(target) } catch { /* not an element we can watch */ }
-          }
-        }
-        if (typeof window.addEventListener === 'function') window.addEventListener('resize', schedule)
-        // Opening/closing the rail changes no size this effect already watches,
-        // so the DOM itself has to be the trigger. The two data attributes are
-        // the only signals that MEAN "the rail geometry changed". `class` and
-        // `style` used to be in this list too, and a chat pane rewrites both
-        // constantly (hover, scroll state, streaming badges) — every one of
-        // those woke this observer and forced a layout read on the next frame.
-        // Streaming tokens rewrite text nodes, which `childList`-free observing
-        // already ignores.
-        if (typeof window.MutationObserver === 'function' && document.body !== null && document.body !== undefined) {
-          try {
-            mutation = new window.MutationObserver(schedule)
-            mutation.observe(document.body, {
-              attributes: true,
-              subtree: true,
-              attributeFilter: ['data-sidebar-right-open', 'data-dockkit-pane-active'],
-            })
-          } catch { mutation = null }
-        }
-        // The rail slides in; a rect taken mid-animation is wrong. Re-measure a
-        // few times right after a card/mode change, then stop for good.
-        if (typeof window.setTimeout === 'function') {
-          for (const delay of [80, 200, 420, 800]) timers.push(window.setTimeout(schedule, delay))
-        }
-        return () => {
-          if (typeof window.removeEventListener === 'function') window.removeEventListener('resize', schedule)
-          if (observer !== null) { try { observer.disconnect() } catch { /* already gone */ } }
-          if (mutation !== null) { try { mutation.disconnect() } catch { /* already gone */ } }
-          for (const timer of timers) {
-            if (typeof window.clearTimeout === 'function') window.clearTimeout(timer)
-          }
-          if (frame !== 0 && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frame)
-        }
-      }, [maxWidth, total, mode, dockWanted])
-
-      if (total === 0) return null
-
-      const dot = h('span', {
-        className: 'dsa-capsule-dot',
-        'data-status': visible.some(card => card.status === 'streaming') ? 'streaming' : visible[0].status,
-      })
-      const label = visible.some(card => card.status === 'streaming')
-        ? t('floatStreaming')
-        : t('floatDone', { n: total })
-      const firstQuestion = visible[0].question
-
-      // Docked geometry is only meaningful in `full` mode; the effect nulls it
-      // out otherwise, and this guard keeps a stale rect from a previous mode
-      // from being painted for one frame.
-      const docked = mode === 'full' && dock !== null
-
-      const container = children => h('div', {
-        className: docked ? 'dsa-float dsa-dock' : 'dsa-float',
-        'data-dsa-root': '',
-        ref: containerRef,
-        'data-dsa-float-mode': docked ? 'dock' : mode,
-        ...(docked
-          ? {
-            style: {
-              left: `${dock.left}px`,
-              top: `${dock.top}px`,
-              width: `${dock.width}px`,
-              height: `${dock.height}px`,
-            },
-          }
-          : null),
-      }, children)
-
-      const cardNodes = visible.map(card => h(MemoAnswerCard, {
-        key: card.id,
-        card,
-        surfaceLabel: null,
-        onFloatMode: setFloatMode,
-        // Stable per card id (see useCardHandlers), which is what lets
-        // React.memo skip every card that did not change in this tick.
-        ...handlersFor(card),
-      }))
-
-      if (mode === 'capsule') {
-        return container(h('button', {
-          type: 'button',
-          className: 'dsa-capsule',
-          title: t('floatExpand'),
-          onClick: () => setFloatMode('full'),
-        }, dot, h('span', { className: 'dsa-capsule-label' }, label),
-        h('span', { className: 'dsa-capsule-q' }, firstQuestion),
-        h('span', { className: 'dsa-capsule-chev' }, '›')))
-      }
-
-      // Docked: the card takes the rail's whole rectangle, so it reads as one of
-      // the rail's pages rather than a 340px card hovering over it. The card
-      // keeps its own header (title + badges + collapse / delete controls),
-      // which is what makes the page dismissible without leaving the rail.
-      return container(h('div', {
-        className: 'dsa-stack',
-        'data-dsa-dock-body': docked ? String(dock.width) : undefined,
-      }, cardNodes))
-    }
-
     /** The `shell.overlay` entry: styles + trigger + popover + cards + toast. */
     /**
      * A candidate that quotes nothing.
@@ -5993,7 +5594,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             onQuick: action => actions.quickAsk(state.contextMenu.candidate, action),
           })
           : null,
-        h(FloatingLayer, { cards: state.cards, actions }),
         state.toast !== null ? h('div', { className: 'dsa-toast' }, state.toast) : null)
       // 2.3.2: when this layer was mounted in a composer slot rather than the
       // full-viewport `shell.overlay`, move it to the document body — a fixed box
@@ -6576,7 +6176,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           field(t('setSurface'), select('sideSurface', [
             ['auto', t('setSurfaceAuto')],
             ['better-sidebar', t('surfaceBetter')],
-            ['flow', t('setSurfaceFlow')],
             ['native-rightbar', t('surfaceNativeForce')],
           ])),
           field(t('setZones'), select('captureZones', [
@@ -6586,11 +6185,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             ['chat+task', t('setZonesBoth')],
           ])),
           field(t('setMaxChars'), number('maxChars', 200, 60000), t('setMaxCharsHint')),
-          field(t('setFloatMode'), select('floatMode', [
-            ['capsule', t('setFloatModeCapsule')],
-            ['full', t('setFloatModeFull')],
-          ]), t('setFloatModeHint')),
-          field(t('setFloatMaxWidth'), number('floatMaxWidth', 240, 560), t('setFloatMaxWidthHint')),
           field(t('setMinChars'), number('minChars', 0, 200)),
           field(t('setConcurrency'), number('maxConcurrentAsks', 1, 12)),
           field(t('setShortcut'), h('input', {
@@ -6667,27 +6261,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
         h('label', { className: 'dsa-check' },
           h('input', {
             type: 'checkbox',
-            checked: draft.autoExpandOnDone !== false,
-            onChange: event => setDraft({ ...draft, autoExpandOnDone: event.target.checked }),
-          }),
-          t('setAutoExpandOnDone')),
-        h('span', { className: 'dsa-muted' }, t('setAutoExpandOnDoneHint')),
-        h('label', { className: 'dsa-check' },
-          h('input', {
-            type: 'checkbox',
             checked: draft.followUpSuggestions === true,
             onChange: event => setDraft({ ...draft, followUpSuggestions: event.target.checked }),
           }),
           t('setFollowUps')),
         h('span', { className: 'dsa-muted' }, t('setFollowUpsHint')),
-        h('label', { className: 'dsa-check' },
-          h('input', {
-            type: 'checkbox',
-            checked: draft.dockRail !== false,
-            onChange: event => setDraft({ ...draft, dockRail: event.target.checked }),
-          }),
-          t('setDockRail')),
-        h('span', { className: 'dsa-muted' }, t('setDockRailHint')),
         historySection,
         h('div', { className: 'dsa-row' },
           h('button', {
@@ -7122,10 +6700,12 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               versions: replayVersions(entry.versions),
               viewingVersion: null,
               actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
-              // A native/better tab cannot survive a reload, so history always
-              // comes back on the flow stack where it is visible immediately.
-              surface: 'flow',
-              open: replayCardOpen(index, replayedChars),
+              // A native/better tab cannot survive a reload, and there is no
+              // floating layer left to replay onto, so a restored entry comes
+              // back unmounted: it lives in the history manager until the user
+              // opens it again (restoreHistoryCard picks a rail at that point).
+              surface: null,
+              open: false,
               history: Array.isArray(entry.history)
                 ? entry.history
                     .filter(turn => turn !== null && typeof turn === 'object')
@@ -7164,7 +6744,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             }))
         }
 
-        /** Map one durable history entry back to a live flow card. */
+        /** Map one durable history entry back to a live card. */
         const historyEntryToCard = (entry) => ({
           id: entry.id,
           question: entry.question,
@@ -7188,8 +6768,8 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           versions: replayVersions(entry.versions),
           viewingVersion: null,
           actionId: typeof entry.actionId === 'string' && entry.actionId !== '' ? entry.actionId : null,
-          surface: 'flow',
-          open: true,
+          surface: null,
+          open: false,
           history: Array.isArray(entry.history)
             ? entry.history
                 .filter(turn => turn !== null && typeof turn === 'object')
@@ -7385,18 +6965,33 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
           closeContextMenu() {
             if (store.state.contextMenu !== null) store.set({ contextMenu: null })
           },
-          /** Bring one durable card back onto the floating stack. */
+          /** Bring one durable card back onto a right rail. */
           restoreHistoryCard(id) {
             const entry = store.state.history.find(item => item.id === id)
             if (entry === undefined) return false
-            if (store.state.cards.some(card => card.id === id)) {
-              patchCard(id, { surface: 'flow', open: true })
-            } else {
-              pushCard(historyEntryToCard(entry))
+            const existing = store.state.cards.find(card => card.id === id)
+            const card = existing ?? historyEntryToCard(entry)
+            const { adapter } = pickSurface(store.state.config.sideSurface)
+            // No rail is installed and there is no floating layer to restore
+            // onto, so say so instead of pushing a card nothing would paint.
+            if (adapter === null) {
+              toast(t('surfaceUnavailable'))
+              return false
             }
-            // A collapsed (capsule) layer would swallow the restored card;
-            // this is a session-only override, exactly like clicking expand.
-            setFloatMode('full')
+            if (existing === undefined) pushCard(card)
+            patchCard(id, { surface: adapter.kind, open: true })
+            let opened = false
+            try {
+              opened = adapter.open(card) === true
+            } catch (error) {
+              console.error(`[${PLUGIN_ID}] restore surface open failed:`, error)
+              opened = false
+            }
+            if (!opened) {
+              patchCard(id, { surface: null, open: false })
+              toast(t('surfaceUnavailable'))
+              return false
+            }
             toast(t('historyRestored'))
             return true
           },
@@ -7538,7 +7133,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               reasoning: '',
               streaming: null,
               error: null,
-              surface: 'flow',
+              surface: null,
               open: true,
               history: [],
               // #9 transparency: provider from the start event, elapsed
@@ -7555,8 +7150,17 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               // offer "insert into the composer"); null for a typed question.
               actionId: payload?.actionId ?? null,
             }
-            if (payload.carrier === 'main') {
+            const picked = pickSurface(config.sideSurface)
+            // There is no floating layer any more, so a side ask has exactly two
+            // homes: a right rail, or — when no rail is installed — the main
+            // conversation. The second is a real fallback, not a licence to
+            // create a card no surface would ever paint.
+            if (payload.carrier === 'main' || picked.adapter === null) {
+              const redirected = payload.carrier !== 'main'
+              card.carrier = 'main'
+              card.surface = null
               pushCard(card)
+              if (redirected) toast(t('surfaceUnavailable'))
               try {
                 const result = await askInMainConversation({
                   ctx,
@@ -7580,14 +7184,14 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               }
               return
             }
-            const { adapter, fellBack } = pickSurface(config.sideSurface)
+            const { adapter, fellBack } = picked
             card.surface = adapter.kind
             pushCard(card, { surface: adapter.kind })
             if (fellBack) {
               store.set({ surfaceNote: t('surfaceFellBack', { name: adapter.label() }) })
               toast(t('surfaceUnavailable'))
             }
-            if (adapter.kind !== 'flow') {
+            {
               let opened = false
               try {
                 opened = adapter.open(card) === true
@@ -7596,8 +7200,11 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 opened = false
               }
               if (!opened) {
-                store.set({ surface: 'flow' })
-                patchCard(card.id, { surface: 'flow' })
+                // The rail refused the open and there is no floating layer left
+                // to carry the card, so report it instead of leaving an answer
+                // the user cannot reach.
+                store.set({ surfaceNote: t('surfaceUnavailable') })
+                toast(t('surfaceUnavailable'))
                 scheduleReport(0)
               } else {
                 // Render proof: an adapter that accepts the open but never
@@ -7611,22 +7218,19 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                   pendingProofs.delete(card.id)
                   // A card whose session is not the one on screen is queued by
                   // the host, not refused: the rail only mounts on-screen tabs.
-                  // Judging it "unproven" here moved a perfectly live card to
-                  // the flow stack and closed the tab it had just opened.
                   const ownSession = typeof card.sessionId === 'string' && card.sessionId !== ''
                     ? card.sessionId
                     : null
                   if (ownSession !== null && store.state.sessionId !== null
                     && ownSession !== store.state.sessionId) return
                   const live = store.state.cards.find(item => item.id === card.id)
-                  if (live === undefined || live.surface === 'flow') return
+                  if (live === undefined) return
                   if (renderedCardId === card.id) return
-                  store.set({ surface: 'flow', surfaceNote: t('surfaceUnproven') })
-                  patchCard(card.id, { surface: 'flow' })
-                  // 卡已经回到浮层，栏里那张 tab 就没有内容了；不关掉会留下
-                  // 一块"已移到浮层"的空面板，用户还得自己找它（专家 E）。
-                  try { surfaces.native.close(card) } catch { /* rail owns it */ }
-                  try { surfaces.better.close(card) } catch { /* host may be gone */ }
+                  // There is no floating layer to move an unproven card onto any
+                  // more, so the tab stays put and the user is told the surface
+                  // never painted. Closing it here would destroy the only home
+                  // this answer has left.
+                  store.set({ surfaceNote: t('surfaceUnproven') })
                   toast(t('surfaceUnproven'))
                   scheduleReport(0)
                 }, 600)
@@ -8091,8 +7695,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               })
               controllers.delete(cardId)
               syncPersisted()
-              // 2.1.9：答完就让答案出现在卡片里（胶囊态不再只显示一行状态）。
-              revealFinishedCard(cardId)
               // #5: background finish notification (guarded inside).
               const finished = store.state.cards.find(item => item.id === cardId)
               if (finished !== undefined) notifyCardFinish(finished)
@@ -8109,7 +7711,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
               // to persist, so a dropped connection — routine when Android
               // backgrounds a WebView — silently threw the partial answer away.
               syncPersisted()
-              revealFinishedCard(cardId)
               const failed = store.state.cards.find(item => item.id === cardId)
               if (failed !== undefined) notifyCardFinish(failed)
             },
@@ -8736,22 +8337,6 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
                 onClick: () => { try { actions.closeRailTab(props) } catch { /* host may be gone */ } },
               }, t('closeThisTab')))
           }
-          if (card.surface === 'flow') {
-            // The proof already moved this card to the flow stack and this
-            // host mounted afterwards. Rendering the answer again here would
-            // show it in two places, so close the tab we can and leave the
-            // note for a rail that keeps it.
-            try { surfaces.native.close(card) } catch { /* the rail owns its lifecycle */ }
-            try { surfaces.better.close(card) } catch { /* the host may already be gone */ }
-            return h('div', {
-              className: 'dsa-settings',
-              'data-dsa-root': '',
-              'data-dsa-rail-host': '',
-              'data-dsa-card-id': typeof cardId === 'string' ? cardId : '',
-            },
-              h(Styles, null),
-              h('div', { className: 'dsa-muted' }, t('cardMovedToFlow')))
-          }
           return h('div', {
             className: 'dsa-settings',
             'data-dsa-root': '',
@@ -8932,7 +8517,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
             history: [],
             toast: null,
             sessionId: null,
-            surface: 'flow',
+            surface: null,
           })
         })
 
@@ -8953,7 +8538,7 @@ body[data-ds-dark-theme] .dsa-seg button[data-on="true"]:hover{
        * mounts them only while open and the test shim has no working setState,
        * so a simulated click cannot reach them.
        */
-      components: Object.freeze({ FeedbackDialog, DeleteConfirmDialog }),
+      components: Object.freeze({ AnswerCard, FeedbackDialog, DeleteConfirmDialog }),
 
       /**
        * Test seam: pure helpers, frozen. The DSH client runtime only reads

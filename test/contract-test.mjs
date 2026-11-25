@@ -20,6 +20,60 @@ import {
   hostNodes, createLocalStorageStub, tempDir,
 } from './harness.mjs'
 
+/**
+ * Render one card's UI directly.
+ *
+ * The floating layer is gone, so a card no longer renders inside the
+ * `shell.overlay` tree — it lives in a right rail's tab body, which this
+ * harness does not model. The Client exports `AnswerCard` as a test seam for
+ * exactly this case, so every assertion about a card's *content* goes here.
+ */
+/**
+ * A minimal `dsh-better-sidebar` service.
+ *
+ * A side card now needs a right rail to live in: with none installed, `auto`
+ * returns no surface and the ask goes to the main conversation instead, which
+ * would leave these card-UI cases asserting against a card that never exists.
+ */
+const betterSidebarService = (openCalls = []) => ({
+  version: '0.22.1',
+  features: ['badge', 'tabLifecycle', 'updateTab', 'openFile', 'targetedOpen', 'stateSubscription', 'tabMeta', 'pluginSettings', 'urlTarget', 'settingSelect', 'fileIcons'],
+  registerTab: () => () => {},
+  openTab: (seed, scope) => { openCalls.push({ seed, scope }) },
+  closeTab: () => {},
+  getSnapshot: () => ({ sessionId: 'session-alpha' }),
+})
+
+const renderCard = (mod, card, extra = {}) => {
+  const host = mod?.module ?? mod
+  // A card's action bar wires one callback per affordance; a case that does not
+  // exercise a given button still needs the prop to exist, so every one starts
+  // as a no-op and the case that clicks overrides it.
+  const noop = () => {}
+  return expandTree({
+    __element: true,
+    type: host.components.AnswerCard,
+    props: {
+      onCopy: noop,
+      onFollowUp: noop,
+      onRetry: noop,
+      onRetryEdit: noop,
+      onCancel: noop,
+      onSendToMain: noop,
+      onClose: noop,
+      onDelete: noop,
+      onLocate: noop,
+      onExport: noop,
+      onInsert: noop,
+      onReplace: noop,
+      onViewVersion: noop,
+      card,
+      ...extra,
+    },
+    children: [],
+  })
+}
+
 // The host persists user config under $DSH_HOME; point it at a scratch
 // directory so running the tests never touches the developer's real profile.
 process.env.DSH_HOME = tempDir('sidecard-ask-contract-')
@@ -54,14 +108,9 @@ harness.services.agents = {
 harness.services.tools = {
   schemas: () => [{ name: 'read' }, { name: 'grep' }, { name: 'write' }],
 }
-// `floatMode: 'full'` on purpose: the floating layer now DEFAULTS to the
-// capsule (1.5.0, user requirement), which renders one line and no card body.
-// These cases assert card *content*, so they ask for the expanded shape — the
-// capsule default itself is asserted in test/float-placement.mjs.
 host.apply(harness.ctx, {
   trigger: 'both',
   maxChars: 1200,
-  floatMode: 'full',
   sideTools: 'readonly',
   // 2.1.14: the SHIPPED default disables the five built-in chips, so the bar is
   // the main button alone. The chip/popover assertions further down are about
@@ -282,14 +331,14 @@ console.log('\nlanguage resolution')
   report.equal(pure.resolveLanguage([], 'zh'), 'zh', 'an empty list uses the caller fallback')
   report.equal(pure.resolveLanguage([null, '', 'en-GB'], 'zh'), 'en', 'dirty entries are skipped, not fatal')
   const stubFetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, value: {} }) })
-  const jaCtx = makeClientCtx({})
+  const jaCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const jaClient = loadClientModule({ fetchImpl: stubFetch, language: 'ja-JP', languages: ['ja-JP', 'zh-HK'] })
   jaClient.module.apply(jaCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
   const jaSettings = jaCtx.find('settings.section', pure.IDS.settings)
   const jaText = textOf(expandTree(jaClient.shim.React.createElement(jaSettings.component, {})))
   report.ok(jaText.includes('划词追问'), 'a navigator listing ja then zh serves the zh UI (second preference wins)')
-  const frCtx = makeClientCtx({})
+  const frCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const frClient = loadClientModule({ fetchImpl: stubFetch, language: 'fr-FR', languages: ['fr-FR'] })
   frClient.module.apply(frCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -931,28 +980,6 @@ console.log('\nP2 pure helpers (1.8.0)')
   report.equal(loopbackLayer.feedbackSmtpHost, '127.0.0.1', 'a loopback relay is still configurable')
   report.equal(loopbackProblems.length, 0, 'a loopback relay records no problem')
 
-  // 2.0.0: the "hide the whole layer" mode is GONE. A stored `floatMode: 'off'`
-  // from an older profile must not resurrect a launcher this client no longer
-  // renders, so the enum refuses it and normalizeConfig falls back to the
-  // default capsule — visibly, through `problems`, not silently.
-  const retiredModeProblems = []
-  const retiredMode = host.sanitizeLayer({ floatMode: 'off' }, retiredModeProblems)
-  report.equal(retiredMode.floatMode, undefined, 'sanitizeLayer drops the retired "off" float mode')
-  report.ok(
-    retiredModeProblems.some(line => line.includes('floatMode')),
-    'the retired float mode is reported rather than silently swallowed',
-  )
-  for (const mode of ['capsule', 'full']) {
-    const modeProblems = []
-    report.equal(host.sanitizeLayer({ floatMode: mode }, modeProblems).floatMode, mode, `sanitizeLayer still accepts "${mode}"`)
-    report.equal(modeProblems.length, 0, `"${mode}" records no problem`)
-  }
-  const retiredNormalized = host.normalizeConfig({ floatMode: 'off' }, { floatMode: 'off' })
-  report.equal(retiredNormalized.config.floatMode, 'capsule', 'a stale "off" config falls back to the capsule default')
-  report.ok(
-    retiredNormalized.problems.some(line => line.includes('floatMode')),
-    'the stale-config fallback is reported, not silent',
-  )
   const personaProblems = []
   report.equal(
     host.sanitizeLayer({ customPersona: '😀'.repeat(500) }, personaProblems).customPersona,
@@ -1182,20 +1209,14 @@ for (const label of ['触发方式', '默认作答位置', '最大字符数', '�
 }
 report.ok(byTag(settingsTree, 'select').length >= 4, 'settings page renders its dropdowns')
 
-// 2.0.0: "隐藏浮层" is gone, so the 浮层默认形态 dropdown must offer exactly the
-// two shapes that still exist. Assert on the option VALUES, not the labels.
-const floatModeSelect = byTag(settingsTree, 'select').find(
-  node => (node.children ?? []).some(child => String(child?.props?.value ?? '') === 'capsule'))
-report.ok(floatModeSelect !== undefined, 'settings page renders the float-mode dropdown')
+// The floating layer is gone, so its 浮层默认形态 dropdown must not exist at
+// all: no select offers a capsule / full / off option any more.
 report.equal(
-  (floatModeSelect?.children ?? []).map(child => String(child?.props?.value ?? '')),
-  ['capsule', 'full'],
-  'the float-mode dropdown offers only the two remaining shapes',
-)
-report.equal(
-  (floatModeSelect?.children ?? []).filter(child => String(child?.props?.value ?? '') === 'off').length,
+  byTag(settingsTree, 'select').filter(
+    node => (node.children ?? []).some(child => ['capsule', 'full', 'off'].includes(String(child?.props?.value ?? ''))),
+  ).length,
   0,
-  'the retired "off" option is no longer offered',
+  'settings page no longer offers a float-mode dropdown',
 )
 
 // 1.8.3: the settings page uses the same chip switch as the popover instead of
@@ -1225,21 +1246,6 @@ report.ok(
   'the standalone carrier dropdown is gone',
 )
 
-// 1.8.3: the dock toggle. The switch only decides whether an open right rail is
-// filled by the card, so the page must expose it as a plain checkbox that writes
-// the draft — config is saved by the page's 保存 button, never on tick.
-const dockRows = byClass(settingsTree, 'dsa-check').filter(
-  node => textOf(node).includes('右侧栏打开时占满它'))
-report.equal(dockRows.length, 1, 'settings page renders the dock-rail toggle')
-const dockInput = byTag(dockRows[0] ?? { __element: true, type: null, props: {}, children: [] }, 'input')
-report.equal(dockInput.length, 1, 'the dock toggle is a single checkbox')
-report.equal(dockInput[0]?.props?.type, 'checkbox', 'the dock toggle uses a checkbox control')
-report.equal(dockInput[0]?.props?.checked, true, 'the dock toggle reads the config default (on)')
-report.ok(
-  typeof dockInput[0]?.props?.onChange === 'function',
-  'the dock toggle carries a change handler that writes the draft',
-)
-report.ok(settingsText.includes('收起为胶囊或关闭即恢复原状'), 'the dock toggle explains how to undock')
 report.ok(byTag(settingsTree, 'input').length >= 4, 'settings page renders its numeric fields')
 report.ok(settingsText.includes('划词追问'), 'settings page renders its title')
 
@@ -1563,8 +1569,9 @@ console.log('\nP2 card affordances (1.8.0)')
 {
   const actions = overlay.component().props.actions
   // This composition has a native right rail, so `auto` would put the card in
-  // a tab body this test cannot expand; force the flow stack for the render.
-  await actions.saveConfig({ ...client.api.snapshot().config, sideSurface: 'flow' })
+  // a tab body this harness cannot expand, so the card UI is rendered straight
+  // from the component seam below (the floating layer is gone).
+  await actions.saveConfig({ ...client.api.snapshot().config, sideSurface: 'auto' })
   actions.submit(
     {
       text: '这一段是被选中的原文，用来验证回看定位。',
@@ -1577,7 +1584,7 @@ console.log('\nP2 card affordances (1.8.0)')
     { question: 'P2 按钮渲染用例', carrier: 'side' },
   )
   await new Promise(resolve => setTimeout(resolve, 150))
-  const tree = expandTree(overlay.component())
+  const tree = renderCard(client, client.api.snapshot().cards[0])
   const cardNode = byClass(tree, 'dsa-card')[0]
   report.ok(cardNode !== undefined, 'the submitted card renders')
   const cardText = textOf(cardNode)
@@ -1687,7 +1694,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     roots: () => [{ id: 'session-alpha' }],
     list: () => [{ id: 'session-alpha' }],
   }
-  host.apply(sugHost.ctx, { sideTools: 'inherit', floatMode: 'full', sideSurface: 'flow', followUpSuggestions: true })
+  host.apply(sugHost.ctx, { sideTools: 'inherit', sideSurface: 'auto', followUpSuggestions: true })
   const sugFetch = (url, init = {}) => {
     const path = String(url).replace('/sidecard-ask/api/', '')
     const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -1708,7 +1715,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     })()
   }
   const sugClient = loadClientModule({ fetchImpl: sugFetch, language: 'zh-CN' })
-  const sugCtx = makeClientCtx()
+  const sugCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   sugClient.module.apply(sugCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 40))
   const sugOverlay = sugCtx.find('shell.overlay', pure.IDS.overlay)
@@ -1719,7 +1726,15 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     { question: 'P2-4 渲染用例', carrier: 'side' },
   )
   await new Promise(resolve => setTimeout(resolve, 200))
-  const sugTree = expandTree(sugOverlay.component())
+  const sugCard = sugClient.module.api.snapshot().cards[0]
+  const sugTree = renderCard(sugClient, sugCard, {
+    onFollowUp: text => sugActions.followUp(sugCard, text),
+    onCopy: () => {},
+    onRetry: () => {},
+    onRetryEdit: () => {},
+    onCancel: () => {},
+    onSendToMain: () => {},
+  })
   const sugRow = byClass(sugTree, 'dsa-sug')
   report.equal(sugRow.length, 1, 'the suggestion row renders under the answer')
   report.ok(textOf(sugRow[0]).includes('建议追问'), 'the suggestion row is labelled')
@@ -1751,7 +1766,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     roots: () => [{ id: 'session-alpha' }],
     list: () => [{ id: 'session-alpha' }],
   }
-  host.apply(offHost.ctx, { sideTools: 'inherit', floatMode: 'full', sideSurface: 'flow' })
+  host.apply(offHost.ctx, { sideTools: 'inherit', sideSurface: 'auto' })
   const offFetch = (url, init = {}) => {
     const path = String(url).replace('/sidecard-ask/api/', '')
     const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -1772,7 +1787,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     })()
   }
   const offClient = loadClientModule({ fetchImpl: offFetch, language: 'zh-CN' })
-  const offCtx = makeClientCtx()
+  const offCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   offClient.module.apply(offCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 40))
   report.equal(offClient.module.api.snapshot().config.followUpSuggestions, false, 'the toggle defaults to off')
@@ -1783,7 +1798,7 @@ console.log('\nP2 follow-up suggestions (1.8.0)')
     { question: 'P2-4 关闭用例', carrier: 'side' },
   )
   await new Promise(resolve => setTimeout(resolve, 200))
-  const offTree = expandTree(offOverlay.component())
+  const offTree = renderCard(offClient, offClient.module.api.snapshot().cards[0])
   report.equal(byClass(offTree, 'dsa-sug').length, 0, 'with the toggle OFF no suggestion chips render')
   const offBody = byClass(offTree, 'dsa-answer')[0]
   report.ok(!textOf(offBody).includes('<followups>'), 'the block is still stripped with the toggle OFF')
@@ -1817,7 +1832,7 @@ console.log('\nP2 answer versions (1.8.0)')
 
   // Store behaviour on the main client: retry-edit preserves the old answer.
   const actions = overlay.component().props.actions
-  await actions.saveConfig({ ...client.api.snapshot().config, sideSurface: 'flow' })
+  await actions.saveConfig({ ...client.api.snapshot().config, sideSurface: 'auto' })
   actions.submit(
     { text: '版本节的选中文本', rect: { left: 6, top: 6, right: 200, bottom: 26, width: 194, height: 20 },
       zone: 'chat', cross: false, slotPath: ['conversation.chat.node'], kind: 'text' },
@@ -1835,7 +1850,7 @@ console.log('\nP2 answer versions (1.8.0)')
 
   report.equal(actions.viewVersion(retried, 0), 0, 'viewVersion accepts a valid index')
   report.equal(client.api.snapshot().cards.find(item => item.id === retried.id)?.viewingVersion, 0, 'the card records the viewed version')
-  const viewTree = expandTree(overlay.component())
+  const viewTree = renderCard(client, client.api.snapshot().cards.find(item => item.id === retried.id))
   const viewCard = byClass(viewTree, 'dsa-card').find(node => textOf(node).includes('第二版问题') || textOf(node).includes('第一版问题'))
   report.ok(viewCard !== undefined, 'the card renders while viewing an older version')
   report.ok(textOf(viewCard).includes('第一版问题'), 'the viewed version shows the OLD question')
@@ -1900,7 +1915,7 @@ console.log('\nP2 composer write-back (1.8.0)')
 
   // Render: a polish card shows NO insert button while the support is `none`.
   const actions = overlay.component().props.actions
-  await actions.saveConfig({ ...client.api.snapshot().config, sideSurface: 'flow' })
+  await actions.saveConfig({ ...client.api.snapshot().config, sideSurface: 'auto' })
   const candidate = {
     text: '需要润色的原文',
     rect: { left: 6, top: 6, right: 200, bottom: 26, width: 194, height: 20 },
@@ -1913,7 +1928,7 @@ console.log('\nP2 composer write-back (1.8.0)')
   await new Promise(resolve => setTimeout(resolve, 150))
   const polishCard = client.api.snapshot().cards.find(item => item.actionId === 'builtin:polish')
   report.equal(polishCard !== undefined, true, 'the chip-created card records which action made it')
-  const beforeSupport = textOf(expandTree(overlay.component()))
+  const beforeSupport = textOf(renderCard(client, polishCard))
   report.equal(beforeSupport.includes('插入到输入框'), false, 'no insert button without a write path')
 
   // Teach the module the harness action face (what SessionProbe captures on a
@@ -1930,10 +1945,21 @@ console.log('\nP2 composer write-back (1.8.0)')
   }))
   loadedClient.shim.flushEffects()
   report.equal(pure.composerWriteSupport(), 'actions', 'the captured action face becomes the preferred write path')
-  const withSupport = textOf(expandTree(overlay.component()))
+  const withSupport = textOf(renderCard(client, client.api.snapshot().cards.find(item => item.actionId === 'builtin:polish')))
   report.ok(withSupport.includes('插入到输入框'), 'the rewrite card now offers the insert button')
 
-  const insertButton = byTag(expandTree(overlay.component()), 'button').find(node => textOf(node) === '插入到输入框')
+  const polishLive = client.api.snapshot().cards.find(item => item.actionId === 'builtin:polish')
+  const polishTree = renderCard(client, polishLive, {
+    onInsert: () => actions.insertAnswer(polishLive),
+    onReplace: () => actions.insertAnswer(polishLive, { replace: true }),
+    onCopy: () => {},
+    onFollowUp: () => {},
+    onRetry: () => {},
+    onRetryEdit: () => {},
+    onCancel: () => {},
+    onSendToMain: () => {},
+  })
+  const insertButton = byTag(polishTree, 'button').find(node => textOf(node) === '插入到输入框')
   report.equal(typeof insertButton?.props?.onClick, 'function', 'the insert control wires a click handler')
   insertButton.props.onClick()
   await new Promise(resolve => setTimeout(resolve, 30))
@@ -1974,7 +2000,7 @@ reasoningHost.services.agents = {
   list: () => [{ id: 'session-alpha' }],
 }
 // Full shape so the reasoning block renders (the capsule default shows one line).
-host.apply(reasoningHost.ctx, { sideTools: 'inherit', floatMode: 'full' })
+host.apply(reasoningHost.ctx, { sideTools: 'inherit' })
 const reasoningFetch = (url, init = {}) => {
   const path = String(url).replace('/sidecard-ask/api/', '')
   const body = init.body === undefined ? null : JSON.parse(init.body)
@@ -1994,7 +2020,7 @@ const reasoningFetch = (url, init = {}) => {
     return { ok: res.status < 400, status: res.status, json: async () => res.json() }
   })()
 }
-const reasoningCtx = makeClientCtx({})
+const reasoningCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 const reasoningClient = loadClientModule({ fetchImpl: reasoningFetch, language: 'zh-CN' })
 reasoningClient.module.apply(reasoningCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
@@ -2019,7 +2045,7 @@ report.ok(
   typeof reasoningCards[0]?.reasoning === 'string' && reasoningCards[0].reasoning.includes('思考'),
   'reasoning deltas reached the card store',
 )
-const reasoningTree = expandTree(reasoningOverlay.component())
+const reasoningTree = renderCard(reasoningClient, reasoningCards[0])
 report.ok(
   byTag(reasoningTree, 'details').some(node => String(node.props.className ?? '').split(/\s+/).includes('dsa-details')),
   'the card renders a collapsible reasoning block',
@@ -2125,7 +2151,11 @@ console.log('\nquick-action end to end')
   )
 
   // A done side card shows the edit-retry entry in its footer.
-  const retriedTree = expandTree(reasoningOverlay.component())
+  const retriedTree = renderCard(
+    reasoningClient,
+    reasoningClient.module.api.snapshot().cards.find(item => item.id === retried.id),
+    { onFollowUp: text => reasoningActions.followUp(reasoningClient.module.api.snapshot().cards.find(item => item.id === retried.id), text) },
+  )
   const buttons = byTag(retriedTree, 'button').map(node => textOf(node))
   report.ok(buttons.includes('改问'), 'the finished card offers the edit-&-retry button')
   report.ok(buttons.includes('复制'), 'the finished card keeps its copy button')
@@ -2139,7 +2169,7 @@ console.log('\nquick-action end to end')
   // card's own section (identified by its current question text).
   const retriedSection = byClass(retriedTree, 'dsa-card')
     .find(section => byClass(section, 'dsa-quote').some(node => textOf(node) === '这是改后的问题吗？'))
-  report.ok(retriedSection !== undefined, 'the retried card section is found in the floating stack')
+  report.ok(retriedSection !== undefined, 'the retried card section renders')
   const chipNode = byClass(retriedSection, 'dsa-fu-chips')[0]
   const detailChip = byClass(chipNode, 'dsa-chip').find(node => textOf(node) === '更详细')
   detailChip.props.onClick({ preventDefault() {}, stopPropagation() {} })
@@ -2197,7 +2227,7 @@ console.log('\nstream coalescing')
       return { ok: true, status: 200, body: stream, json: async () => JSON.parse(res.text()) }
     })()
   }
-  const coalesceCtx = makeClientCtx({})
+  const coalesceCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const coalesceClient = loadClientModule({ fetchImpl: coalesceFetch, language: 'zh-CN' })
   coalesceClient.module.apply(coalesceCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -2258,7 +2288,7 @@ console.log('\nstream buffer discard')
       return { ok: true, status: 200, body: stream, json: async () => JSON.parse(res.text()) }
     })()
   }
-  const discardCtx = makeClientCtx({})
+  const discardCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const discardClient = loadClientModule({ fetchImpl: discardFetch, language: 'zh-CN' })
   discardClient.module.apply(discardCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -2322,7 +2352,7 @@ console.log('\nhost cancel routing')
       return { ok: res.status < 400, status: res.status, json: async () => res.json() }
     })()
   }
-  const cancelCtx = makeClientCtx({})
+  const cancelCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const cancelClient = loadClientModule({ fetchImpl: cancelFetch, language: 'zh-CN' })
   cancelClient.module.apply(cancelCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -2383,7 +2413,7 @@ const PERSIST_KEY = 'dsh-sidecard-ask:cards:v3'
 const PERSIST_V2_KEY = 'dsh-sidecard-ask:cards:v2'
 const PERSIST_LEGACY_KEY = 'dsh-sidecard-ask:cards:v1'
 const sharedStorage = createLocalStorageStub()
-const persistCtx = makeClientCtx({})
+const persistCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 const persistClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
 persistClient.module.apply(persistCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
@@ -2450,7 +2480,7 @@ const dropFetch = (url) => Promise.resolve(
     : { ok: true, status: 200, json: async () => ({ ok: true, value: {} }) },
 )
 const dropClient = loadClientModule({ fetchImpl: dropFetch, storage: DROP_STORAGE, language: 'zh-CN' })
-const dropCtx = makeClientCtx({})
+const dropCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 dropClient.module.apply(dropCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 const dropActions = dropCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
@@ -2496,16 +2526,16 @@ const reloaded = reloadClient.module.api.snapshot().cards
 report.equal(reloaded.length, 2, 'a fresh page replays every persisted card (including the one closed before the reload)')
 report.equal(reloaded[0]?.question, '刷新后还在吗？', 'the replayed card keeps its question')
 report.equal(reloaded[0]?.text, '**Pro** contract answer', 'the replayed card keeps its answer')
-report.equal(reloaded[0]?.surface, 'flow', 'replayed cards come back on the flow stack')
+report.equal(reloaded[0]?.surface, null, 'a replayed card carries no surface until a rail opens it')
 report.equal(reloaded[0]?.status, 'done', 'replayed cards are terminal, not "streaming"')
 report.equal(reloaded[0]?.sessionId, 'session-alpha', 'a replayed card keeps the session that asked')
 // #6 回归：关闭的卡片在下一次答题完成时不能被 syncPersisted 抹掉。
 report.equal(reloaded[1]?.question, '会留下来吗？', '#6: the card closed before the reload is still in durable history')
 const reloadOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
 const reloadTree = expandTree(reloadOverlay.component())
-report.equal(byClass(reloadTree, 'dsa-card').length, 2, 'both replayed cards are visible on the flow stack')
-report.ok(textOf(reloadTree).includes('刷新后还在吗？'), 'the replayed card shows its question')
-report.ok(textOf(reloadTree).includes('会留下来吗？'), 'the previously closed card shows its question too')
+report.equal(byClass(reloadTree, 'dsa-card').length, 0, 'a replayed card does not paint itself (the floating layer is gone)')
+report.ok(textOf(renderCard(reloadClient, reloaded[0])).includes('刷新后还在吗？'), 'the replayed card renders its question when a surface hosts it')
+report.ok(textOf(renderCard(reloadClient, reloaded[1])).includes('会留下来吗？'), 'the previously closed card renders its question too')
 
 // #6 manager actions: restore a closed card from history, then delete it
 // from both the durable set and the live store. These actions must run on the
@@ -2517,12 +2547,9 @@ report.ok(typeof restorableId === 'string' && restorableId !== '', 'history hold
 for (const live of [...reloadClient.module.api.snapshot().cards]) managerActions.close(live)
 report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'the live cards are closed')
 report.equal(reloadClient.module.api.snapshot().history.length, 2, 'closing does not drop durable history')
-const restoreOverlay = reloadCtx.find('shell.overlay', pure.IDS.overlay)
-report.equal(managerActions.restoreHistoryCard(restorableId), true, 'restoreHistoryCard re-creates the card')
-report.equal(reloadClient.module.api.snapshot().cards.length, 1, 'the restored card is live again')
-report.equal(reloadClient.module.api.snapshot().cards[0]?.surface, 'flow', 'the restored card lands on the flow stack')
-const restoredTree = expandTree(restoreOverlay.component())
-report.ok(textOf(restoredTree).includes('刷新后还在吗？'), 'the restored card renders its question')
+report.equal(managerActions.restoreHistoryCard(restorableId), false, 'restore is refused when no right rail can host the card')
+report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'a refused restore leaves the store untouched')
+report.equal(reloadClient.module.api.snapshot().toast, pure.dict.zh.surfaceUnavailable, 'the refusal says why it could not restore')
 managerActions.deleteHistoryCard(restorableId)
 report.equal(reloadClient.module.api.snapshot().history.length, 1, 'deleteHistoryCard drops exactly the deleted entry')
 report.equal(reloadClient.module.api.snapshot().cards.length, 0, 'deleteHistoryCard also removes the live card')
@@ -2547,6 +2574,7 @@ console.log('\nmain-carrier records')
     services: {
       sessions: sessionsService,
       sidebarRight: { mounted: { getSnapshot: () => 'session-main' } },
+      betterSidebar: betterSidebarService(),
     },
   })
   const mainClient = loadClientModule({ fetchImpl: hostFetch, storage: mainStorage, language: 'zh-CN' })
@@ -2590,7 +2618,7 @@ console.log('\nmain-carrier records')
     ],
   }))
   const legacyClient = loadClientModule({ fetchImpl: hostFetch, storage: legacyStorage, language: 'zh-CN' })
-  const legacyCtx = makeClientCtx({})
+  const legacyCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   legacyClient.module.apply(legacyCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
   const legacySnapshot = legacyClient.module.api.snapshot()
@@ -2612,6 +2640,7 @@ console.log('\nmain-carrier records')
         }),
       },
       sidebarRight: { mounted: { getSnapshot: () => 'session-main' } },
+      betterSidebar: betterSidebarService(),
     },
   })
   const cleanClient = loadClientModule({ fetchImpl: hostFetch, storage: cleanStorage, language: 'zh-CN' })
@@ -2660,7 +2689,7 @@ console.log('\nmain-carrier records')
   }))
   quotaSet(PERSIST_KEY, JSON.stringify({ version: 3, cards: bigCards }))
   const quotaClient = loadClientModule({ fetchImpl: hostFetch, storage: quotaStorage, language: 'zh-CN' })
-  const quotaCtx = makeClientCtx({})
+  const quotaCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   quotaClient.module.apply(quotaCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
   const quotaActions = quotaCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
@@ -2699,18 +2728,18 @@ console.log('\ndelete this follow-up conversation (2.0.0)')
       ],
     }],
   }))
-  const deleteCtx = makeClientCtx({})
+  const deleteCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const deleteClient = loadClientModule({ fetchImpl: hostFetch, storage: deleteStorage, language: 'zh-CN' })
   deleteClient.module.apply(deleteCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
   const deleteSnapshot = () => deleteClient.module.api.snapshot()
-  report.equal(deleteSnapshot().cards.length, 1, 'the seeded card boots onto the flow stack')
+  report.equal(deleteSnapshot().cards.length, 1, 'the seeded card boots as a live card')
   report.equal(deleteSnapshot().history.length, 1, 'the seeded card boots into the durable history')
 
   // The card header carries the delete affordance, and it is NOT the retired
   // launcher/hide control.
   const deleteOverlay = deleteCtx.find('shell.overlay', pure.IDS.overlay)
-  const deleteTree = expandTree(deleteOverlay.component())
+  const deleteTree = renderCard(deleteClient, deleteSnapshot().cards[0])
   const headerDeleteButtons = hostNodes(deleteTree).filter(
     node => node.type === 'button'
       && node.props['aria-label'] === pure.dict.zh.cardDelete)
@@ -2871,7 +2900,7 @@ console.log('\ndelete this follow-up conversation (2.0.0)')
       return { ok: true, status: 200, body: stream, json: async () => JSON.parse(res.text()) }
     })()
   }
-  const streamDeleteCtx = makeClientCtx({})
+  const streamDeleteCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const streamDeleteClient = loadClientModule({ fetchImpl: streamDeleteFetch, language: 'zh-CN' })
   streamDeleteClient.module.apply(streamDeleteCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -2908,7 +2937,7 @@ sharedStorage.setItem(PERSIST_KEY, JSON.stringify({
   version: 3,
   cards: [{ id: 'only-one', question: 'q', text: 'a', status: 'done', createdAt: 1 }],
 }))
-const clearCtx = makeClientCtx({})
+const clearCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 const clearClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
 clearClient.module.apply(clearCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
@@ -2929,7 +2958,7 @@ report.equal(clearClient.module.api.snapshot().history.length, 0, 'clearHistory 
     version: 2,
     cards: [{ id: 'legacy-v2', question: '旧版遗留卡片', text: '旧答案', status: 'done', createdAt: 1 }],
   }))
-  const legacyClearCtx = makeClientCtx({})
+  const legacyClearCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const legacyClearClient = loadClientModule({ fetchImpl: hostFetch, storage: legacyStorage, language: 'zh-CN' })
   legacyClearClient.module.apply(legacyClearCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -2939,7 +2968,7 @@ report.equal(clearClient.module.api.snapshot().history.length, 0, 'clearHistory 
   report.equal(legacyStorage.getItem(PERSIST_V2_KEY), null, 'clearHistory also drops the legacy v2 key')
   report.equal(legacyStorage.getItem(PERSIST_KEY), null, 'and the current v3 key')
   // Reload over the SAME storage: nothing may come back.
-  const reloadedClearCtx = makeClientCtx({})
+  const reloadedClearCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   const reloadedClearClient = loadClientModule({ fetchImpl: hostFetch, storage: legacyStorage, language: 'zh-CN' })
   reloadedClearClient.module.apply(reloadedClearCtx.ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -2956,7 +2985,7 @@ migrationStorage.setItem(PERSIST_LEGACY_KEY, JSON.stringify({
   cards: [{ id: 'legacy-1', question: '旧版卡片', text: '旧版答案', status: 'done' }],
 }))
 const migrationClient = loadClientModule({ fetchImpl: hostFetch, storage: migrationStorage, language: 'zh-CN' })
-const migrationCtx = makeClientCtx({})
+const migrationCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 migrationClient.module.apply(migrationCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 report.equal(migrationClient.module.api.snapshot().cards.length, 1, 'a v1 payload is replayed on boot')
@@ -2978,7 +3007,7 @@ v2Storage.setItem(PERSIST_V2_KEY, JSON.stringify({
   }],
 }))
 const v2Client = loadClientModule({ fetchImpl: hostFetch, storage: v2Storage, language: 'zh-CN' })
-const v2Ctx = makeClientCtx({})
+const v2Ctx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 v2Client.module.apply(v2Ctx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 report.equal(v2Client.module.api.snapshot().cards.length, 1, 'a v2 payload is replayed on boot')
@@ -2997,7 +3026,7 @@ emptyV3Storage.setItem(PERSIST_V2_KEY, JSON.stringify({
   cards: [{ id: 'behind-empty', question: '被挡住过吗？', text: '被挡住过', status: 'done', createdAt: 1700000000000 }],
 }))
 const emptyV3Client = loadClientModule({ fetchImpl: hostFetch, storage: emptyV3Storage, language: 'zh-CN' })
-emptyV3Client.module.apply(makeClientCtx({}).ctx)
+emptyV3Client.module.apply(makeClientCtx({ services: { betterSidebar: betterSidebarService() } }).ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 report.equal(
   emptyV3Client.module.api.snapshot().cards[0]?.question,
@@ -3013,7 +3042,7 @@ clearedStorage.setItem(PERSIST_V2_KEY, JSON.stringify({
   cards: [{ id: 'cleared-card', question: '已经被删了', text: 'x', status: 'done', createdAt: 1700000000000 }],
 }))
 const clearedClient = loadClientModule({ fetchImpl: hostFetch, storage: clearedStorage, language: 'zh-CN' })
-clearedClient.module.apply(makeClientCtx({}).ctx)
+clearedClient.module.apply(makeClientCtx({ services: { betterSidebar: betterSidebarService() } }).ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 report.equal(
   clearedClient.module.api.snapshot().cards.length,
@@ -3028,7 +3057,7 @@ brokenV3Storage.setItem(PERSIST_V2_KEY, JSON.stringify({
   cards: [{ id: 'after-corrupt', question: '坏数据之后', text: 'y', status: 'done', createdAt: 1700000000000 }],
 }))
 const brokenV3Client = loadClientModule({ fetchImpl: hostFetch, storage: brokenV3Storage, language: 'zh-CN' })
-brokenV3Client.module.apply(makeClientCtx({}).ctx)
+brokenV3Client.module.apply(makeClientCtx({ services: { betterSidebar: betterSidebarService() } }).ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 report.equal(
   brokenV3Client.module.api.snapshot().cards[0]?.question,
@@ -3052,7 +3081,7 @@ v3Storage.setItem(PERSIST_KEY, JSON.stringify({
   }],
 }))
 const v3Client = loadClientModule({ fetchImpl: hostFetch, storage: v3Storage, language: 'zh-CN' })
-const v3Ctx = makeClientCtx({})
+const v3Ctx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 v3Client.module.apply(v3Ctx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
 report.equal(v3Client.module.api.snapshot().cards[0]?.versions.length, 1, 'a v3 card keeps its stored versions')
@@ -3109,7 +3138,7 @@ const noSaveFetch = (url, init = {}) => {
   })()
 }
 const noSaveClient = loadClientModule({ fetchImpl: noSaveFetch, storage: noSaveStorage, language: 'zh-CN' })
-const noSaveCtx = makeClientCtx({})
+const noSaveCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 noSaveClient.module.apply(noSaveCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 100))
 const noSaveActions = noSaveCtx.find('shell.overlay', pure.IDS.overlay).component().props.actions
@@ -3137,7 +3166,7 @@ sharedStorage.setItem(PERSIST_KEY, JSON.stringify({
     createdAt: 1,
   })),
 }))
-const floodCtx = makeClientCtx({})
+const floodCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 const floodClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
 floodClient.module.apply(floodCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
@@ -3147,7 +3176,7 @@ report.equal(
   'replay is capped at the persistence limit even for a hand-written payload',
 )
 sharedStorage.setItem(PERSIST_KEY, 'not-json-at-all')
-const corruptCtx = makeClientCtx({})
+const corruptCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
 const corruptClient = loadClientModule({ fetchImpl: hostFetch, storage: sharedStorage, language: 'zh-CN' })
 corruptClient.module.apply(corruptCtx.ctx)
 await new Promise(resolve => setTimeout(resolve, 20))
@@ -3155,19 +3184,21 @@ report.equal(corruptClient.module.api.snapshot().cards.length, 0, 'corrupt histo
 
 console.log('\nsurface fallback chain')
 // The same client module, applied to a composition with NO side-card plugin:
-// every adapter must report itself unavailable, and `auto` must land on the
-// built-in flow card instead of failing.
+// every adapter must report itself unavailable, and `auto` must return NO
+// surface — the floating layer is gone, so the caller sends the ask to the main
+// conversation instead of creating a card nothing can paint.
 const bareClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
 const bareCtx = makeClientCtx()
 bareClient.module.apply(bareCtx.ctx)
-report.equal(bareClient.module.api.pure.pickSurface('auto').adapter.kind, 'flow', 'auto falls back to the flow card')
+report.equal(bareClient.module.api.pure.pickSurface('auto').adapter, null, 'auto returns no surface when no rail is installed')
+report.equal(bareClient.module.api.pure.pickSurface('auto').fellBack, true, 'the missing surface is reported as a fallback')
 report.equal(bareClient.module.api.pure.pickSurface('better-sidebar').fellBack, true, 'a missing plugin is reported as a fallback')
-report.equal(bareClient.module.api.pure.pickSurface('native-rightbar').adapter.kind, 'flow', 'a missing right rail falls back to flow')
+report.equal(bareClient.module.api.pure.pickSurface('native-rightbar').adapter, null, 'a missing right rail returns no surface')
 // The rail is deliberately OUT of the automatic chain. A card re-hosted as a
 // rail tab is a tab the plugin does not own (it outlives the card and keeps an
-// empty "this card was closed" body), so the order asked for is: the side-card
-// plugin first, the built-in card second. Both adapters are healthy in `pure`,
-// so the plugin must win even though the rail is also available.
+// empty "this card was closed" body), so `auto` asks the side-card plugin
+// first. Both adapters are healthy in `pure`, so the plugin must win even
+// though the rail is also available.
 report.equal(pure.pickSurface('auto').adapter.kind, 'better-sidebar', 'auto prefers the side-card plugin over the rail')
 // ...and the rail is still reachable, but only by naming it.
 report.equal(pure.pickSurface('native-rightbar').adapter.kind, 'native-rightbar', 'the rail stays selectable by explicit choice')
@@ -3425,7 +3456,7 @@ const oldCtx = makeClientCtx({
 const oldClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
 oldClient.module.apply(oldCtx.ctx)
 report.equal(oldClient.module.api.pure.pickSurface('better-sidebar').fellBack, true, 'a service without tabMeta is refused')
-report.equal(oldClient.module.api.pure.pickSurface('auto').adapter.kind, 'flow', 'auto then falls through to the flow card')
+report.equal(oldClient.module.api.pure.pickSurface('auto').adapter, null, 'auto then reports no surface at all')
 
 // A service that cannot register a tab type at all is refused the same way.
 const noRegister = makeClientCtx({
@@ -3459,9 +3490,9 @@ report.equal(
   'the failed native adapter reports itself unavailable',
 )
 report.equal(
-  rollbackClient.module.api.pure.pickSurface('auto').adapter.kind,
-  'flow',
-  'auto then falls through to the flow card',
+  rollbackClient.module.api.pure.pickSurface('auto').adapter,
+  null,
+  'auto then reports no surface at all',
 )
 
 console.log('\nsurface kinds must not collide')
@@ -3663,7 +3694,7 @@ await new Promise(resolve => setTimeout(resolve, 120))
 const afterSecondSubmit = kindClient.module.api.snapshot().cards
 const firstAfter = afterSecondSubmit.find(card => card.id === firstCard.id)
 const secondCard = afterSecondSubmit.find(card => card.question === '第二张卡')
-report.equal(firstAfter?.surface, 'flow', 'opening a second card migrates the first back to the overlay (one address)')
+report.equal(firstAfter?.surface, null, 'opening a second card closes the first instead of moving it to a floating layer')
 report.equal(secondCard?.surface, 'native-rightbar', 'the newest card owns the rail address')
 report.ok(
   afterSecondSubmit.filter(card => card.surface === 'native-rightbar').length === 1,
@@ -3686,7 +3717,7 @@ report.ok(
 // R1 回归（2026-10-29）：单地址模型把被挤出的卡迁回浮层时只改了 surface，没改
 // open——而浮层只挂载 `surface === 'flow' && open` 的卡，于是那张卡既不在栏里、
 // 也不在屏幕上，流式输出继续往看不见的卡里写。
-report.equal(firstAfter?.open, true, 'the migrated card is unfolded on the overlay, not silently hidden')
+report.equal(firstAfter?.open, false, 'the displaced card is closed, not left half-mounted')
 
 // R3 回归（2026-10-29）：删历史条目只清了 store，没管原生栏的 tab——那张 tab 是
 // 宿主自己的状态，没有任何东西会再关它，于是页面里留下一张渲染已不存在卡片的
@@ -3807,8 +3838,8 @@ console.log('\nbetter-sidebar surface lifecycle')
   const betterSecond = betterCards.find(card => card.question === '第二张 better 卡')
   const betterFirstAfter = betterCards.find(card => card.id === betterFirst.id)
   report.equal(betterOpened.length, 2, 'each card asks better-sidebar to open')
-  report.equal(betterFirstAfter?.surface, 'flow', 'opening a second better card migrates the first to the overlay')
-  report.equal(betterFirstAfter?.open, true, 'the migrated better card is unfolded, not silently hidden')
+  report.equal(betterFirstAfter?.surface, null, 'opening a second better card closes the first instead of moving it to a floating layer')
+  report.equal(betterFirstAfter?.open, false, 'the displaced better card is closed, not left half-mounted')
   report.equal(betterSecond?.surface, 'better-sidebar', 'the newest card owns the single better tab')
   // 挂载真实宿主 tab：0.28.2 的 id 由宿主 mint，不是 seed 里的 cardId。
   report.equal(betterOwnTabs.length, 1, 'better-sidebar received one descriptor')
@@ -3949,22 +3980,19 @@ proofActions.submit(
 await new Promise(resolve => setTimeout(resolve, 700))
 const sceneTwoCard = proofClient.module.api.snapshot().cards.find(
   item => item.question === '迟到挂载会双显吗？')
-report.equal(sceneTwoCard?.surface, 'flow', 'an unproven mount moves the card to the flow stack')
+report.equal(sceneTwoCard?.surface, 'native-rightbar', 'an unproven mount keeps the card on its rail instead of moving it')
 const closeCallsBeforeLateMount = proofTabsClosed.length
 const lateTree = hostTreeFor(sceneTwoCard.id)
 proofClient.shim.flushEffects()
-report.ok(
-  textOf(lateTree).includes('该卡片已移至浮层显示'),
-  'a late mount renders the moved-to-flow note',
-)
 report.equal(
   byClass(lateTree, 'dsa-card').length,
-  0,
-  'a late mount never renders a second copy of the answer',
+  1,
+  'a late mount renders the card (there is no second surface to move it to)',
 )
-report.ok(
-  proofTabsClosed.length === closeCallsBeforeLateMount + 1,
-  'a late mount asks the rail to close the duplicated tab',
+report.equal(
+  proofTabsClosed.length,
+  closeCallsBeforeLateMount,
+  "an unproven mount no longer closes the tab: it is the card's only home",
 )
 
 // The popover badge counts what a reader would count: two emoji are two
@@ -4026,7 +4054,7 @@ report.equal(reportBody.family.leader, true, 'the report carries the family lead
 report.equal(reportBody.family.legacy, false, 'the report carries the legacy-peer verdict')
 report.ok(Array.isArray(reportBody.family.peers), 'the report carries the family peers list')
 
-const emptyReport = pure.buildClientReport({ surface: 'flow', zoneAnchors: null, sessionId: null, slots: {} })
+const emptyReport = pure.buildClientReport({ surface: null, zoneAnchors: null, sessionId: null, slots: {} })
 report.equal(emptyReport.sessionKnown, false, 'no session is reported honestly')
 report.equal(emptyReport.zoneAnchors, null, 'an unknown zone verdict stays null')
 
@@ -4087,8 +4115,8 @@ report.equal(pure.electFamilyLeader([], 'solo'), 'solo', 'a lone member elects i
   })
   const leaderLoaded = loadClientModule({ fetchImpl: stubFetch, language: 'zh-CN' })
   const loserLoaded = loadClientModule({ fetchImpl: stubFetch, language: 'zh-CN' })
-  const leaderCtx = makeClientCtx()
-  const loserCtx = makeClientCtx()
+  const leaderCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
+  const loserCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   leaderLoaded.module.apply(leaderCtx.ctx)
   // The loser must see the leader's registry before its own apply runs.
   delete loserLoaded.window.__dshSidecardFamily
@@ -4522,7 +4550,7 @@ console.log('\nfeedback: settings surface')
     fetchImpl: async () => ({ ok: true, status: 200, json: async () => feedbackState }),
     language: 'zh-CN',
   })
-  const fbCtx = makeClientCtx({})
+  const fbCtx = makeClientCtx({ services: { betterSidebar: betterSidebarService() } })
   fbLoaded.module.apply(fbCtx.ctx)
   fbLoaded.shim.flushEffects()
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -4892,8 +4920,6 @@ console.log('\nrender fan-out')
 report.ok(/const MemoAnswerCard = typeof React\.memo === 'function' \? React\.memo\(AnswerCard\) : AnswerCard/.test(clientSource),
   'the card is memoised, with a fallback for a React without memo')
 report.ok(/h\(MemoAnswerCard, \{/.test(clientSource), 'the flow stack renders the memoised card')
-report.ok(/\.\.\.handlersFor\(card\)/.test(clientSource) && /useCardHandlers\(actions\)/.test(clientSource),
-  'the layer hands each card one stable handler bundle')
 const flushBody = /const flushStreamBuffers = \(\) => \{([\s\S]*?)\n        \}/.exec(clientSource)?.[1] ?? ''
 report.ok(flushBody !== '', 'the flush routine is findable in the source')
 report.equal((flushBody.match(/store\.set\(/g) ?? []).length, 1, 'one flush commits exactly one store update')
@@ -4904,11 +4930,6 @@ report.equal(pure.STREAM_SLOW_CHARS, 32_000, 'the slow cadence starts at 32 k ch
 report.equal(pure.STREAM_FLUSH_MS, 50, 'the normal cadence stays 50 ms')
 report.equal(pure.STREAM_FLUSH_SLOW_MS, 100, 'the slow cadence is 100 ms')
 
-console.log('\nrail observer')
-report.ok(/attributeFilter: \['data-sidebar-right-open', 'data-dockkit-pane-active'\]/.test(clientSource),
-  'the rail observer only watches the two geometry attributes')
-report.equal(/attributeFilter: \[[^\]]*'class'/.test(clientSource), false,
-  'class churn no longer wakes the layer')
 
 
 console.log('\nrail orphan sweep')
@@ -5096,26 +5117,10 @@ console.log('\n2.1.9 side-card adaptation')
   const disabledClient = loadClientModule({ fetchImpl: hostFetch, language: 'zh-CN' })
   disabledClient.module.apply(ctx.ctx)
   const picked = disabledClient.module.api.pure.pickSurface('auto')
-  report.equal(picked.adapter.kind, 'flow', 'a disabled tab type is skipped by auto')
-  report.equal(picked.fellBack, false, 'skipping a disabled type is not reported as a failure')
-  picked.adapter.open?.({ id: 'card-x', question: 'q' })
+  report.equal(picked.adapter, null, 'a disabled tab type leaves auto with no surface')
+  report.equal(picked.fellBack, true, 'having no usable surface is reported as a fallback')
   report.equal(opens.length, 0, 'a disabled type never receives an open')
 }
 
-// 2.1.9：胶囊（默认形态）只渲染一行状态，答案要手动点开才看得到。
-// 用户要求「提问完成之后直接在侧边卡片显示回答内容」，所以完成即展开。
-{
-  const acts = overlay.component().props.actions
-  await acts.saveConfig({ ...client.api.snapshot().config, floatMode: 'capsule', autoExpandOnDone: true })
-  report.equal(client.api.snapshot().config.floatMode, 'capsule', 'the run starts from the one-line capsule')
-  await acts.submit({
-    text: '完成即展开的正文',
-    rect: { left: 6, top: 6, right: 200, bottom: 26, width: 194, height: 20 },
-    zone: 'chat', cross: false,
-    slotPath: ['conversation.chat.node'], kind: 'text',
-  }, { question: '完成即展开', carrier: 'side' })
-  await new Promise(resolve => setTimeout(resolve, 300))
-  report.equal(client.api.snapshot().floatMode, 'full', 'a finished answer expands the card out of the capsule')
-}
 report.summary()
 

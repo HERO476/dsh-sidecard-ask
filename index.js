@@ -47,7 +47,7 @@ export const name = 'dsh-sidecard-ask'
 export const inject = ['webServer']
 
 /** Version of this plugin (kept in step with package.json by test/verify.mjs). */
-export const PLUGIN_VERSION = '2.3.5'
+export const PLUGIN_VERSION = '3.0.0'
 
 /** Route prefix of the plugin's own API. */
 export const ROUTE_PREFIX = '/sidecard-ask/api'
@@ -115,32 +115,6 @@ export const DEFAULT_CONFIG = {
    * pretending one is in force.
    */
   sideAgentPreset: '',
-  /**
-   * Floating-layer (A) surface. `capsule` = one-line pill that never covers
-   * the conversation, `full` = the classic card stack. (The former `off`
-   * "hidden behind a small launcher" shape was removed in 2.0.0; a stored
-   * `off` now fails validation and falls back to this default.) The geometry
-   * for both shapes lives in `client.js`: the layer is anchored to the frame's
-   * right edge and never crosses the conversation column's right boundary
-   * (see `FLOAT_*` there).
-   */
-  floatMode: 'capsule',
-  /** Hard cap, in CSS px, for the floating layer's width. */
-  floatMaxWidth: 340,
-  /**
-   * Dock the answer card into the right rail when one is on screen, so the
-   * answer gets the whole rail instead of a 340px card floating over it.
-   *
-   * The rail exposes no "add a page" API to plugins on this DSH build (the
-   * `sidebarRightTabs` service is absent; see README §6), so the Client half
-   * measures the rail's rectangle and paints the card inside it. Turning this
-   * off restores the pure floating behaviour; with no rail on screen the
-   * floating layer is used either way.
-   */
-  dockRail: true,
-  // 2.1.9: expand the floating layer when an answer settles, so the answer is
-  // visible in the side card instead of hiding behind the capsule pill.
-  autoExpandOnDone: true,
   /**
    * One-click quick actions rendered beside the selection trigger.
    *
@@ -284,10 +258,9 @@ const HISTORY_TURN_A_CHARS = 4000
 const ENUMS = {
   trigger: ['selection', 'shortcut', 'both'],
   defaultCarrier: ['main', 'side'],
-  sideSurface: ['auto', 'native-rightbar', 'better-sidebar', 'flow'],
+  sideSurface: ['auto', 'native-rightbar', 'better-sidebar'],
   captureZones: ['auto', 'chat', 'task', 'chat+task'],
   sideTools: ['readonly', 'inherit'],
-  floatMode: ['capsule', 'full'],
   answerStyle: ['concise', 'standard', 'detailed'],
 }
 
@@ -297,7 +270,6 @@ const NUMBERS = {
   minChars: [0, 200],
   maxConcurrentAsks: [1, 12],
   sideTimeoutMs: [5_000, 3_600_000],
-  floatMaxWidth: [240, 560],
   historyMaxCards: [0, 50],
 }
 
@@ -619,7 +591,7 @@ export function sanitizeLayer(raw, problems = []) {
     if (value !== null && (value === '' || looksLikeEmail(value))) out.feedbackSmtpFrom = value
     else problems.push('feedbackSmtpFrom: 必须是合法邮箱或空字符串，已忽略')
   }
-  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions', 'dockRail', 'autoExpandOnDone']) {
+  for (const boolKey of ['showInUnclassified', 'notifyOnDone', 'contextMenu', 'followUpSuggestions']) {
     if (raw[boolKey] === undefined) continue
     if (typeof raw[boolKey] === 'boolean') out[boolKey] = raw[boolKey]
     else problems.push(`${boolKey}: 必须是布尔值，已忽略`)

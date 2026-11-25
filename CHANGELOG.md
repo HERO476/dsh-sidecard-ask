@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.0.0
+
+**主题：移除内置浮层，侧边卡片只活在右栏。**
+
+### 破坏性变更
+
+- **内置浮层整体下线**：贴帧右边缘的胶囊、卡片栈、满栏铺满三种形态全部移除。`FloatingLayer` 组件（295 行）、`surfaces.flow` 适配器、`setFloatMode`、`revealFinishedCard`、卡片头的「收起为胶囊（⇥）」按钮、胶囊与卡片栈的 CSS 一并删除。此前侧边答案默认落在浮层上；3.0.0 起只落在 `dsh-better-sidebar` 的 tab 或 DSH 原生右栏的 tab 里。
+- **两个右栏都不可用时改发主对话**：`pickSurface` 不再回落到浮层，改为返回 `{ adapter: null, fellBack: true }`；`submit` 在该分支把这次追问改发主对话并提示，不再创建一张没有承载面可显示的卡片。
+- **删除四个配置项**：`floatMode`、`floatMaxWidth`、`dockRail`、`autoExpandOnDone`。Host `DEFAULT_CONFIG` 与 Client `CLIENT_DEFAULTS` 同步移除，`ENUMS` / `NUMBERS` 表同步收紧，`sanitizeLayer` 的布尔键清单去掉两项。旧配置文件里的这四个键会被忽略并记入 `problems`，无需手工迁移。
+- **`sideSurface` 枚举去掉 `flow`**：只剩 `auto` / `native-rightbar` / `better-sidebar`，设置页下拉同步。
+- **删除 20 个 i18n 键**：`setFloatMode` / `setFloatModeCapsule` / `setFloatModeFull` / `setFloatModeHint`、`setAutoExpandOnDone` / `setAutoExpandOnDoneHint`、`setFloatMaxWidth` / `setFloatMaxWidthHint`、`setDockRail` / `setDockRailHint`、`floatExpand`、`floatCollapse`、`floatStreaming`、`floatDone`、`surfaceFlow`、`setSurfaceFlow`、`cardMovedToFlow`（zh / en 各剩 54 键，`gen-locale --check` 通过）。
+- **历史卡片回放不再自动浮现**：刷新后重放的卡片带 `surface: null, open: false`，留在设置页的历史管理器里；点「恢复」时才按当前 `sideSurface` 选一个右栏打开，两个右栏都没有则拒绝并提示。
+- **两张卡抢同一个 tab 地址时被挤出的那张改为关闭**（`surface: null, open: false`），不再「迁回浮层」。
+- **渲染证明失败不再搬卡**：适配器接受打开请求但 600ms 内没挂载时，保留 tab 并提示「承载面未就绪」，不再把卡片搬到浮层。
+
+### 测试
+
+- 删除 `test/float-placement.mjs`（459 行）与 `test/wire-geometry.mjs`（161 行）：被测对象已不存在。
+- `test/contract-test.mjs` 改 30 余处断言到新契约；新增 `renderCard()` 测试接缝——卡片只活在右栏 tab 体里、harness 不模拟那个宿主，故直接渲染 client 导出的 `AnswerCard`（同时导出为 `components.AnswerCard`）；给 28 个客户端上下文补上 `dsh-better-sidebar` 服务 mock；`bareCtx` 与 `reloadCtx` 刻意保持无右栏，用来锁住「无承载面时改发主对话」「没有右栏时恢复被拒绝」两条新行为。
+- `NODE-HOST-CONTRACT.md` 22 处行号锚点按新源码重算。
+- `package.json` 的 `test` 脚本移除两套已删测试。
+- 全套自测：`verify` 86、`contract` 1564、`smoke` 431，**全部 0 failed**；`gen-locale --check` 通过。
+
+### 文档
+
+- README 的 §4.1 / §4.2（浮层位置与 dockRail）合并改写为「承载面：3.0.0 起不再有内置浮层」；§5 承载面表格去掉浮层兜底行并说明改发主对话；配置表删除四行、`sideSurface` 改枚举；§九 自测要点第 8 / 9 条替换为「没有浮层」的验收步骤。
+
 ## 2.3.5
 
 **主题：修 2.3.4 自己引入的两条 P1——一个把可用路径改成了硬拒绝，一个把安全边界建在客户端可伪造的头上。**
